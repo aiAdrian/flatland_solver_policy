@@ -9,7 +9,7 @@ from policy.learning_policy.dddqn_policy import DDDQNPolicy, DDDQN_Param
 from policy.learning_policy.ppo_agent import PPOPolicy
 
 
-class Solver:
+class FlatlandSolver:
     def __init__(self, env):
         self.env = env
         self.policy = None
