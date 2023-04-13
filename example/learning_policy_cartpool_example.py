@@ -25,6 +25,7 @@ def cartpole(use_dddqn=False, maxEpisode=2000):
     eps = 1.0
     eps_decay = 0.99
     min_eps = 0.01
+
     training_mode = True
 
     env = gym.make("CartPole-v1")
@@ -32,6 +33,8 @@ def cartpole(use_dddqn=False, maxEpisode=2000):
     action_space = env.action_space.n
     if not use_dddqn:
         policy = PPOPolicy(observation_space, action_space, False)
+        eps = 0.0
+        min_eps = 0.0
     else:
         policy = DDDQNPolicy(observation_space, action_space, dddqn_param)
     episode = 0
@@ -42,14 +45,21 @@ def cartpole(use_dddqn=False, maxEpisode=2000):
 
     while True:
         episode += 1
+
+
+        # reset the environment, policy
+        # ------------------------------------------------------------------------------------
+        tot_reward = 0
         state = env.reset()
         policy.reset(env)
-        handle = 0
-        tot_reward = 0
 
+        # run one episode
+        # ------------------------------------------------------------------------------------
         policy.start_episode(train=training_mode)
         while True:
-            # env.render()
+
+            # run one step
+            # ------------------------------------------------------------------------------------
             policy.start_step(train=training_mode)
             for handle in range(1):
                 policy.start_act(handle,train=training_mode)
@@ -70,10 +80,11 @@ def cartpole(use_dddqn=False, maxEpisode=2000):
                 break
 
         policy.end_episode(train=training_mode)
+
         eps = max(min_eps, eps * eps_decay)
         scores_window.append(tot_reward)
         if episode % checkpoint_interval == 0:
-            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f}\t eps: {:5.3f}\t replay buffer: {}'.format(episode,
+            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f}\t eps: {:5.3f}\t replay buffer size: {}'.format(episode,
                                                                                                               tot_reward,
                                                                                                               np.mean(
                                                                                                                   scores_window),
@@ -81,7 +92,7 @@ def cartpole(use_dddqn=False, maxEpisode=2000):
                                                                                                               len(
                                                                                                                   policy.memory)))
         else:
-            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f}\t eps: {:5.3f}\t replay buffer: {}'.format(episode,
+            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f}\t eps: {:5.3f}\t replay buffer size: {}'.format(episode,
                                                                                                               tot_reward,
                                                                                                               np.mean(
                                                                                                                   scores_window),
