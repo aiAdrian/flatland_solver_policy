@@ -21,6 +21,7 @@ setup(
         'flatland-railway-extension',
         'torch',
         'tensorboard',
-        'gym'
+        'gym',
+        'numpy'
     ],
 )

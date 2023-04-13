@@ -10,7 +10,7 @@ from torch.distributions import Categorical
 
 # Hyperparameters
 from policy.learning_policy.learning_policy import LearningPolicy
-from policy.learning_policy.replay_buffer import ReplayBuffer
+from policy.learning_policy.dddqn_policy.replay_buffer import ReplayBuffer
 
 # https://lilianweng.github.io/lil-log/2018/04/08/policy-gradient-algorithms.html
 

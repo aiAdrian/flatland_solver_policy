@@ -1,8 +1,8 @@
 import gym
 
 from solver.flatland_solver import FlatlandSolver
-from policy.learning_policy.dddqn_policy import DDDQNPolicy, DDDQN_Param
-from policy.learning_policy.ppo_agent import PPOPolicy
+from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQNPolicy, DDDQN_Param
+from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
 
 
@@ -15,11 +15,11 @@ def create_environment():
 
 def create_dddqn_policy(observation_space: int, action_space: int) -> Policy:
     param = DDDQN_Param(hidden_size=128,
-                        buffer_size=1000,
-                        batch_size=64,
+                        buffer_size=10_000,
+                        batch_size=512,
                         update_every=10,
-                        learning_rate=0.5e-3,
-                        tau=1.e-2,
+                        learning_rate=0.5e-2,
+                        tau=1.e-3,
                         gamma=0.95,
                         buffer_min_size=0,
                         use_gpu=False)
