@@ -1,5 +1,7 @@
 import copy
 import os
+from collections import namedtuple
+from typing import Union
 
 import torch
 import torch.nn as nn
@@ -90,8 +92,16 @@ class ActorCriticModel(nn.Module):
         self.critic = self._load(self.critic, filename + ".value")
 
 
+PPO_Param = namedtuple('PPO_Param',
+                            ['hidden_size', 'buffer_size', 'batch_size', 'learning_rate',
+                             'gamma', 'buffer_min_size', 'use_gpu'])
+
 class PPOPolicy(LearningPolicy):
-    def __init__(self, state_size, action_size, use_replay_buffer=False, in_parameters=None):
+    def __init__(self,
+                 state_size: int,
+                 action_size: int,
+                 use_replay_buffer=False,
+                 in_parameters: Union[PPO_Param, None]=None):
         super(PPOPolicy, self).__init__()
         # parameters
         self.ppo_parameters = in_parameters

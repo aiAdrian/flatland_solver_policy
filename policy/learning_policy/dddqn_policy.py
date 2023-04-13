@@ -2,6 +2,7 @@ import copy
 import os
 import pickle
 import random
+from collections import namedtuple
 
 import numpy as np
 import torch
@@ -12,11 +13,18 @@ from policy.learning_policy.model import DuelingQNetwork
 from policy.learning_policy.learning_policy import LearningPolicy
 from policy.learning_policy.replay_buffer import ReplayBuffer
 
+DDDQN_Param = namedtuple('DDDQN_Param',
+                            ['hidden_size', 'buffer_size', 'batch_size', 'update_every', 'learning_rate',
+                             'tau', 'gamma', 'buffer_min_size', 'use_gpu'])
 
 class DDDQNPolicy(LearningPolicy):
     """Dueling Double DQN policy"""
 
-    def __init__(self, state_size, action_size, in_parameters, evaluation_mode=False):
+    def __init__(self,
+                 state_size: int,
+                 action_size: int,
+                 in_parameters: DDDQN_Param,
+                 evaluation_mode=False):
         super(DDDQNPolicy, self).__init__()
 
         self.ddqn_parameters = in_parameters
