@@ -83,23 +83,13 @@ def cartpole(use_dddqn=False, maxEpisode=2000):
 
         eps = max(min_eps, eps * eps_decay)
         scores_window.append(tot_reward)
-        if episode % checkpoint_interval == 0:
-            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f}\t eps: {:5.3f}\t replay buffer size: {}'.format(episode,
+
+        print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f}\t eps: {:5.3f}\t replay buffer size: {}'.format(episode,
                                                                                                               tot_reward,
-                                                                                                              np.mean(
-                                                                                                                  scores_window),
+                                                                                                              np.mean(scores_window),
                                                                                                               eps,
-                                                                                                              len(
-                                                                                                                  policy.memory)))
-        else:
-            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f}\t eps: {:5.3f}\t replay buffer size: {}'.format(episode,
-                                                                                                              tot_reward,
-                                                                                                              np.mean(
-                                                                                                                  scores_window),
-                                                                                                              eps,
-                                                                                                              len(
-                                                                                                                  policy.memory)),
-                  end=" ")
+                                                                                                              len(policy.memory)),
+                  end='\n' if episode % checkpoint_interval == 0 else '')
 
         writer.add_scalar("CartPole/value", tot_reward, episode)
         writer.add_scalar("CartPole/smoothed_value", np.mean(scores_window), episode)
@@ -109,5 +99,5 @@ def cartpole(use_dddqn=False, maxEpisode=2000):
             break
 
 if __name__ == "__main__":
-    cartpole(use_dddqn=True, maxEpisode=100)
-    cartpole(use_dddqn=False, maxEpisode=100)
+    cartpole(use_dddqn=True, maxEpisode=1000)
+    cartpole(use_dddqn=False, maxEpisode=1000)

@@ -8,6 +8,9 @@ class Policy:
     def getName(self):
         raise NotImplementedError
 
+    def getInfoString(self):
+        return ''
+
     def save(self, filename):
         raise NotImplementedError
 
