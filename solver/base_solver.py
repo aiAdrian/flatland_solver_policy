@@ -4,28 +4,6 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
 
-def _run_step(self, env, policy, state, eps, training_mode):
-    tot_reward = 0
-    all_terminal = True
-
-    policy.start_step(train=training_mode)
-
-    actions = {}
-    for handle in range(self.num_agents):
-        policy.start_act(handle, train=training_mode)
-        action = policy.act(handle, state[handle], eps)
-        actions.update({handle: action})
-        policy.end_act(handle, train=training_mode)
-
-    state_next, reward, terminal, info = env.step(actions)
-    for handle in range(self.num_agents):
-        policy.step(handle, state[handle], actions[handle], reward[handle], state_next[handle], terminal[handle])
-        all_terminal = all_terminal & terminal[handle]
-        tot_reward += reward[handle]
-
-    policy.end_step(train=training_mode)
-    return state_next, tot_reward, all_terminal
-
 class BaseSolver:
     def __init__(self, env):
         self.env = env
@@ -34,12 +12,12 @@ class BaseSolver:
     def set_policy(self, policy):
         self.policy = policy
 
-    def _reset(self, env, policy):
+    def reset(self, env, policy):
         state = env.reset()
         policy.reset(env)
         return state
 
-    def _run_step(self, env, policy, state, eps, training_mode):
+    def run_step(self, env, policy, state, eps, training_mode):
         handle = 0
         tot_reward = 0
         all_terminal = True
@@ -62,21 +40,21 @@ class BaseSolver:
     def update_state(self, state_next):
         return np.copy(state_next)
 
-    def _run_internal_episode(self, env, policy, state, eps, training_mode):
+    def run_internal_episode(self, env, policy, state, eps, training_mode):
         tot_reward = 0
         while True:
-            state_next, reward, terminal = self._run_step(env, policy, state, eps, training_mode)
+            state_next, reward, terminal = self.run_step(env, policy, state, eps, training_mode)
             tot_reward += reward
             state = self.update_state(state_next)
             if terminal:
                 break
         return tot_reward
 
-    def _run_episode(self, env, policy, eps, training_mode):
-        state = self._reset(env, policy)
+    def run_episode(self, env, policy, eps, training_mode):
+        state = self.reset(env, policy)
 
         policy.start_episode(train=training_mode)
-        tot_reward = self._run_internal_episode(env, policy, state, eps, training_mode)
+        tot_reward = self.run_internal_episode(env, policy, state, eps, training_mode)
         policy.end_episode(train=training_mode)
 
         return tot_reward
@@ -99,7 +77,7 @@ class BaseSolver:
         while True:
             episode += 1
 
-            tot_reward = self._run_episode(self.env, self.policy, eps, training_mode)
+            tot_reward = self.run_episode(self.env, self.policy, eps, training_mode)
             eps = max(min_eps, eps * eps_decay)
             scores_window.append(tot_reward)
 

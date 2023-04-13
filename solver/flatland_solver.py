@@ -12,7 +12,7 @@ class FlatlandSolver(BaseSolver):
         super(FlatlandSolver, self).__init__(env)
         self.policy = None
 
-    def _run_step(self, env, policy, state, eps, training_mode):
+    def run_step(self, env, policy, state, eps, training_mode):
         tot_reward = 0
         all_terminal = True
 
