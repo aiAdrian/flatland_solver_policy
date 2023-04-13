@@ -20,6 +20,7 @@ setup(
     install_requires=[
         'flatland-railway-extension',
         'torch',
-        'tensorboard'
+        'tensorboard',
+        'gym'
     ],
 )
