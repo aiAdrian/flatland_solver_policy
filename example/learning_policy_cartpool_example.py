@@ -32,7 +32,7 @@ def cartpole(use_dddqn=False, maxEpisode=2000):
     observation_space = env.observation_space.shape[0]
     action_space = env.action_space.n
     if not use_dddqn:
-        policy = PPOPolicy(observation_space, action_space, False)
+        policy = PPOPolicy(observation_space, action_space, True)
         eps = 0.0
         min_eps = 0.0
     else:
