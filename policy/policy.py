@@ -2,7 +2,7 @@ from flatland.envs.rail_env import RailEnv
 
 class Policy:
 
-    def __int__(self):
+    def __init__(self):
         print('>> ' + self.getName())
 
     def getName(self):

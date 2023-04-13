@@ -1,3 +1,3 @@
 class HeuristicPolicy(Policy):
     def __init__(self):
-        super(HeuristicPolicy).__init__()
+        super(HeuristicPolicy, self).__init__()
