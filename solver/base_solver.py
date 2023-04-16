@@ -23,9 +23,9 @@ class BaseSolver:
         if self.rendering_enabled:
             self.env.render()
 
-    def reset(self, env, policy):
-        state = env.reset()
-        policy.reset(env)
+    def reset(self):
+        state = self.env.reset()
+        self.policy.reset(self.env)
         return state
 
     def run_step(self, env, policy, state, eps, training_mode):
@@ -63,7 +63,7 @@ class BaseSolver:
         return tot_reward
 
     def run_episode(self, episode, env, policy, eps, training_mode):
-        state = self.reset(env, policy)
+        state = self.reset()
 
         policy.start_episode(train=training_mode)
         tot_reward = self.run_internal_episode(episode, env, policy, state, eps, training_mode)

@@ -23,12 +23,13 @@ class FlatlandSolver(BaseSolver):
         if self.rendering_enabled:
             self.renderer.render(episode, terminal)
 
-    def reset(self, env, policy):
-        state, _ = env.reset()
-        policy.reset(env)
+    def reset(self):
+        state, _ = self.env.reset()
+        if self.policy is not None:
+            self.policy.reset(self.env)
         if self.renderer is not None:
             self.renderer.reset()
-        return state
+        return self.transform_state(state)
 
     def transform_state(self, state):
         return state
@@ -46,18 +47,20 @@ class FlatlandSolver(BaseSolver):
         for handle in self.env.get_agent_handles():
             policy.start_act(handle, train=training_mode)
             action = policy.act(handle,
-                                self.transform_state(state)[handle],
+                                state[handle],
                                 eps)
             actions.update({handle: action})
             policy.end_act(handle, train=training_mode)
 
-        state_next, reward, terminal, info = env.step(actions)
+        raw_state_next, reward, terminal, info = env.step(actions)
+        state_next = self.transform_state(raw_state_next)
+
         for handle in self.env.get_agent_handles():
             policy.step(handle,
-                        self.transform_state(state)[handle],
+                        state[handle],
                         actions[handle],
                         reward[handle],
-                        self.transform_state(state_next[handle]),
+                        state_next[handle],
                         terminal[handle])
             all_terminal = all_terminal & terminal[handle]
             tot_reward += reward[handle]

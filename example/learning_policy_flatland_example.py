@@ -1,18 +1,24 @@
 from flatland.envs.malfunction_generators import ParamMalfunctionGen, MalfunctionParameters
+from flatland.envs.observations import GlobalObsForRailEnv, TreeObsForRailEnv
+from flatland.envs.predictions import ShortestPathPredictorForRailEnv
 from flatland.envs.rail_env import RailEnv
 from flatland.envs.rail_generators import sparse_rail_generator
 from flatland.utils.rendertools import AgentRenderVariant, RenderTool
 
+from example.observation_utils import normalize_observation
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_agent import \
     DeadLockAvoidanceAgent
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_observation import \
     DeadlockAvoidanceObservation
+from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQN_Param, DDDQNPolicy
+from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
 from solver.base_renderer import BaseRenderer
 from solver.flatland_solver import FlatlandSolver
 
 import numpy as np
 
+TREE_DEPTH = 2
 
 class SimpleRenderer(BaseRenderer):
     def __init__(self, rail_env: RailEnv):
@@ -40,7 +46,7 @@ class SimpleRenderer(BaseRenderer):
         self.renderer.render_env(
             show=True,
             frames=False,
-            show_observations=False,
+            show_observations=True,
             show_predictions=False
         )
 
@@ -53,6 +59,18 @@ def create_flatland_env(max_rails_between_cities=2,
                         grid_width=30,
                         grid_height=40,
                         random_seed=0) -> RailEnv:
+
+    # tree observation returns a tree of possible paths from the current position.
+    max_depth = TREE_DEPTH  # Max depth of the tree
+    predictor = ShortestPathPredictorForRailEnv(
+        max_depth=50)  # (Specific to Tree Observation - read code)
+
+    observation_builder = TreeObsForRailEnv(
+        max_depth=max_depth,
+        predictor=predictor
+    )
+    # observation_builder = DeadlockAvoidanceObservation()
+
     return RailEnv(
         width=grid_width,
         height=grid_height,
@@ -70,13 +88,17 @@ def create_flatland_env(max_rails_between_cities=2,
         ),
         random_seed=random_seed,
         number_of_agents=number_of_agents,
-        obs_builder_object=DeadlockAvoidanceObservation()
+        obs_builder_object=observation_builder
     )
 
-def create_environment():
-    environment = create_flatland_env()
-    observation_space = None
-    action_space = environment.action_space
+def create_environment(number_of_agents):
+    environment = create_flatland_env(number_of_agents=number_of_agents)
+    action_space = environment.action_space[0]
+
+    raw_obs_states, _ = environment.reset()
+    obs_states = normalize_observation_tree_obs(0, raw_obs_states)
+    observation_space = len(obs_states)
+
     return environment, observation_space, action_space
 
 
@@ -84,12 +106,70 @@ def create_deadlock_avoidance_policy(rail_env: RailEnv, action_space: int, show_
     return DeadLockAvoidanceAgent(rail_env, action_space, enable_eps=False, show_debug_plot=show_debug_plot)
 
 
+def create_dddqn_policy(observation_space: int, action_space: int) -> Policy:
+    param = DDDQN_Param(hidden_size=128,
+                        buffer_size=10_000,
+                        batch_size=1024,
+                        update_every=10,
+                        learning_rate=0.5e-3,
+                        tau=1.e-3,
+                        gamma=0.95,
+                        buffer_min_size=0,
+                        use_gpu=False)
+
+    return DDDQNPolicy(observation_space, action_space, param)
+
+
+def create_ppo_policy(observation_space: int, action_space: int) -> Policy:
+    return PPOPolicy(observation_space, action_space, True)
+
+
+def normalize_observation_tree_obs(agent_handle, raw_states):
+    observation_tree_depth = TREE_DEPTH  # Max depth of the tree
+    observation_radius = 2
+    return normalize_observation(raw_states[agent_handle],
+                                 observation_tree_depth,
+                                 observation_radius=observation_radius)
+
+
+class TreeObsFlatlandSolver(FlatlandSolver):
+    def __init__(self, env: RailEnv):
+        super(TreeObsFlatlandSolver, self).__init__(env)
+
+    def transform_state(self, states):
+        ret_obs = None
+        # Update replay buffer and train agent
+        for agent_handle in self.env.get_agent_handles():
+
+            # Preprocess the new observations
+            if states[agent_handle]:
+
+                normalized_obs = normalize_observation_tree_obs(agent_handle, states)
+                if ret_obs is None:
+                    ret_obs = np.zeros((self.env.get_num_agents(), len(normalized_obs)))
+
+                ret_obs[agent_handle] = normalized_obs
+
+        return ret_obs
+
+
 if __name__ == "__main__":
-    env, obs_space, act_space = create_environment()
+    env, obs_space, act_space = create_environment(number_of_agents=3)
+    print(act_space, obs_space)
+
     renderer = SimpleRenderer(env)
 
-    solver = FlatlandSolver(env)
+    solver = TreeObsFlatlandSolver(env)
     solver.set_renderer(renderer)
-    # solver.activate_rendering()
+    solver.deactivate_rendering()
+
     solver.set_policy(create_deadlock_avoidance_policy(env, act_space, False))
-    solver.do_training(max_episodes=1000)
+    solver.do_training(max_episodes=100)
+
+    solver.set_policy(create_ppo_policy(obs_space, act_space))
+    solver.do_training(max_episodes=100)
+
+    solver.set_policy(create_dddqn_policy(obs_space, act_space))
+    solver.do_training(max_episodes=100)
+
+
