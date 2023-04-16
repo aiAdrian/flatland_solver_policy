@@ -3,8 +3,10 @@ from flatland.envs.rail_env import RailEnv
 from flatland.envs.rail_generators import sparse_rail_generator
 from flatland.utils.rendertools import AgentRenderVariant, RenderTool
 
-from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.dead_lock_avoidance_agent import \
-    DeadlockAvoidanceObservation, DeadLockAvoidanceAgent
+from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_agent import \
+    DeadLockAvoidanceAgent
+from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_observation import \
+    DeadlockAvoidanceObservation
 from policy.policy import Policy
 from solver.base_renderer import BaseRenderer
 from solver.flatland_solver import FlatlandSolver
@@ -32,7 +34,9 @@ class SimpleRenderer(BaseRenderer):
     def reset(self):
         self.renderer.reset
 
-    def render(self):
+    def render(self, episode, terminal):
+        if not terminal and episode % 50 != 0:
+            return
         self.renderer.render_env(
             show=True,
             frames=False,

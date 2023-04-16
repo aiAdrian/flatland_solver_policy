@@ -5,6 +5,6 @@ class BaseRenderer:
     def reset(self):
         pass
 
-    def render(self):
+    def render(self, episode, terminal):
         pass
 

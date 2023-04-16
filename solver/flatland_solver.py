@@ -21,7 +21,7 @@ class FlatlandSolver(BaseSolver):
 
     def render(self, episode, terminal):
         if self.rendering_enabled:
-            self.renderer.render()
+            self.renderer.render(episode, terminal)
 
     def reset(self, env, policy):
         state, _ = env.reset()
