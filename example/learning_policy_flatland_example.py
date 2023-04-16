@@ -17,6 +17,7 @@ class SimpleRenderer(BaseRenderer):
         super(SimpleRenderer, self).__int__()
         self.env = rail_env
         self.renderer = self._create_renderer()
+
     def _create_renderer(self, show_debug=False,
                          agent_render_variant=AgentRenderVariant.AGENT_SHOWS_OPTIONS_AND_BOX,
                          screen_width_scale=40, screen_height_scale=25):
