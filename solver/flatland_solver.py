@@ -5,6 +5,7 @@ from flatland.envs.rail_env import RailEnv
 from flatland.utils.rendertools import AgentRenderVariant, RenderTool
 from torch.utils.tensorboard import SummaryWriter
 
+from solver.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver
 
 
@@ -12,31 +13,15 @@ class FlatlandSolver(BaseSolver):
     def __init__(self, env: RailEnv):
         super(FlatlandSolver, self).__init__(env)
         self.policy = None
-        self.renderer = None
+        self.renderer: BaseRenderer = None
 
-    def _create_renderer(self, show_debug=False,
-                         agent_render_variant=AgentRenderVariant.AGENT_SHOWS_OPTIONS_AND_BOX,
-                         screen_width_scale=40, screen_height_scale=25):
-        self.renderer = RenderTool(self.env,
-                                       agent_render_variant=agent_render_variant,
-                                       show_debug=show_debug,
-                                       screen_width=int(np.round(self.env.width * screen_width_scale)),
-                                       screen_height=int(np.round(self.env.height * screen_height_scale)))
-        self.renderer.reset()
-
-    def make_renderer(self, renderer_class=None):
-        if renderer_class is None:
-            pass
-        self._create_renderer()
+    def set_renderer(self, renderer: BaseRenderer):
+        self.renderer = renderer
+        self.activate_rendering()
 
     def render(self, episode, terminal):
         if self.rendering_enabled:
-            self.renderer.render_env(
-                    show=True,
-                    frames=False,
-                    show_observations=False,
-                    show_predictions=False
-                )
+            self.renderer.render()
 
     def reset(self, env, policy):
         state, _ = env.reset()
