@@ -8,9 +8,20 @@ class BaseSolver:
     def __init__(self, env):
         self.env = env
         self.policy = None
+        self.rendering_enabled = False
 
     def set_policy(self, policy):
         self.policy = policy
+
+    def activate_rendering(self):
+        self.rendering_enabled = True
+
+    def deactivate_rendering(self):
+        self.rendering_enabled = False
+
+    def render(self, episode, terminal):
+        if self.rendering_enabled:
+            self.env.render()
 
     def reset(self, env, policy):
         state = env.reset()
@@ -40,21 +51,22 @@ class BaseSolver:
     def update_state(self, state_next):
         return np.copy(state_next)
 
-    def run_internal_episode(self, env, policy, state, eps, training_mode):
+    def run_internal_episode(self, episode, env, policy, state, eps, training_mode):
         tot_reward = 0
         while True:
             state_next, reward, terminal = self.run_step(env, policy, state, eps, training_mode)
             tot_reward += reward
             state = self.update_state(state_next)
+            self.render(episode, terminal)
             if terminal:
                 break
         return tot_reward
 
-    def run_episode(self, env, policy, eps, training_mode):
+    def run_episode(self, episode, env, policy, eps, training_mode):
         state = self.reset(env, policy)
 
         policy.start_episode(train=training_mode)
-        tot_reward = self.run_internal_episode(env, policy, state, eps, training_mode)
+        tot_reward = self.run_internal_episode(episode, env, policy, state, eps, training_mode)
         policy.end_episode(train=training_mode)
 
         return tot_reward
@@ -77,7 +89,7 @@ class BaseSolver:
         while True:
             episode += 1
 
-            tot_reward = self.run_episode(self.env, self.policy, eps, training_mode)
+            tot_reward = self.run_episode(episode, self.env, self.policy, eps, training_mode)
             eps = max(min_eps, eps * eps_decay)
             scores_window.append(tot_reward)
 

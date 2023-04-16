@@ -11,7 +11,7 @@ import torch.optim as optim
 
 from policy.learning_policy.dddqn_policy.model import DuelingQNetwork
 from policy.learning_policy.learning_policy import LearningPolicy
-from policy.learning_policy.dddqn_policy.replay_buffer import ReplayBuffer
+from policy.learning_policy.replay_buffer import ReplayBuffer
 
 DDDQN_Param = namedtuple('DDDQN_Param',
                             ['hidden_size', 'buffer_size', 'batch_size', 'update_every', 'learning_rate',
