@@ -1,3 +1,6 @@
+from typing import Optional, List
+
+from flatland.core.env_observation_builder import ObservationBuilder
 from flatland.envs.malfunction_generators import ParamMalfunctionGen, MalfunctionParameters
 from flatland.envs.observations import GlobalObsForRailEnv, TreeObsForRailEnv
 from flatland.envs.predictions import ShortestPathPredictorForRailEnv
@@ -18,7 +21,6 @@ from solver.flatland_solver import FlatlandSolver
 
 import numpy as np
 
-TREE_DEPTH = 2
 
 class SimpleRenderer(BaseRenderer):
     def __init__(self, rail_env: RailEnv):
@@ -51,7 +53,34 @@ class SimpleRenderer(BaseRenderer):
         )
 
 
-def create_flatland_env(max_rails_between_cities=2,
+class FlattenTreeObsForRailEnv(TreeObsForRailEnv):
+
+    def _normalize_observation_tree_obs(self, agent_handle, raw_states, observation_radius=2):
+        return normalize_observation(raw_states[agent_handle],
+                                     self.max_depth,
+                                     observation_radius=observation_radius)
+
+    def _transform_state(self, states):
+        ret_obs = None
+        # Update replay buffer and train agent
+        for agent_handle in self.env.get_agent_handles():
+
+            # Preprocess the new observations
+            if states[agent_handle]:
+                normalized_obs = self._normalize_observation_tree_obs(agent_handle, states)
+                if ret_obs is None:
+                    ret_obs = np.zeros((self.env.get_num_agents(), len(normalized_obs)))
+
+                ret_obs[agent_handle] = normalized_obs
+
+        return ret_obs
+
+    def get_many(self, handles: Optional[List[int]] = None):
+        return self._transform_state(super(FlattenTreeObsForRailEnv, self).get_many(handles))
+
+
+def create_flatland_env(obs_builder: ObservationBuilder,
+                        max_rails_between_cities=2,
                         max_rails_in_city=4,
                         malfunction_rate=1 / 1000,
                         n_cities=5,
@@ -59,17 +88,6 @@ def create_flatland_env(max_rails_between_cities=2,
                         grid_width=30,
                         grid_height=40,
                         random_seed=0) -> RailEnv:
-
-    # tree observation returns a tree of possible paths from the current position.
-    max_depth = TREE_DEPTH  # Max depth of the tree
-    predictor = ShortestPathPredictorForRailEnv(
-        max_depth=50)  # (Specific to Tree Observation - read code)
-
-    observation_builder = TreeObsForRailEnv(
-        max_depth=max_depth,
-        predictor=predictor
-    )
-    # observation_builder = DeadlockAvoidanceObservation()
 
     return RailEnv(
         width=grid_width,
@@ -88,16 +106,16 @@ def create_flatland_env(max_rails_between_cities=2,
         ),
         random_seed=random_seed,
         number_of_agents=number_of_agents,
-        obs_builder_object=observation_builder
+        obs_builder_object=obs_builder
     )
 
-def create_environment(number_of_agents):
-    environment = create_flatland_env(number_of_agents=number_of_agents)
+
+def create_environment(obs_builder: ObservationBuilder, number_of_agents: int):
+    environment = create_flatland_env(obs_builder, number_of_agents=number_of_agents)
     action_space = environment.action_space[0]
 
-    raw_obs_states, _ = environment.reset()
-    obs_states = normalize_observation_tree_obs(0, raw_obs_states)
-    observation_space = len(obs_states)
+    obs_states, _ = environment.reset()
+    observation_space = len(obs_states[0])
 
     return environment, observation_space, action_space
 
@@ -124,52 +142,32 @@ def create_ppo_policy(observation_space: int, action_space: int) -> Policy:
     return PPOPolicy(observation_space, action_space, True)
 
 
-def normalize_observation_tree_obs(agent_handle, raw_states):
-    observation_tree_depth = TREE_DEPTH  # Max depth of the tree
-    observation_radius = 2
-    return normalize_observation(raw_states[agent_handle],
-                                 observation_tree_depth,
-                                 observation_radius=observation_radius)
-
-
-class TreeObsFlatlandSolver(FlatlandSolver):
-    def __init__(self, env: RailEnv):
-        super(TreeObsFlatlandSolver, self).__init__(env)
-
-    def transform_state(self, states):
-        ret_obs = None
-        # Update replay buffer and train agent
-        for agent_handle in self.env.get_agent_handles():
-
-            # Preprocess the new observations
-            if states[agent_handle]:
-
-                normalized_obs = normalize_observation_tree_obs(agent_handle, states)
-                if ret_obs is None:
-                    ret_obs = np.zeros((self.env.get_num_agents(), len(normalized_obs)))
-
-                ret_obs[agent_handle] = normalized_obs
-
-        return ret_obs
-
-
 if __name__ == "__main__":
-    env, obs_space, act_space = create_environment(number_of_agents=3)
-    print(act_space, obs_space)
+    observation_builder = FlattenTreeObsForRailEnv(
+        max_depth=3,
+        predictor=ShortestPathPredictorForRailEnv(max_depth=50)
+    )
+
+    env, obs_space, act_space = create_environment(observation_builder, number_of_agents=3)
+    print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env, env.get_num_agents(), act_space, obs_space))
+
+
+    solver = FlatlandSolver(env)
 
     renderer = SimpleRenderer(env)
-
-    solver = TreeObsFlatlandSolver(env)
     solver.set_renderer(renderer)
     solver.deactivate_rendering()
-
-    solver.set_policy(create_deadlock_avoidance_policy(env, act_space, False))
-    solver.do_training(max_episodes=100)
 
     solver.set_policy(create_ppo_policy(obs_space, act_space))
     solver.do_training(max_episodes=100)
 
     solver.set_policy(create_dddqn_policy(obs_space, act_space))
     solver.do_training(max_episodes=100)
+
+    solver.activate_rendering()
+    solver.set_policy(create_deadlock_avoidance_policy(env, act_space, False))
+    solver.do_training(max_episodes=100)
+
+
 
 
