@@ -1,9 +1,9 @@
 import gym
 
-from solver.base_solver import BaseSolver
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQNPolicy, DDDQN_Param
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
+from solver.base_solver import BaseSolver
 
 
 def create_environment():

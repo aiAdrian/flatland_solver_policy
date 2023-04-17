@@ -1,9 +1,4 @@
-from collections import deque
-
-import numpy as np
 from flatland.envs.rail_env import RailEnv
-from flatland.utils.rendertools import AgentRenderVariant, RenderTool
-from torch.utils.tensorboard import SummaryWriter
 
 from solver.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver

@@ -12,6 +12,7 @@ from torch.distributions import Categorical
 from policy.learning_policy.learning_policy import LearningPolicy
 from policy.learning_policy.replay_buffer import ReplayBuffer
 
+
 # https://lilianweng.github.io/lil-log/2018/04/08/policy-gradient-algorithms.html
 
 class EpisodeBuffers:
@@ -93,15 +94,16 @@ class ActorCriticModel(nn.Module):
 
 
 PPO_Param = namedtuple('PPO_Param',
-                            ['hidden_size', 'buffer_size', 'batch_size', 'learning_rate',
-                             'gamma', 'buffer_min_size', 'use_gpu'])
+                       ['hidden_size', 'buffer_size', 'batch_size', 'learning_rate',
+                        'gamma', 'buffer_min_size', 'use_gpu'])
+
 
 class PPOPolicy(LearningPolicy):
     def __init__(self,
                  state_size: int,
                  action_size: int,
                  use_replay_buffer=False,
-                 in_parameters: Union[PPO_Param, None]=None):
+                 in_parameters: Union[PPO_Param, None] = None):
         super(PPOPolicy, self).__init__()
         # parameters
         self.ppo_parameters = in_parameters
@@ -137,14 +139,14 @@ class PPOPolicy(LearningPolicy):
         self.current_episode_memory = EpisodeBuffers()
         self.memory = ReplayBuffer(action_size, self.buffer_size, self.batch_size, self.device)
         self.loss = 0
-        self.actor_critic_model = ActorCriticModel(state_size, action_size,self.device,
+        self.actor_critic_model = ActorCriticModel(state_size, action_size, self.device,
                                                    hidsize1=self.hidsize,
                                                    hidsize2=self.hidsize)
         self.optimizer = optim.Adam(self.actor_critic_model.parameters(), lr=self.learning_rate)
         self.loss_function = nn.MSELoss()  # nn.SmoothL1Loss()
 
     def getName(self):
-        return 'PPOPolicy'
+        return self.__class__.__name__
 
     def reset(self, env):
         pass
@@ -212,11 +214,11 @@ class PPOPolicy(LearningPolicy):
         # convert data to torch tensors
         states, actions, rewards, states_next, dones, prob_actions = \
             torch.tensor(state_list, dtype=torch.float).to(self.device), \
-            torch.tensor(action_list).to(self.device), \
-            torch.tensor(reward_list, dtype=torch.float).to(self.device), \
-            torch.tensor(state_next_list, dtype=torch.float).to(self.device), \
-            torch.tensor(done_list, dtype=torch.float).to(self.device), \
-            torch.tensor(prob_a_list).to(self.device)
+                torch.tensor(action_list).to(self.device), \
+                torch.tensor(reward_list, dtype=torch.float).to(self.device), \
+                torch.tensor(state_next_list, dtype=torch.float).to(self.device), \
+                torch.tensor(done_list, dtype=torch.float).to(self.device), \
+                torch.tensor(prob_a_list).to(self.device)
 
         return states, actions, rewards, states_next, dones, prob_actions
 

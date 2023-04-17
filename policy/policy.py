@@ -1,5 +1,6 @@
 from flatland.envs.rail_env import RailEnv
 
+
 class Policy:
 
     def __init__(self):

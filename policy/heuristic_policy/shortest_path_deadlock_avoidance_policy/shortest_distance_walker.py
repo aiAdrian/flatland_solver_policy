@@ -3,6 +3,7 @@ from flatland.core.grid.grid4_utils import get_new_position
 from flatland.envs.fast_methods import fast_count_nonzero, fast_argmax
 from flatland.envs.rail_env import RailEnv, RailEnvActions
 
+
 class ShortestDistanceWalker:
     def __init__(self, env: RailEnv):
         self.env = env

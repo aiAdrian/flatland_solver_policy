@@ -96,7 +96,7 @@ class BaseSolver:
             print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f}'.format(episode,
                                                                            tot_reward,
                                                                            np.mean(scores_window)),
-                      end='\n' if episode % checkpoint_interval == 0 else '')
+                  end='\n' if episode % checkpoint_interval == 0 else '')
 
             writer.add_scalar("value", tot_reward, episode)
             writer.add_scalar("smoothed_value", np.mean(scores_window), episode)
@@ -104,4 +104,3 @@ class BaseSolver:
 
             if episode >= max_episodes:
                 break
-

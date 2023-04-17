@@ -14,8 +14,9 @@ from policy.learning_policy.learning_policy import LearningPolicy
 from policy.learning_policy.replay_buffer import ReplayBuffer
 
 DDDQN_Param = namedtuple('DDDQN_Param',
-                            ['hidden_size', 'buffer_size', 'batch_size', 'update_every', 'learning_rate',
-                             'tau', 'gamma', 'buffer_min_size', 'use_gpu'])
+                         ['hidden_size', 'buffer_size', 'batch_size', 'update_every', 'learning_rate',
+                          'tau', 'gamma', 'buffer_min_size', 'use_gpu'])
+
 
 class DDDQNPolicy(LearningPolicy):
     """Dueling Double DQN policy"""
@@ -70,7 +71,7 @@ class DDDQNPolicy(LearningPolicy):
             self.loss = 0.0
 
     def getName(self):
-        return 'DDDQNPolicy'
+        return self.__class__.__name__
 
     def act(self, handle, state, eps=0.):
         state = torch.from_numpy(state).float().unsqueeze(0).to(self.device)

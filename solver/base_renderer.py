@@ -7,4 +7,3 @@ class BaseRenderer:
 
     def render(self, episode, terminal):
         pass
-

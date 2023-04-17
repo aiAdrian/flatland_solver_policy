@@ -5,7 +5,7 @@ from flatland.envs.rail_env import RailEnv, RailEnvActions
 from flatland.envs.step_utils.states import TrainState
 
 from policy.heuristic_policy.heuristic_policy import HeuristicPolicy
-from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.shortest_distance_walker\
+from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.shortest_distance_walker \
     import ShortestDistanceWalker
 
 
@@ -52,7 +52,7 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
         self.full_shortest_distance_agent_map[(handle, position[0], position[1])] = 1
 
 
-class DeadLockAvoidanceAgent(HeuristicPolicy):
+class DeadLockAvoidancePolicy(HeuristicPolicy):
     def __init__(self, env: RailEnv, action_size, enable_eps=False, show_debug_plot=False):
         super(HeuristicPolicy, self).__init__()
         self.env = env
@@ -65,7 +65,7 @@ class DeadLockAvoidanceAgent(HeuristicPolicy):
         self.enable_eps = enable_eps
 
     def getName(self):
-        return 'DeadLockAvoidanceAgent'
+        return self.__class__.__name__
 
     def step(self, handle, state, action, reward, next_state, done):
         pass
