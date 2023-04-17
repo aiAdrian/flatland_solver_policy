@@ -41,10 +41,15 @@ def create_ppo_policy(observation_space: int, action_space: int) -> Policy:
     return PPOPolicy(observation_space, action_space, True)
 
 
+class CartPoolSolver(BaseSolver):
+    def get_name(self) -> str:
+        return self.__class__.__name__
+
+
 if __name__ == "__main__":
     env, obs_space, act_space = create_environment()
 
-    solver = BaseSolver(env)
+    solver = CartPoolSolver(env)
 
     renderer = CartPoolRenderer(env)
     solver.set_renderer(renderer)
