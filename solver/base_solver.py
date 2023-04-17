@@ -1,4 +1,5 @@
 from collections import deque
+from typing import Union
 
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
@@ -11,7 +12,7 @@ class BaseSolver:
         self.env = env
         self.policy = None
         self.rendering_enabled = False
-        self.renderer: BaseRenderer = None
+        self.renderer: Union[BaseRenderer, None] = None
 
     def get_name(self) -> str:
         return self.__class__.__name__
@@ -36,9 +37,9 @@ class BaseSolver:
     def reset(self):
         state = self.env.reset()
         self.policy.reset(self.env)
-        return state
+        return state, {}
 
-    def run_step(self, env, policy, state, eps, training_mode):
+    def run_step(self, env, policy, state, eps, info, training_mode):
         handle = 0
         tot_reward = 0
         all_terminal = True
@@ -56,15 +57,15 @@ class BaseSolver:
         policy.step(handle, state, action, reward, state_next, terminal)
 
         policy.end_step(train=training_mode)
-        return state_next, tot_reward, all_terminal
+        return state_next, tot_reward, all_terminal, info
 
     def update_state(self, state_next):
         return np.copy(state_next)
 
-    def run_internal_episode(self, episode, env, policy, state, eps, training_mode):
+    def run_internal_episode(self, episode, env, policy, state, eps, info, training_mode):
         tot_reward = 0
         while True:
-            state_next, reward, terminal = self.run_step(env, policy, state, eps, training_mode)
+            state_next, reward, terminal, info = self.run_step(env, policy, state, eps, info, training_mode)
             tot_reward += reward
             state = self.update_state(state_next)
             self.render(episode, terminal)
@@ -73,10 +74,10 @@ class BaseSolver:
         return tot_reward
 
     def run_episode(self, episode, env, policy, eps, training_mode):
-        state = self.reset()
+        state, info = self.reset()
 
         policy.start_episode(train=training_mode)
-        tot_reward = self.run_internal_episode(episode, env, policy, state, eps, training_mode)
+        tot_reward = self.run_internal_episode(episode, env, policy, state, eps, info, training_mode)
         policy.end_episode(train=training_mode)
 
         return tot_reward

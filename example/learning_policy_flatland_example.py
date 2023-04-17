@@ -17,10 +17,11 @@ from solver.flatland_solver import FlatlandSolver
 
 
 class SimpleRenderer(BaseRenderer):
-    def __init__(self, rail_env: RailEnv):
+    def __init__(self, rail_env: RailEnv, render_each_episode=1):
         super(SimpleRenderer, self).__int__()
         self.env = rail_env
         self.renderer = self._create_renderer()
+        self.render_each_episode = render_each_episode
 
     def _create_renderer(self, show_debug=False,
                          agent_render_variant=AgentRenderVariant.AGENT_SHOWS_OPTIONS_AND_BOX,
@@ -37,7 +38,7 @@ class SimpleRenderer(BaseRenderer):
         self.renderer.reset()
 
     def render(self, episode, terminal):
-        if not terminal and episode % 50 != 0:
+        if not terminal and (episode-1) % self.render_each_episode != 0:
             return
         self.renderer.render_env(
             show=True,
@@ -116,20 +117,21 @@ if __name__ == "__main__":
     )
 
     env, obs_space, act_space = create_environment(observation_builder, number_of_agents=3)
-    print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env, env.get_num_agents(), act_space, obs_space))
+    print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env.__class__.__name__,
+                                                                   env.get_num_agents(), act_space, obs_space))
 
     solver = FlatlandSolver(env)
 
     renderer = SimpleRenderer(env)
     solver.set_renderer(renderer)
 
-    solver.activate_rendering()
-    solver.set_policy(create_deadlock_avoidance_policy(env, act_space, False))
-    solver.do_training(max_episodes=100)
-
     solver.deactivate_rendering()
     solver.set_policy(create_ppo_policy(obs_space, act_space))
-    solver.do_training(max_episodes=100)
+    solver.do_training(max_episodes=1000)
 
     solver.set_policy(create_dddqn_policy(obs_space, act_space))
-    solver.do_training(max_episodes=100)
+    solver.do_training(max_episodes=1000)
+
+    solver.activate_rendering()
+    solver.set_policy(create_deadlock_avoidance_policy(env, act_space, False))
+    solver.do_training(max_episodes=10)
