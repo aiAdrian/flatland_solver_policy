@@ -77,7 +77,7 @@ def _split_node_into_feature_groups(node) -> (np.ndarray, np.ndarray, np.ndarray
 
 
 def _split_subtree_into_feature_groups(node, current_tree_depth: int, max_tree_depth: int) -> (
-np.ndarray, np.ndarray, np.ndarray):
+        np.ndarray, np.ndarray, np.ndarray):
     if node == -np.inf:
         remaining_depth = max_tree_depth - current_tree_depth
         # reference: https://stackoverflow.com/questions/515214/total-number-of-nodes-in-a-tree-data-structure

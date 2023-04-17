@@ -1,6 +1,5 @@
 from flatland.envs.rail_env import RailEnv
 
-from solver.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver
 
 
@@ -9,10 +8,8 @@ class FlatlandSolver(BaseSolver):
         super(FlatlandSolver, self).__init__(env)
         self.policy = None
 
-
     def get_name(self) -> str:
         return self.__class__.__name__
-
 
     def reset(self):
         state, _ = self.env.reset()

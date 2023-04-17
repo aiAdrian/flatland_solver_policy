@@ -15,6 +15,7 @@ class CartPoolRenderer(BaseRenderer):
     def render(self, episode, terminal):
         self.env.render()
 
+
 def create_environment():
     environment = gym.make("CartPole-v1")
     observation_space = environment.observation_space.shape[0]
