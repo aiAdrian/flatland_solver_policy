@@ -13,11 +13,11 @@ used there observation can be replaced by a dummy observation.
 
 Environments which can be used and are tested:
 
-- openAI cartpool
+- [openAI cartpool](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/learning_policy_flatland_example.py)
     - Learning policy
         - DDDQNPolicy
         - PPOPolicy
-- Flatland
+- [Flatland Problem Solver](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/learning_policy_flatland_example.py)
     - Learning policy
         - DDDQNPolicy
         - PPOPolicy
