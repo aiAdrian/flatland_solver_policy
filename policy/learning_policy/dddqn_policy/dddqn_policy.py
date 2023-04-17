@@ -70,7 +70,7 @@ class DDDQNPolicy(LearningPolicy):
             self.memory = ReplayBuffer(action_size, 1, 1, self.device)
             self.loss = 0.0
 
-    def getName(self):
+    def get_name(self):
         return self.__class__.__name__
 
     def act(self, handle, state, eps=0.):

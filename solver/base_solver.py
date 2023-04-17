@@ -94,7 +94,7 @@ class BaseSolver:
         episode = 0
         checkpoint_interval = 50
         scores_window = deque(maxlen=100)
-        writer = SummaryWriter(comment=self.get_name() + "_" + self.policy.getName())
+        writer = SummaryWriter(comment=self.get_name() + "_" + self.policy.get_name())
 
         while True:
             episode += 1

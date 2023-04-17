@@ -145,7 +145,7 @@ class PPOPolicy(LearningPolicy):
         self.optimizer = optim.Adam(self.actor_critic_model.parameters(), lr=self.learning_rate)
         self.loss_function = nn.MSELoss()  # nn.SmoothL1Loss()
 
-    def getName(self):
+    def get_name(self):
         return self.__class__.__name__
 
     def reset(self, env):

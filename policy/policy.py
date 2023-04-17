@@ -4,9 +4,9 @@ from flatland.envs.rail_env import RailEnv
 class Policy:
 
     def __init__(self):
-        print('>> ' + self.getName())
+        print('>> ' + self.get_name())
 
-    def getName(self):
+    def get_name(self):
         raise NotImplementedError
 
     def save(self, filename):

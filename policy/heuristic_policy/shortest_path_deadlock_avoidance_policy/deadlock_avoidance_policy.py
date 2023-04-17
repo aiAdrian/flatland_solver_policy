@@ -64,7 +64,7 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
         self.show_debug_plot = show_debug_plot
         self.enable_eps = enable_eps
 
-    def getName(self):
+    def get_name(self):
         return self.__class__.__name__
 
     def step(self, handle, state, action, reward, next_state, done):
