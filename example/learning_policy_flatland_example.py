@@ -38,7 +38,7 @@ class SimpleRenderer(BaseRenderer):
         self.renderer.reset()
 
     def render(self, episode, terminal):
-        if not terminal and (episode-1) % self.render_each_episode != 0:
+        if not terminal and (episode - 1) % self.render_each_episode != 0:
             return
         self.renderer.render_env(
             show=True,
