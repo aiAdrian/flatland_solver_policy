@@ -4,13 +4,14 @@ from typing import Union
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
+from policy.policy import Policy
 from solver.base_renderer import BaseRenderer
 
 
 class BaseSolver:
     def __init__(self, env):
         self.env = env
-        self.policy = None
+        self.policy: Union[Policy, None] = None
         self.rendering_enabled = False
         self.renderer: Union[BaseRenderer, None] = None
 
@@ -21,7 +22,7 @@ class BaseSolver:
         self.renderer = renderer
         self.activate_rendering()
 
-    def set_policy(self, policy):
+    def set_policy(self, policy: Policy):
         self.policy = policy
 
     def activate_rendering(self):
@@ -30,7 +31,7 @@ class BaseSolver:
     def deactivate_rendering(self):
         self.rendering_enabled = False
 
-    def render(self, episode, terminal):
+    def render(self, episode: int, terminal: bool):
         if self.rendering_enabled:
             self.renderer.render(episode, terminal)
 
@@ -115,3 +116,11 @@ class BaseSolver:
 
             if episode >= max_episodes:
                 break
+
+    def save_policy(self, filename: str):
+        if self.policy is not None:
+            self.policy.save(filename)
+
+    def load_policy(self, filename: str):
+        if self.policy is not None:
+            self.policy.load(filename)
