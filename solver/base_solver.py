@@ -3,12 +3,22 @@ from collections import deque
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
+from solver.base_renderer import BaseRenderer
+
 
 class BaseSolver:
     def __init__(self, env):
         self.env = env
         self.policy = None
         self.rendering_enabled = False
+        self.renderer: BaseRenderer = None
+
+    def get_name(self) -> str:
+        return self.__class__.__name__
+
+    def set_renderer(self, renderer: BaseRenderer):
+        self.renderer = renderer
+        self.activate_rendering()
 
     def set_policy(self, policy):
         self.policy = policy
@@ -21,7 +31,7 @@ class BaseSolver:
 
     def render(self, episode, terminal):
         if self.rendering_enabled:
-            self.env.render()
+            self.renderer.render(episode, terminal)
 
     def reset(self):
         state = self.env.reset()
@@ -84,7 +94,7 @@ class BaseSolver:
         episode = 0
         checkpoint_interval = 50
         scores_window = deque(maxlen=100)
-        writer = SummaryWriter(comment="_" + self.policy.getName())
+        writer = SummaryWriter(comment=self.get_name() + "_" + self.policy.getName())
 
         while True:
             episode += 1

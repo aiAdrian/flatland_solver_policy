@@ -8,15 +8,11 @@ class FlatlandSolver(BaseSolver):
     def __init__(self, env: RailEnv):
         super(FlatlandSolver, self).__init__(env)
         self.policy = None
-        self.renderer: BaseRenderer = None
 
-    def set_renderer(self, renderer: BaseRenderer):
-        self.renderer = renderer
-        self.activate_rendering()
 
-    def render(self, episode, terminal):
-        if self.rendering_enabled:
-            self.renderer.render(episode, terminal)
+    def get_name(self) -> str:
+        return self.__class__.__name__
+
 
     def reset(self):
         state, _ = self.env.reset()

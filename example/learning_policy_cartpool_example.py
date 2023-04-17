@@ -3,8 +3,17 @@ import gym
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQNPolicy, DDDQN_Param
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
+from solver.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver
 
+
+class CartPoolRenderer(BaseRenderer):
+    def __init__(self, environment):
+        super(CartPoolRenderer, self).__int__()
+        self.env = environment
+
+    def render(self, episode, terminal):
+        self.env.render()
 
 def create_environment():
     environment = gym.make("CartPole-v1")
@@ -35,6 +44,10 @@ if __name__ == "__main__":
     env, obs_space, act_space = create_environment()
 
     solver = BaseSolver(env)
+
+    renderer = CartPoolRenderer(env)
+    solver.set_renderer(renderer)
+    solver.deactivate_rendering()
 
     solver.set_policy(create_dddqn_policy(obs_space, act_space))
     solver.do_training(max_episodes=1000)
