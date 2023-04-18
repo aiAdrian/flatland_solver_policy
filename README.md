@@ -6,7 +6,7 @@ The policy abstraction allows to solve the Flatland problem
 in a very accurate way. The user mustn't care about the Flatland integration.
 
 The goal of this library is that user just extend the abstract policy, create
-a environment and enable rendering if required. If no reinforcement learning is
+an environment and enable rendering if required. If no reinforcement learning is
 used there observation can be replaced by a dummy observation.
 
 ### Example
