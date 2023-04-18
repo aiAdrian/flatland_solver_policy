@@ -4,8 +4,11 @@
 
 Policy abstraction makes it possible to solve the flatland problem in a very accurate way. The user does not have to care about flatland integration.
 
-The goal of this library is to allow the user to easily extend the abstract policy to solve the flatland problem. The user still needs to create an environment with its parameters and can enable rendering if needed. If reinforcement learning is not used
-is used, the observation can be replaced by the dummy observation.
+The goal of this library is to allow the user to easily extend the abstract policy to solve the flatland problem. 
+The user just needs to create an environment and a policy (solver) to solve the flatland problem. Rendering can added as an option.
+The policy can be a learned one or a manual written heuristic or even any other solver/idea. 
+The obseevation can as well exchanged through the abstraction.
+If reinforcement learning is not used, the observation can be replaced by the dummy observation.
 
 
 ### Example
