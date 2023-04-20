@@ -20,7 +20,6 @@ class BaseSolver:
 
     def set_renderer(self, renderer: BaseRenderer):
         self.renderer = renderer
-        self.activate_rendering()
 
     def set_policy(self, policy: Policy):
         self.policy = policy
