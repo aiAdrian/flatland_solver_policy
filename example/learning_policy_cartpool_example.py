@@ -71,7 +71,6 @@ if __name__ == "__main__":
 
     renderer = CartPoolRenderer(env)
     solver.set_renderer(renderer)
-    solver.deactivate_rendering()
 
     solver.set_policy(create_dddqn_policy(obs_space, act_space))
     solver.do_training(max_episodes=1000)
