@@ -32,6 +32,7 @@ class FlatlandSolver(BaseSolver):
 
         actions = {}
         update_values = [False] * env.get_num_agents()
+        terminal_all = True
         for handle in self.env.get_agent_handles():
             policy.start_act(handle, train=training_mode)
 
@@ -53,7 +54,10 @@ class FlatlandSolver(BaseSolver):
         state_next = self.transform_state(raw_state_next)
 
         for handle in self.env.get_agent_handles():
-            if update_values[handle] or terminal['__all__']:
+            terminal_alrl &= terminal[handle]
+
+        for handle in self.env.get_agent_handles():
+            if update_values[handle] or terminal_all:
                 policy.step(handle,
                             state[handle],
                             actions[handle],

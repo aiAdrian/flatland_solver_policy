@@ -40,21 +40,22 @@ class BaseSolver:
         return state, {}
 
     def run_step(self, env, policy, state, eps, info, training_mode):
-        handle = 0
+
         tot_reward = 0
         all_terminal = True
         policy.start_step(train=training_mode)
 
-        policy.start_act(handle, train=training_mode)
-        action = policy.act(handle, state, eps)
-        policy.end_act(handle, train=training_mode)
+        for handle in [0]:
+            policy.start_act(handle, train=training_mode)
+            action = policy.act(handle, state, eps)
+            policy.end_act(handle, train=training_mode)
 
-        state_next, reward, terminal, info = env.step(action)
+            state_next, reward, terminal, info = env.step(action)
 
-        all_terminal = all_terminal & terminal
-        tot_reward += reward
+            all_terminal = all_terminal & terminal
+            tot_reward += reward
 
-        policy.step(handle, state, action, reward, state_next, terminal)
+            policy.step(handle, state, action, reward, state_next, terminal)
 
         policy.end_step(train=training_mode)
         return state_next, tot_reward, all_terminal, info
