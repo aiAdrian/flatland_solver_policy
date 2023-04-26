@@ -3,7 +3,7 @@ from typing import Optional, List
 import numpy as np
 from flatland.envs.observations import TreeObsForRailEnv
 
-from example.flatten_tree_observation_for_rail_env_utils import normalize_observation
+from observation.flatten_tree_observation_for_rail_env_utils import normalize_observation
 
 
 class FlattenTreeObsForRailEnv(TreeObsForRailEnv):
