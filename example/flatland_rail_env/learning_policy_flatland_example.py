@@ -1,51 +1,17 @@
-import numpy as np
 from flatland.core.env_observation_builder import ObservationBuilder
 from flatland.envs.malfunction_generators import ParamMalfunctionGen, MalfunctionParameters
 from flatland.envs.predictions import ShortestPathPredictorForRailEnv
 from flatland.envs.rail_env import RailEnv
 from flatland.envs.rail_generators import sparse_rail_generator
-from flatland.utils.rendertools import AgentRenderVariant, RenderTool
 
+from example.flatland_rail_env.flatland_simple_renderer import FlatlandSimpleRenderer
 from observation.flatland.flatten_tree_observation_for_rail_env.flatten_tree_observation_for_rail_env import FlattenTreeObsForRailEnv
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
     DeadLockAvoidancePolicy
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQN_Param, DDDQNPolicy
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
-from solver.base_renderer import BaseRenderer
 from solver.flatland_solver import FlatlandSolver
-
-
-class SimpleRenderer(BaseRenderer):
-    def __init__(self, rail_env: RailEnv, render_each_episode=1):
-        super(SimpleRenderer, self).__int__()
-        self.env = rail_env
-        self.renderer = self._create_renderer()
-        self.render_each_episode = render_each_episode
-
-    def _create_renderer(self, show_debug=False,
-                         agent_render_variant=AgentRenderVariant.AGENT_SHOWS_OPTIONS_AND_BOX,
-                         screen_width_scale=40, screen_height_scale=25):
-        render_tool = RenderTool(self.env,
-                                 agent_render_variant=agent_render_variant,
-                                 show_debug=show_debug,
-                                 screen_width=int(np.round(self.env.width * screen_width_scale)),
-                                 screen_height=int(np.round(self.env.height * screen_height_scale)))
-        render_tool.reset()
-        return render_tool
-
-    def reset(self):
-        self.renderer.reset()
-
-    def render(self, episode, terminal):
-        if not terminal and (episode - 1) % self.render_each_episode != 0:
-            return
-        self.renderer.render_env(
-            show=True,
-            frames=False,
-            show_observations=True,
-            show_predictions=False
-        )
 
 
 def create_flatland_env(obs_builder: ObservationBuilder,
@@ -122,7 +88,7 @@ if __name__ == "__main__":
 
     solver = FlatlandSolver(env)
 
-    renderer = SimpleRenderer(env)
+    renderer = FlatlandSimpleRenderer(env)
     solver.set_renderer(renderer)
 
     solver.set_policy(create_ppo_policy(obs_space, act_space))
