@@ -6,7 +6,7 @@ from flatland.envs.rail_env import RailEnv
 from flatland.envs.rail_generators import sparse_rail_generator
 from flatland.utils.rendertools import AgentRenderVariant, RenderTool
 
-from observation.flatten_tree_observation_for_rail_env import FlattenTreeObsForRailEnv
+from observation.flatland.flatten_tree_observation_for_rail_env.flatten_tree_observation_for_rail_env import FlattenTreeObsForRailEnv
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
     DeadLockAvoidancePolicy
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQN_Param, DDDQNPolicy
