@@ -16,7 +16,19 @@ If reinforcement learning is not used, the observation can be replaced by the du
  
 ### API 
 [Policy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/policy.py)
+
 [BaseSolver](https://github.com/aiAdrian/flatland_solver_policy/blob/main/solver/base_solver.py)
+
+Here is a simple flow chart:
+
+```mermaid
+graph TD;
+    do_training(...)-->B;
+    A-->C;
+    B-->D;
+    C-->D;
+```
+
 
 ### Examples
 
