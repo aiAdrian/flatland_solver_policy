@@ -34,7 +34,8 @@ gitGraph:
     branch do_training
     checkout do_training
     commit id:"1111"
-    checkout Solver
+    branch newbranch
+    checkout newbranch
     commit id:"2222"
     merge do_training
     commit id:"3333"
