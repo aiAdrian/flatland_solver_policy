@@ -1,20 +1,10 @@
-import time
 from typing import Union
 
 import numpy as np
-from flatland.envs.rail_env import RailEnv
-from flatland.envs.rail_env_action import RailEnvActions
-
-from flatland_railway_extension.FlatlandEnvironmentHelper import FlatlandEnvironmentHelper
 from flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
-from flatland_railway_extension.RailroadSwitchCluster import RailroadSwitchCluster
 from flatland_railway_extension.environments.DynamicAgent import DynamicAgent
 from flatland_railway_extension.environments.FlatlandDynamics import FlatlandDynamics
-from flatland_railway_extension.environments.FlatlandResourceAllocator import FlatlandResourceAllocator
 from flatland_railway_extension.environments.InfrastructureData import InfrastructureData
-from flatland_railway_extension.environments.MultiResourcesAllocationRailEnv import MultiResourcesAllocationRailEnv
-from flatland_railway_extension.utils.FlatlandDynamicsRenderer import FlatlandDynamicsRenderer
-from flatland_railway_extension.utils.FlatlandRenderer import FlatlandRenderer
 
 from example.flatland_dynamics.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
 from policy.policy import Policy

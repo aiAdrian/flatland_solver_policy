@@ -1,6 +1,5 @@
-import numpy as np
 from flatland.envs.rail_env import RailEnv
-from flatland.utils.rendertools import AgentRenderVariant, RenderTool
+from flatland.utils.rendertools import AgentRenderVariant
 from flatland_railway_extension.utils.FlatlandDynamicsRenderer import FlatlandDynamicsRenderer
 
 from solver.base_renderer import BaseRenderer
