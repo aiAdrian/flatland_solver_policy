@@ -1,8 +1,8 @@
 import gym
 
-from example.openai_gym_cartpool.cartpool_analytical_policy import CartPoolAnalyticalPolicy
-from example.openai_gym_cartpool.cartpool_renderer import CartPoolRenderer
-from example.openai_gym_cartpool.cartpool_solver import CartPoolSolver
+from example.gymnasium_cartpool.cartpool_analytical_policy import CartPoolAnalyticalPolicy
+from example.gymnasium_cartpool.cartpool_renderer import CartPoolRenderer
+from example.gymnasium_cartpool.cartpool_solver import CartPoolSolver
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQNPolicy, DDDQN_Param
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy

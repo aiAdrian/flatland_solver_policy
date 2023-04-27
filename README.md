@@ -15,16 +15,40 @@ If reinforcement learning is not used, the observation can be replaced by the du
 
 Environments which can be used and are tested:
 
-- [openAI cartpool](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/learning_policy_cartpool_example.py)
+#### [Gymnasium](https://github.com/Farama-Foundation/Gymnasium) 
+
+- Environments:
+    - [Cartpool](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/gymnasium_cartpool/example_cartpool.py)
+    
+
+- Policy:
     - Learning policy
         - DDDQNPolicy
         - PPOPolicy
-- [Flatland Problem Solver](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/learning_policy_flatland_example.py)
+        - [AnalyticalPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/gymnasium_cartpool/cartpool_analytical_policy.py)
+    
+
+- Extras:
+    - [Rendering](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/gymnasium_cartpool/cartpool_renderer.py)
+
+#### [Flatland](https://github.com/flatland-association/flatland-rl)
+
+- Environments:
+    - [Flatland](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/flatland_rail_env/example_flatland.py)
+    - [Flatland Dynamics](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/flatland_dynamics/example_flatland_dynamics.py)
+    
+
+- Policy:
     - Learning policy
-        - DDDQNPolicy
-        - PPOPolicy
-    - Heuristic policy
+      - DDDQNPolicy
+      - PPOPolicy
+      - Heuristic policy
         - DeadLockAvoidancePolicy
+    
+
+- Extras:
+    - Rendering
+   
 
 Training / quality logging is done with tensorboard. Navigate to the example folder
 and call ``tensorboard --logdir runs``
