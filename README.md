@@ -31,21 +31,18 @@ graph TD;
 
 ```mermaid
 gitGraph:
+    commit "Adrian"
     branch do_training
     checkout do_training
-    commit id:"1111"
-    branch newbranch
-    checkout newbranch
-    commit id:"2222"
+    commit id:"1111" 
+    checkout main
+    commit type: HIGHLIGHT
+    commit id:"2222" 
     merge do_training
-    commit id:"3333"
+    commit id:"3333" 
+    branch b2
     commit id:"4444"
-    commit id:"5555"
-    branch run_episode
-    branch run_internal_episode
-    branch run_step
-    branch run_step
-    commit id:"666666"
+    commit id:"5555" 
 ```
 Solver-->do_training;
 do_training-->for_all_episode;
