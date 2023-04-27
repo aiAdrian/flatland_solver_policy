@@ -114,7 +114,8 @@ flowchart TD
     D1 --> D2(policy.start_episode)
     D2 --> |run_internal_episode| E{Step loop:\n more steps?}
     F1 --> |collect actions| G{Agent loop:\n more agents?}
-    E ---> |yes : run_step| F1(policy.start_step)
+    E ---> |yes : run_step| E1(before_step_starts)
+    E1 ---> F1(policy.start_step)
     G -->  |yes : get action for agent| G1(policy.start_step)
     G1 --> G2(policy.act)
     G2 --> G3(policy.end_act)
@@ -122,11 +123,12 @@ flowchart TD
     G --> |no : all actions collected|F2(env.step)
     F2 --> F3(policy.step)
     F3 --> F4(policy.end_step)
-    F5 --> E 
+    F6 --> E 
     D5 --> C
     E ---> |no| D4(policy.end_episode)
     D4 --> D5(after_episode_ends) 
     F4 ----> F5(render)
+    F5 ----> F6(after_step_ends)
     
     Env(Environment)
     Policy(Policy)

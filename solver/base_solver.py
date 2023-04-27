@@ -66,7 +66,7 @@ class BaseSolver:
     def before_step_starts(self):
         return False
 
-    def after_steps_ends(self):
+    def after_step_ends(self):
         return False
 
     def run_internal_episode(self, episode, env, policy, state, eps, info, training_mode):
@@ -81,7 +81,7 @@ class BaseSolver:
             state = self.update_state(state_next)
             self.render(episode, step, terminal)
 
-            if self.after_steps_ends():
+            if self.after_step_ends():
                 return tot_reward
 
             if terminal:
