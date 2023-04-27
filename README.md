@@ -35,14 +35,9 @@ gitGraph:
     branch "do_training"
     checkout "do_training"
     commit id:"1111" 
-    checkout main
-    commit type: HIGHLIGHT
+    checkout main 
     commit id:"2222" 
     merge "do_training"
-    commit id:"3333" 
-    branch b2
-    commit id:"4444"
-    commit id:"5555" 
 ```
 
 gitGraph:
