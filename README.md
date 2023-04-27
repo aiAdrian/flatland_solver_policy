@@ -30,16 +30,19 @@ graph TD;
 
 
 ```mermaid
-gitGraph
-       commit  
-       commit  
-       branch develop
-       commit  
-       commit  
-       commit  
-       checkout main
-       commit   
-       commit  
+gitGraph:
+    commit "Ashish"
+    branch newbranch
+    checkout newbranch
+    commit id:"1111"
+    commit tag:"test"
+    checkout main
+    commit type: HIGHLIGHT
+    commit
+    merge newbranch
+    commit
+    branch b2
+    commit
 ```
 Solver-->do_training;
 do_training-->for_all_episode;
