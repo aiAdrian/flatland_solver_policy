@@ -200,39 +200,17 @@ solver.do_training(max_episodes=1000)
 
 Environments which can be used and are tested:
 
-#### [Gymnasium](https://github.com/Farama-Foundation/Gymnasium)
+- [Gymnasium](https://github.com/Farama-Foundation/Gymnasium)
+- [Flatland](https://github.com/flatland-association/flatland-rl)
+- [Flatland Railway Extension](https://github.com/aiAdrian/flatland_railway_extension)
 
-- Environments:
-    - [Cartpool](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/gymnasium_cartpool/example_cartpool.py)
+| Policy                  | Cartpool | Flatland | Flatland Dynamics |
+|-------------------------|----------|----------|-------------------|
+| AnalyticalPolicy        | yes      | no       | no                |
+| DDDQNPolicy             | yes      | yes      | yes               |
+| PPOPolicy               | yes      | yes      | yes               |
+| DeadLockAvoidancePolicy | no       | yes      | yes               |
 
-
-- Policy:
-    - Learning policy
-        - [DDDQNPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/dddqn_policy/dddqn_policy.py)
-        - [PPOPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/ppo_policy/ppo_agent.py)
-    - [AnalyticalPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/gymnasium_cartpool/cartpool_analytical_policy.py)
-
-
-- Extras:
-    - [Rendering](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/gymnasium_cartpool/cartpool_renderer.py)
-
-#### [Flatland](https://github.com/flatland-association/flatland-rl)
-
-- Environments:
-    - [Flatland](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/flatland_rail_env/example_flatland.py)
-    - [Flatland Dynamics](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/flatland_dynamics/example_flatland_dynamics.py)
-
-
-- Policy:
-    - Learning policy
-        - [DDDQNPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/dddqn_policy/dddqn_policy.py)
-        - [PPOPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/ppo_policy/ppo_agent.py)
-    - Heuristic policy
-        - [DeadLockAvoidancePolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/heuristic_policy/shortest_path_deadlock_avoidance_policy/deadlock_avoidance_policy.py)
-
-
-- Extras:
-    - Rendering
-
+### Tensorboard 
 Training / quality logging is done with tensorboard. Navigate to the example folder
 and call ``tensorboard --logdir runs``
