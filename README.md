@@ -28,10 +28,10 @@ graph TD;
     Renderer-->Solver;
 ```
 
-
+### Solver
 ```mermaid
 flowchart TD
-    B(Solver.do_training)
+    B(do_training)
     B --> |training: on| C{Episode loop}
     C --> |next episode : run_episode| D1(before_episode_starts)
     D1 --> D2(policy.start_episode)
