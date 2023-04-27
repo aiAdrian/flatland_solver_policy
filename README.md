@@ -30,11 +30,24 @@ graph TD;
 
 
 ```mermaid
-graph TD;
-    Solver-->do_training;
-    do_training-->for_all_episode;
+sequenceDiagram
+    Alice ->> Bob: Hello Bob, how are you?
+    Bob-->>John: How about you John?
+    Bob--x Alice: I am good thanks!
+    Bob-x John: I am good thanks!
+    Note right of John: Bob thinks a long<br/>long time, so long<br/>that the text does<br/>not fit on a row.
+
+    Bob-->Alice: Checking with John...
+    Alice->John: Yes... John, how are you?
+    
+    Solver ->> do_training;
+    do_training ->> for_all_episode;
     for_all_episode-->run_episode;
-    run_episode-->before_episode_starts;     run_episode-->policy.start_episode;     run_episode-->run_internal_episode;     run_episode-->policy.end_episode;     run_episode-->after_episode_ends;
+    run_episode-->before_episode_starts;  
+    run_episode-->policy.start_episode;  
+    run_episode-->run_internal_episode;   
+    run_episode-->policy.end_episode;  
+    run_episode-->after_episode_ends;
     run_internal_episode-->before_step_starts
     run_internal_episode-->run_step
     run_internal_episode-->render
