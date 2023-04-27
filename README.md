@@ -28,6 +28,7 @@ graph TD;
     Renderer-->Solver;
 ```
 
+
 ```mermaid
 graph TD;
     Solver-->do_training;
@@ -41,14 +42,14 @@ graph TD;
     run_internal_episode-->run_step
     run_internal_episode-->render
     run_internal_episode-->after_steps_ends
-    run_step->policy.start_step
-    run_step->for_all_agents
-    for_all_agents->policy.start_act
-    for_all_agents->policy.act 
-    for_all_agents->policy.end_act 
-    run_step->env.step
-    run_step->policy.step
-    run_step->policy.end_step
+    run_step-->policy.start_step
+    run_step-->for_all_agents
+    for_all_agents-->policy.start_act
+    for_all_agents-->policy.act 
+    for_all_agents-->policy.end_act 
+    run_step-->env.step
+    run_step-->policy.step
+    run_step-->policy.end_step
 ```
 
 
