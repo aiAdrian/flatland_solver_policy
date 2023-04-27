@@ -42,7 +42,7 @@ flowchart TD
     G1 --> G2(policy.act)
     G2 --> G3(policy.end_act)
     G3 --> G
-    G --> |no more agents -> all actions collected|F2(env.step)
+    G --> |no more agents : all actions collected|F2(env.step)
     F2 --> F3(policy.step)
     F3 --> F4(policy.end_step)
     F5 --> E
