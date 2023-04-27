@@ -110,7 +110,8 @@ flowchart TD
     Solver(("do_training(...)"))
     Solver --> |training: on| C{Episode loop:\n more episodes?}
     C -------------> |no| End(( done ))
-    C --> |yes : run_episode| D1(before_episode_starts)
+    C --> |yes : run_episode| D0(env.reset)
+    D0 -->  D1(before_episode_starts)
     D1 --> D2(policy.start_episode)
     D2 --> |run_internal_episode| E{Step loop:\n more steps?}
     F1 --> |collect actions| G{Agent loop:\n more agents?}
@@ -143,6 +144,7 @@ flowchart TD
     style F4 fill:#ffe,stroke:#333,stroke-width:1px 
 
     style Policy fill:#ffe,stroke:#333,stroke-width:1px 
+    style D0 fill:#fcc,stroke:#333,stroke-width:1px,color:#300
     style F2 fill:#fcc,stroke:#333,stroke-width:1px,color:#300
     style Env fill:#fcc,stroke:#333,stroke-width:1px,color:#300
 ```
