@@ -107,15 +107,19 @@ classDiagram
 
 ```mermaid
 flowchart TD
-    Solver((do_training))
-    Solver --> |training: on| C{Episode loop:\n more episodes?}
-    C -------------> |no| End(( done ))
+    Env(Environment)
+    Policy(Policy)
+    Solver(BaseSolver)
+    Policy ~~~ Root
+    Root((do_training))
+    Root ---> |training: on| C{Episode loop:\n more episodes?}
+    C --------------> |no| End(( done ))
     C --> |yes : run_episode| D0(env.reset)
     D0 --> D2(policy.start_episode)
     D2 --> |run_internal_episode| E{Step loop:\n more steps?}
     F1 --> |collect actions| G{Agent loop:\n more agents?}
     E ---> |yes : run_step| F1(policy.start_step)
-    G -->  |yes : get action for agent| G1(policy.start_step)
+    G --->  |yes : get action for agent| G1(policy.start_step)
     G1 --> G2(policy.act)
     G2 --> G3(policy.end_act)
     G3 --> G
@@ -123,16 +127,15 @@ flowchart TD
     F2 --> F3(policy.step)
     F3 --> F4(policy.end_step)
     F6 --> E 
-    D4 --> C
-    E ---> |no| D4(policy.end_episode)
     F4 --> F6(render)
-    
-    Env(Environment)
-    Policy(Policy)
+
+    E ---> |no| D4(policy.end_episode)
+    D4 --> C
+
     
     style D2 fill:#ffe,stroke:#333,stroke-width:1px 
     style F1 fill:#ffe,stroke:#333,stroke-width:1px 
-    style D4 fill:#ffe,stroke:#333,stroke-width:1px 
+    style D4 fill:#ffe,stroke:#333,stroke-width:1px
     style G1 fill:#ffe,stroke:#333,stroke-width:1px 
     style G2 fill:#ffe,stroke:#333,stroke-width:1px 
     style G3 fill:#ffe,stroke:#333,stroke-width:1px 
@@ -142,7 +145,7 @@ flowchart TD
     style Policy fill:#ffe,stroke:#333,stroke-width:1px 
     style D0 fill:#fcc,stroke:#333,stroke-width:1px,color:#300
     style F2 fill:#fcc,stroke:#333,stroke-width:1px,color:#300
-    style Env fill:#fcc,stroke:#333,stroke-width:1px,color:#300
+    style Env fill:#fcc,stroke:#333,stroke-width:1px,color:#300        
 ```
 
 ### Examples
