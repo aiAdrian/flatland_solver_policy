@@ -23,8 +23,8 @@ Environments which can be used and are tested:
 
 - Policy:
     - Learning policy
-        - DDDQNPolicy
-        - PPOPolicy
+        - [DDDQNPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/dddqn_policy/dddqn_policy.py)
+        - [PPOPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/ppo_policy/ppo_agent.py)
     - [AnalyticalPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/gymnasium_cartpool/cartpool_analytical_policy.py)
     
 
@@ -41,10 +41,10 @@ Environments which can be used and are tested:
 
 - Policy:
     - Learning policy
-      - DDDQNPolicy
-      - PPOPolicy
+      - [DDDQNPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/dddqn_policy/dddqn_policy.py)
+      - [PPOPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/ppo_policy/ppo_agent.py)
     - Heuristic policy
-      - DeadLockAvoidancePolicy
+      - [DeadLockAvoidancePolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/heuristic_policy/shortest_path_deadlock_avoidance_policy/deadlock_avoidance_policy.py)
     
 
 - Extras:
