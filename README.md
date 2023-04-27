@@ -30,50 +30,26 @@ graph TD;
 
 
 ```mermaid
-gitGraph:
-    commit id:" "
-    commit id:"  "
-    branch do_training
-    checkout do_training
-    commit id:"   "
-    branch for_all_episode
-    checkout for_all_episode
-    commit id:"       "
-    branch run_episode
-    commit id:"before_episode_starts"
-    commit id:"policy.start_episode"
-    commit id:"        "
-    branch run_internal_episode
-    commit id:"before_step_starts"
-    commit id:"         "
-    branch run_step
-    commit type: HIGHLIGHT id:"policy.start_step"
-    commit id:"          "
-    branch for_all_agents
-    commit type: HIGHLIGHT id:"policy.start_act"
-    commit type: HIGHLIGHT id:"policy.act"
-    commit type: HIGHLIGHT id:"policy.end_act"
-    checkout run_step
-    merge for_all_agents
-    commit id:"env.step"
-    commit type: HIGHLIGHT id:"policy.step"
-    commit type: HIGHLIGHT id:"policy.end_step"
-    checkout run_internal_episode
-    merge run_step
-    commit id:"render"
-    commit id:"after_steps_ends"
-    checkout run_episode
-    merge run_internal_episode
-    commit type: HIGHLIGHT id:"policy.end_episode"
-    commit id:"after_episode_ends"
-    checkout for_all_episode
-    merge run_episode
-    checkout do_training
-    merge for_all_episode
-    commit id:"              "
-    checkout main
-    merge do_training
-    commit id:"                "
+flowchart TD
+    B(Solver.do_training)
+    B --> |training: on| C{Episode loop}
+    C --> |next episode : run_episode| D1(before_episode_starts)
+    D1 --> D2(policy.start_episode)
+    D2 --> |run_internal_episode| E{step loop}
+    F1 --> |collect actions| G{agent loop}
+    E --> |next step : run_step| F1(policy.start_step)
+    G -->  G1(policy.start_step)
+    G1 --> G2(policy.act)
+    G2 --> G3(policy.end_act)
+    G3 --> G
+    G --> |all actions collected|F2(env.step)
+    F2 --> F3(policy.step)
+    F3 --> F4(policy.end_step)
+    F5 --> E
+    D5 --> C
+    E --> |no more steps left| D4(policy.end_episode)
+    D4 --> D5(after_episode_ends) 
+    F4 --> |run_step finished| F5(render) 
 ```
 
 ### Examples
