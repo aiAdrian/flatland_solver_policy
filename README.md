@@ -31,32 +31,51 @@ graph TD;
 
 ```mermaid
 gitGraph:
-    commit "Ashish"
-    branch newbranch
-    checkout newbranch
-    commit id:"1111" 
-    checkout main 
-    commit
-    merge newbranch
-    commit id:"3333" 
-    branch b2
-    commit id:"4444"
-    commit id:"5555"  
-```
-
-gitGraph:
-    commit "Ashish"
-    branch newbranch
-    checkout newbranch
-    commit id:"1111"
-    commit tag:"test"
+    commit id:" "
+    commit id:"  "
+    branch do_training
+    checkout do_training
+    commit id:"   "
+    branch for_all_episode
+    checkout for_all_episode
+    commit id:"       "
+    branch run_episode
+    commit id:"before_episode_starts"
+    commit id:"policy.start_episode"
+    commit id:"        "
+    branch run_internal_episode
+    commit id:"before_step_starts"
+    commit id:"         "
+    branch run_step
+    commit id:"policy.start_step"
+    commit id:"          "
+    branch for_all_agents
+    commit id:"policy.start_act"
+    commit id:"policy.act"
+    commit id:"policy.end_act"
+    checkout run_step
+    merge for_all_agents
+    commit id:"env.step"
+    commit id:"policy.step"
+    commit id:"policy.end_step"
+    checkout run_internal_episode
+    merge run_step
+    commit id:"render"
+    commit id:"after_steps_ends"
+    checkout run_episode
+    merge run_internal_episode
+    commit id:"policy.end_episode"
+    commit id:"after_episode_ends"
+    checkout for_all_episode
+    merge run_episode
+    checkout do_training
+    merge for_all_episode
     checkout main
-    commit type: HIGHLIGHT
-    commit
-    merge newbranch
-    commit
-    branch b2
-    commit
+    merge do_training
+    checkout main
+    commit id:"             "
+```
+ 
 
 
 Solver-->do_training;
