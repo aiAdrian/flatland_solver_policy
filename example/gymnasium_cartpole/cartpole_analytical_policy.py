@@ -1,7 +1,7 @@
 from policy.policy import Policy
 
 
-class cartpoleAnalyticalPolicy(Policy):
+class CartpoleAnalyticalPolicy(Policy):
     def get_name(self) -> str:
         return self.__class__.__name__
 

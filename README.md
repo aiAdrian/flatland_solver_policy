@@ -42,7 +42,7 @@ classDiagram
     RailEnv <|-- FlatlandDynamics : package(Flatland Railway Extension)
     
     BaseSolver <|-- FlatlandSolver
-    BaseSolver <|-- cartpoleSolver
+    BaseSolver <|-- CartpoleSolver
     FlatlandSolver <|-- FlatlandDynamicsSolver
     
     Policy  <|-- HeuristicPolicy
@@ -157,11 +157,11 @@ flowchart TD
 
 ### Examples
 
-#### cartpole
+#### Cartpole
 
 ```python 
 env, obs_space, act_space = create_environment(...)
-solver = cartpoleSolver(env)
+solver = CartpoleSolver(env)
 
 solver.set_policy(create_ppo_policy(obs_space, act_space))
 solver.do_training(max_episodes=1000)
