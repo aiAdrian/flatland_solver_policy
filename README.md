@@ -30,37 +30,38 @@ graph TD;
 
 
 ```mermaid
-sequenceDiagram
-    Alice ->> Bob: Hello Bob, how are you?
-    Bob-->>John: How about you John?
-    Bob--x Alice: I am good thanks!
-    Bob-x John: I am good thanks!
-    Note right of John: Bob thinks a long<br/>long time, so long<br/>that the text does<br/>not fit on a row.
-
-    Bob-->Alice: Checking with John...
-    Alice->John: Yes... John, how are you?
-    
-    Solver ->> do_training;
-    do_training ->> for_all_episode;
-    for_all_episode-->run_episode;
-    run_episode-->before_episode_starts;  
-    run_episode-->policy.start_episode;  
-    run_episode-->run_internal_episode;   
-    run_episode-->policy.end_episode;  
-    run_episode-->after_episode_ends;
-    run_internal_episode-->before_step_starts
-    run_internal_episode-->run_step
-    run_internal_episode-->render
-    run_internal_episode-->after_steps_ends
-    run_step-->policy.start_step
-    run_step-->for_all_agents
-    for_all_agents-->policy.start_act
-    for_all_agents-->policy.act 
-    for_all_agents-->policy.end_act 
-    run_step-->env.step
-    run_step-->policy.step
-    run_step-->policy.end_step
+ gitGraph
+       commit a
+       commit b 
+       branch develop
+       commit 1
+       commit 2 
+       commit 3 
+       checkout main
+       commit 4 
+       commit 5 
 ```
+Solver-->do_training;
+do_training-->for_all_episode;
+for_all_episode-->run_episode;
+run_episode-->before_episode_starts;  
+run_episode-->policy.start_episode;  
+run_episode-->run_internal_episode;   
+run_episode-->policy.end_episode;  
+run_episode-->after_episode_ends;
+run_internal_episode-->before_step_starts
+run_internal_episode-->run_step
+run_internal_episode-->render
+run_internal_episode-->after_steps_ends
+run_step-->policy.start_step
+run_step-->for_all_agents
+for_all_agents-->policy.start_act
+for_all_agents-->policy.act 
+for_all_agents-->policy.end_act 
+run_step-->env.step
+run_step-->policy.step
+run_step-->policy.end_step
+ 
 
 
 ### Examples
