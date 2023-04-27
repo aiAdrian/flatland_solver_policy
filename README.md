@@ -54,7 +54,7 @@ solver.do_training(max_episodes=1000)
 ```                                                                
 
 
-### Example
+### Implemented environments (examples)
 
 Environments which can be used and are tested:
 
