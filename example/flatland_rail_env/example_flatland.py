@@ -15,7 +15,7 @@ from policy.policy import Policy
 from solver.flatland_solver import FlatlandSolver
 
 
-def create_flatland_env(obs_builder: ObservationBuilder,
+def create_flatland_env(obs_builder_object: ObservationBuilder,
                         max_rails_between_cities=2,
                         max_rails_in_city=4,
                         malfunction_rate=1 / 1000,
@@ -41,12 +41,12 @@ def create_flatland_env(obs_builder: ObservationBuilder,
         ),
         random_seed=random_seed,
         number_of_agents=number_of_agents,
-        obs_builder_object=obs_builder
+        obs_builder_object=obs_builder_object
     )
 
 
-def create_environment(obs_builder: ObservationBuilder, number_of_agents: int):
-    environment = create_flatland_env(obs_builder, number_of_agents=number_of_agents)
+def create_environment(obs_builder_object: ObservationBuilder, number_of_agents: int):
+    environment = create_flatland_env(obs_builder_object, number_of_agents=number_of_agents)
     action_space = environment.action_space[0]
 
     obs_states, _ = environment.reset()
@@ -83,7 +83,7 @@ if __name__ == "__main__":
         predictor=ShortestPathPredictorForRailEnv(max_depth=50)
     )
 
-    env, obs_space, act_space = create_environment(observation_builder, number_of_agents=3)
+    env, obs_space, act_space = create_environment(obs_builder_object=observation_builder, number_of_agents=10)
     print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env.__class__.__name__,
                                                                    env.get_num_agents(), act_space, obs_space))
 
