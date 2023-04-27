@@ -50,7 +50,7 @@ flowchart TD
     D5 --> C
     E ---> |no| D4(policy.end_episode)
     D4 --> D5(after_episode_ends) 
-    F4 ----> |run_step finished| F5(render)
+    F4 ----> F5(render)
     
     Env(Environment)
     Policy(Policy)
