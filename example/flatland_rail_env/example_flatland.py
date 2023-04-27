@@ -91,12 +91,16 @@ if __name__ == "__main__":
     renderer = FlatlandSimpleRenderer(env)
     solver.set_renderer(renderer)
 
-    solver.set_policy(create_ppo_policy(obs_space, act_space))
-    solver.do_training(max_episodes=1000)
-
-    solver.set_policy(create_dddqn_policy(obs_space, act_space))
-    solver.do_training(max_episodes=1000)
-
     solver.activate_rendering()
     solver.set_policy(create_deadlock_avoidance_policy(env, act_space, False))
     solver.do_training(max_episodes=10)
+
+    solver.deactivate_rendering()
+    solver.set_policy(create_ppo_policy(obs_space, act_space))
+    solver.do_training(max_episodes=1000)
+
+    solver.deactivate_rendering()
+    solver.set_policy(create_dddqn_policy(obs_space, act_space))
+    solver.do_training(max_episodes=1000)
+
+

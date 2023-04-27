@@ -44,8 +44,8 @@ def create_ppo_policy(observation_space: int, action_space: int) -> Policy:
     return PPOPolicy(observation_space, action_space, True)
 
 
-def create_environment(number_of_agents: int,
-                       obs_builder_object: Union[ObservationBuilder, None] = None):
+def create_environment(obs_builder_object: Union[ObservationBuilder, None] = None,
+                       number_of_agents: int = 10):
     flatland_environment_helper = FlatlandEnvironmentHelper(rail_env=FlatlandDynamics,
                                                             number_of_agents=number_of_agents,
                                                             random_seed=2341,
@@ -71,14 +71,12 @@ if __name__ == "__main__":
         predictor=ShortestPathPredictorForRailEnv(max_depth=50)
     )
 
-    env, obs_space, act_space = create_environment(number_of_agents=10,
-                                                   obs_builder_object=observation_builder)
+    env, obs_space, act_space = create_environment(obs_builder_object=observation_builder, number_of_agents=10)
     print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env.__class__.__name__,
                                                                    env.get_num_agents(), act_space, obs_space))
 
     solver = FlatlandDynamicsSolver(env)
 
-    # renderer = FlatlandSimpleRenderer(env)
     renderer = FlatlandDynamicsSimpleRenderer(env, render_each_episode=1)
     solver.set_renderer(renderer)
 
@@ -86,7 +84,6 @@ if __name__ == "__main__":
     solver.set_policy(create_deadlock_avoidance_policy(env, act_space, False))
     solver.do_training(max_episodes=1)
     plot_flatland_dynamics_details(solver.env)
-    print('---------------------------------------------')
 
     solver.deactivate_rendering()
     solver.set_policy(create_ppo_policy(obs_space, act_space))
