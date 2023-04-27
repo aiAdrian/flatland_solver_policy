@@ -45,12 +45,14 @@ if __name__ == "__main__":
     renderer = CartPoolRenderer(env)
     solver.set_renderer(renderer)
 
-    solver.set_policy(create_dddqn_policy(obs_space, act_space))
+    solver.activate_rendering()
+    solver.set_policy(create_cart_pool_analytical_policy())
     solver.do_training(max_episodes=1000)
 
+    solver.deactivate_rendering()
     solver.set_policy(create_ppo_policy(obs_space, act_space))
     solver.do_training(max_episodes=1000)
 
-    solver.activate_rendering()
-    solver.set_policy(create_cart_pool_analytical_policy())
+    solver.deactivate_rendering()
+    solver.set_policy(create_dddqn_policy(obs_space, act_space))
     solver.do_training(max_episodes=1000)
