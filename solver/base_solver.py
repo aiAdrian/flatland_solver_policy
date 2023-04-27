@@ -63,10 +63,18 @@ class BaseSolver:
     def update_state(self, state_next):
         return np.copy(state_next)
 
+    def before_run_step_call(self):
+        pass
+
+    def after_run_step_call(self):
+        pass
+
     def run_internal_episode(self, episode, env, policy, state, eps, info, training_mode):
         tot_reward = 0
         while True:
+            self.before_run_step_call()
             state_next, reward, terminal, info = self.run_step(env, policy, state, eps, info, training_mode)
+            self.after_run_step_call()
             tot_reward += reward
             state = self.update_state(state_next)
             self.render(episode, terminal)
@@ -74,12 +82,19 @@ class BaseSolver:
                 break
         return tot_reward
 
+    def before_run_internal_episode_call(self):
+        pass
+
+    def after_run_internal_episode_call(self):
+        pass
+
     def run_episode(self, episode, env, policy, eps, training_mode):
         state, info = self.reset()
-
+        self.before_run_internal_episode_call()
         policy.start_episode(train=training_mode)
         tot_reward = self.run_internal_episode(episode, env, policy, state, eps, info, training_mode)
         policy.end_episode(train=training_mode)
+        self.after_run_internal_episode_call()
 
         return tot_reward
 

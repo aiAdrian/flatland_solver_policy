@@ -54,7 +54,7 @@ class FlatlandSolver(BaseSolver):
         state_next = self.transform_state(raw_state_next)
 
         for handle in self.env.get_agent_handles():
-            terminal_alrl &= terminal[handle]
+            terminal_all &= terminal[handle]
 
         for handle in self.env.get_agent_handles():
             if update_values[handle] or terminal_all:
