@@ -107,7 +107,7 @@ classDiagram
 
 ```mermaid
 flowchart TD
-    Solver(("do_training(...)"))
+    Solver((do_training))
     Solver --> |training: on| C{Episode loop:\n more episodes?}
     C -------------> |no| End(( done ))
     C --> |yes : run_episode| D0(env.reset)
