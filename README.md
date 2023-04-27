@@ -47,24 +47,24 @@ gitGraph:
     commit id:"before_step_starts"
     commit id:"         "
     branch run_step
-    commit id:"policy.start_step"
+    commit type: HIGHLIGHT id:"policy.start_step"
     commit id:"          "
     branch for_all_agents
-    commit id:"policy.start_act"
-    commit id:"policy.act"
-    commit id:"policy.end_act"
+    commit type: HIGHLIGHT id:"policy.start_act"
+    commit type: HIGHLIGHT id:"policy.act"
+    commit type: HIGHLIGHT id:"policy.end_act"
     checkout run_step
     merge for_all_agents
     commit id:"env.step"
-    commit id:"policy.step"
-    commit id:"policy.end_step"
+    commit type: HIGHLIGHT id:"policy.step"
+    commit type: HIGHLIGHT id:"policy.end_step"
     checkout run_internal_episode
     merge run_step
     commit id:"render"
     commit id:"after_steps_ends"
     checkout run_episode
     merge run_internal_episode
-    commit id:"policy.end_episode"
+    commit type: HIGHLIGHT id:"policy.end_episode"
     commit id:"after_episode_ends"
     checkout for_all_episode
     merge run_episode
@@ -73,7 +73,7 @@ gitGraph:
     checkout main
     merge do_training
     checkout main
-    commit id:"             "
+    commit id:"               "
 ```
  
 
