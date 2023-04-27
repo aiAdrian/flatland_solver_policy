@@ -70,10 +70,10 @@ gitGraph:
     merge run_episode
     checkout do_training
     merge for_all_episode
+    commit id:"              "
     checkout main
     merge do_training
-    checkout main
-    commit id:"               "
+    commit id:"                "
 ```
  
 
