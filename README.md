@@ -31,7 +31,6 @@ graph TD;
 
 ```mermaid
 gitGraph:
-    commit id:"Solver"
     branch do_training
     checkout do_training
     commit id:"1111"
