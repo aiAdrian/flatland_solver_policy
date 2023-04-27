@@ -31,13 +31,18 @@ graph TD;
 
 ```mermaid
 gitGraph:
-    commit "Adrian"
-    branch "do_training"
-    checkout "do_training"
-    commit id:"1111" 
-    checkout main 
-    commit id:"2222" 
-    merge "do_training"
+    commit "Ashish"
+    branch newbranch
+    checkout newbranch
+    commit id:"1111"
+    commit tag:"test"
+    checkout main
+    commit type: HIGHLIGHT
+    commit
+    merge newbranch
+    commit
+    branch b2
+    commit
 ```
 
 gitGraph:
