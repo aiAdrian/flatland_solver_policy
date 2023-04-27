@@ -34,12 +34,7 @@ graph TD;
     Solver-->do_training;
     do_training-->for_all_episode;
     for_all_episode-->run_episode;
-    run_episode-->(..);
-    (..)-->before_episode_starts;
-    (..)-->policy.start_episode;
-    (..)-->run_internal_episode;
-    (..)-->policy.end_episode;
-    (..)-->after_episode_ends;
+    run_episode-->before_episode_starts;     run_episode-->policy.start_episode;     run_episode-->run_internal_episode;     run_episode-->policy.end_episode;     run_episode-->after_episode_ends;
     run_internal_episode-->before_step_starts
     run_internal_episode-->run_step
     run_internal_episode-->render
