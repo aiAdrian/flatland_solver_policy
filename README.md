@@ -14,7 +14,10 @@ If reinforcement learning is not used, the observation can be replaced by the du
 
 ## One solver for multiple environments and policy
  
-### Cartpool                                                                                                                 
+
+### Examples
+
+#### Cartpool                                                                                                                 
 ```python 
 env, obs_space, act_space = create_environment( ... )
 solver = CartPoolSolver(env)
@@ -26,7 +29,7 @@ solver.set_policy(create_dddqn_policy(obs_space, act_space))
 solver.do_training(max_episodes=1000)
 ```                   
 
-### Flatland                                                                                                                 
+#### Flatland                                                                                                                 
 ```python
 env, obs_space, act_space = create_environment( ... )
 solver = FlatlandSolver(env)
@@ -38,7 +41,7 @@ solver.set_policy(create_dddqn_policy(obs_space, act_space))
 solver.do_training(max_episodes=1000)
 ```                                                              
 
-### Flatland Dynamics      
+#### Flatland Dynamics      
 ```python
 env, obs_space, act_space = create_environment( ... )
 solver = FlatlandDynamicsSolver(env)
