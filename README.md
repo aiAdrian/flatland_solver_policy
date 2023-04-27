@@ -16,7 +16,7 @@ If reinforcement learning is not used, the observation can be replaced by the du
  
 ### Cartpool                                                                                                                 
 ```python 
-env, obs_space, act_space = create_environment()               
+env, obs_space, act_space = create_environment( ... )               
 solver = CartPoolSolver(env)    
                           
 solver.set_policy(create_ppo_policy(obs_space, act_space))     
@@ -28,7 +28,7 @@ solver.do_training(max_episodes=1000)
 
 ### Flatland                                                                                                                 
 ```python
-env, obs_space, act_space = create_environment(obs_builder_object=FlattenTreeObsForRailEnv(max_depth=3, predictor=ShortestPathPredictorForRailEnv(max_depth=50)) , number_of_agents=10)           
+env, obs_space, act_space = create_environment( ... )        
 solver = FlatlandSolver(env)                                                                                                                                                                        
                                                                                 
 solver.set_policy(create_ppo_policy(obs_space, act_space))                                                            
@@ -40,8 +40,7 @@ solver.do_training(max_episodes=1000)
 
 ### Flatland Dynamics      
 ```python
-env, obs_space, act_space = create_environment(obs_builder_object=observation_builder = FlattenTreeObsForRailEnv( max_depth=3, predictor=ShortestPathPredictorForRailEnv(max_depth=50) )   
-, number_of_agents=10)              
+env, obs_space, act_space = create_environment( ... )              
 solver = FlatlandDynamicsSolver(env)                                                                                     
                                                                                           
 solver.set_policy(create_ppo_policy(obs_space, act_space))                                                               
