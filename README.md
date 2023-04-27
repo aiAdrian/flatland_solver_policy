@@ -37,7 +37,7 @@ gitGraph:
     commit id:"1111" 
     checkout main
     commit type: HIGHLIGHT
-    commit id:"22222" 
+    commit
     merge newbranch
     commit id:"3333" 
     branch b2
