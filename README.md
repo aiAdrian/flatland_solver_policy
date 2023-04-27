@@ -13,13 +13,12 @@ The observation can as well exchanged through the abstraction.
 If reinforcement learning is not used, the observation can be replaced by the dummy observation.
 
 ## One solver for multiple environments and policy
- 
-### API 
+
+### API
+
 [Policy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/policy.py)
 
 [BaseSolver](https://github.com/aiAdrian/flatland_solver_policy/blob/main/solver/base_solver.py)
-
-
 
 ```mermaid
 graph TD;
@@ -28,7 +27,84 @@ graph TD;
     Renderer-->Solver;
 ```
 
+### Class diagram
+
+```mermaid
+classDiagram
+       
+    BaseSolver o-- Policy
+    BaseSolver o-- BaseRenderer
+    BaseSolver o-- Environment
+
+    Environment <|-- cartpool : package(Gymnasium)
+    Environment <|-- RailEnv : package(Flatland)
+    RailEnv <|-- FlatlandDynamics : package(Flatland Railway Extension)
+    
+    BaseSolver <|-- FlatlandSolver
+    BaseSolver <|-- CartPoolSolver
+    FlatlandSolver <|-- FlatlandDynamicsSolver
+    
+    Policy  <|-- HeuristicPolicy
+
+    HeuristicPolicy  <|-- DeadLockAvoidancePolicy : Flatland
+
+    Policy  <|-- LearningPolicy
+
+    LearningPolicy <|-- PPOPolicy : Environment
+    LearningPolicy <|-- DDDQNPolicy : Environment
+
+    class Environment {
+        env.reset() state, info
+        step(action) state_next, reward, terminal, info = 
+    }
+
+    class Policy{
+      get_name()* str
+      start_episode(train: bool)
+      start_step(train: bool)
+      start_act(handle: int, train: bool)
+      act(handle, state, eps=0.)*
+      end_act(handle: int, train: bool)
+      step(handle, state, action, reward, next_state, done)*
+      end_step(train: bool)
+      end_episode(train: bool)
+      load_replay_buffer(filename)
+      test()
+      reset(env: RailEnv)
+      clone()* Policy
+      save(filename)*
+      load(filename)* 
+    }
+
+    class BaseRenderer {
+        reset():
+        render(episode, step, terminal)
+    }
+
+    class BaseSolver {
+        get_name()* str
+        set_renderer(renderer: BaseRenderer)
+        set_policy(policy: Policy)
+        activate_rendering()
+        deactivate_rendering()
+        render(episode: int, step: int, terminal: bool)
+        reset() state, info
+        run_step(env, policy, state, eps, info, training_mode) state_next, tot_reward, all_terminal, info
+        update_state(state_next) state
+        before_step_starts() bool
+        after_steps_ends() bool
+        run_internal_episode( episode, env, policy, state, eps, info, training_mode) tot_reward[int]
+        before_episode_starts()
+        after_episode_ends()
+        run_episode(episode, env, policy, eps, training_mode) tot_reward[int]
+        do_training(max_episodes=2000)
+        save_policy(filename: str)
+        load_policy(filename: str)
+    }
+``` 
+
 ### Solver
+
 ```mermaid
 flowchart TD
     Solver(("do_training(...)"))
@@ -71,9 +147,10 @@ flowchart TD
 
 ### Examples
 
-#### Cartpool                                                                                                                 
+#### Cartpool
+
 ```python 
-env, obs_space, act_space = create_environment( ... )
+env, obs_space, act_space = create_environment(...)
 solver = CartPoolSolver(env)
 
 solver.set_policy(create_ppo_policy(obs_space, act_space))
@@ -83,9 +160,10 @@ solver.set_policy(create_dddqn_policy(obs_space, act_space))
 solver.do_training(max_episodes=1000)
 ```                   
 
-#### Flatland                                                                                                                 
+#### Flatland
+
 ```python
-env, obs_space, act_space = create_environment( ... )
+env, obs_space, act_space = create_environment(...)
 solver = FlatlandSolver(env)
 
 solver.set_policy(create_ppo_policy(obs_space, act_space))
@@ -95,9 +173,10 @@ solver.set_policy(create_dddqn_policy(obs_space, act_space))
 solver.do_training(max_episodes=1000)
 ```                                                              
 
-#### Flatland Dynamics      
+#### Flatland Dynamics
+
 ```python
-env, obs_space, act_space = create_environment( ... )
+env, obs_space, act_space = create_environment(...)
 solver = FlatlandDynamicsSolver(env)
 
 solver.set_policy(create_ppo_policy(obs_space, act_space))
@@ -106,7 +185,6 @@ solver.do_training(max_episodes=1000)
 solver.set_policy(create_dddqn_policy(obs_space, act_space))
 solver.do_training(max_episodes=1000)
 ```                                                                
-
 
 ### Implemented environments (examples)
 

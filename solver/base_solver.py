@@ -16,7 +16,7 @@ class BaseSolver:
         self.renderer: Union[BaseRenderer, None] = None
 
     def get_name(self) -> str:
-        return self.__class__.__name__
+        raise NotImplementedError
 
     def set_renderer(self, renderer: BaseRenderer):
         self.renderer = renderer
