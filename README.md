@@ -204,12 +204,12 @@ Environments which can be used and are tested:
 - [Flatland](https://github.com/flatland-association/flatland-rl)
 - [Flatland Railway Extension](https://github.com/aiAdrian/flatland_railway_extension)
 
-| Policy                  | cartpole | Flatland | Flatland Dynamics |
-|-------------------------|----------|----------|-------------------|
-| AnalyticalPolicy        | yes      | no       | no                |
-| DDDQNPolicy             | yes      | yes      | yes               |
-| PPOPolicy               | yes      | yes      | yes               |
-| DeadLockAvoidancePolicy | no       | yes      | yes               |
+| Policy                    | cartpole | Flatland | Flatland Dynamics |
+|---------------------------|----------|----------|-------------------|
+| CartpoleAnalyticalPolicy  | yes      | no       | no                |
+| DDDQNPolicy               | yes      | yes      | yes               |
+| PPOPolicy                 | yes      | yes      | yes               |
+| DeadLockAvoidancePolicy   | no       | yes      | yes               |
 
 ### Tensorboard 
 Training / quality logging is done with tensorboard. Navigate to the example folder
