@@ -30,9 +30,9 @@ class BaseSolver:
     def deactivate_rendering(self):
         self.rendering_enabled = False
 
-    def render(self, episode: int, terminal: bool):
+    def render(self, episode: int, step: int, terminal: bool):
         if self.rendering_enabled:
-            self.renderer.render(episode, terminal)
+            self.renderer.render(episode, step, terminal)
 
     def reset(self):
         state = self.env.reset()
@@ -64,22 +64,30 @@ class BaseSolver:
         return np.copy(state_next)
 
     def before_run_step_call(self):
-        pass
+        return False
 
     def after_run_step_call(self):
-        pass
+        return False
 
     def run_internal_episode(self, episode, env, policy, state, eps, info, training_mode):
         tot_reward = 0
+        step = 0
         while True:
-            self.before_run_step_call()
+            if self.before_run_step_call():
+                return tot_reward
+
             state_next, reward, terminal, info = self.run_step(env, policy, state, eps, info, training_mode)
-            self.after_run_step_call()
             tot_reward += reward
             state = self.update_state(state_next)
-            self.render(episode, terminal)
+            self.render(episode, step, terminal)
+
+            if self.after_run_step_call():
+                return tot_reward
+
             if terminal:
                 break
+
+            step += 1
         return tot_reward
 
     def before_run_internal_episode_call(self):

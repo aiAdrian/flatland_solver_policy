@@ -6,5 +6,5 @@ class CartPoolRenderer(BaseRenderer):
         super(CartPoolRenderer, self).__int__()
         self.env = environment
 
-    def render(self, episode, terminal):
+    def render(self, episode, step, terminal):
         self.env.render()

@@ -26,7 +26,7 @@ class FlatlandSimpleRenderer(BaseRenderer):
     def reset(self):
         self.renderer.reset()
 
-    def render(self, episode, terminal):
+    def render(self, episode, step, terminal):
         if not terminal and (episode - 1) % self.render_each_episode != 0:
             return
         self.renderer.render_env(

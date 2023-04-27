@@ -67,5 +67,6 @@ class FlatlandDynamicsSolver(FlatlandSolver):
     def before_run_step_call(self):
         if self.renderer is not None and isinstance(self.renderer, FlatlandDynamicsSimpleRenderer):
             self.renderer.renderer.set_flatland_resource_allocator(self.env.get_active_flatland_resource_allocator())
-
-
+            if self.renderer.renderer.is_closed():
+                return True
+        return False
