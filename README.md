@@ -19,14 +19,36 @@ If reinforcement learning is not used, the observation can be replaced by the du
 
 [BaseSolver](https://github.com/aiAdrian/flatland_solver_policy/blob/main/solver/base_solver.py)
 
-Here is a simple flow chart:
+
 
 ```mermaid
 graph TD;
-    do_training(...)-->B;
-    A-->C;
-    B-->D;
-    C-->D;
+    Env-->Solver;
+    Policy-->Solver;
+    Renderer-->Solver;
+```
+
+```mermaid
+graph TD;
+    Solver-->do_training;
+    do_training-->run_episode;
+    run_episode-->before_episode_starts;
+    run_episode-->policy.start_episode;
+    run_episode-->run_internal_episode;
+    run_episode-->policy.end_episode;
+    run_episode-->after_episode_ends;
+    run_internal_episode-->before_step_starts
+    run_internal_episode-->run_step
+    run_internal_episode-->render
+    run_internal_episode-->after_steps_ends
+    run_step->policy.start_step
+    run_step->for_all_agents
+    for_all_agents->policy.start_act
+    for_all_agents->policy.act 
+    for_all_agents->policy.end_act 
+    run_step->env.step
+    run_step->policy.step
+    run_step->policy.end_step
 ```
 
 
