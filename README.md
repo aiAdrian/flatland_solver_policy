@@ -105,6 +105,12 @@ classDiagram
 
 ### Solver
 
+The following flowchart explains the main flow of Solver.do_training() and the respective calls to the abstract policy
+and environment methods. The implementation of the Policy significantly controls the environmental behavior. The
+environment must have implemented the reset and step method. The reset method returns the initial state (observation)
+and an info dict. The step method needs a dict with all actions (for each agent one action) and returns the next state (
+observation), reward, done signals (terminate) and an info.
+
 ```mermaid
 flowchart TD
     Env(Environment)
