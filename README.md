@@ -30,7 +30,7 @@ graph TD;
 
 
 ```mermaid
- gitGraph
+gitGraph
        commit a
        commit b 
        branch develop
