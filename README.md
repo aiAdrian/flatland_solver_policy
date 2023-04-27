@@ -35,8 +35,7 @@ gitGraph:
     branch newbranch
     checkout newbranch
     commit id:"1111" 
-    checkout main
-    commit type: HIGHLIGHT
+    checkout main 
     commit
     merge newbranch
     commit id:"3333" 
