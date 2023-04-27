@@ -34,15 +34,15 @@ gitGraph:
     commit "Ashish"
     branch newbranch
     checkout newbranch
-    commit id:"1111"
-    commit tag:"test"
+    commit id:"1111" 
     checkout main
     commit type: HIGHLIGHT
-    commit
+    commit id:"22222" 
     merge newbranch
-    commit
+    commit id:"3333" 
     branch b2
-    commit
+    commit id:"4444"
+    commit id:"5555"  
 ```
 
 gitGraph:
