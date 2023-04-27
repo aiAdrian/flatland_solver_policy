@@ -13,23 +13,43 @@ The observation can as well exchanged through the abstraction.
 If reinforcement learning is not used, the observation can be replaced by the dummy observation.
 
 ## One solver for multiple environments and policy
+ 
+### Cartpool                                                                                                                 
+```python 
+env, obs_space, act_space = create_environment()               
+solver = CartPoolSolver(env)    
+                          
+solver.set_policy(create_ppo_policy(obs_space, act_space))     
+solver.do_training(max_episodes=1000)                          
+                                  
+solver.set_policy(create_dddqn_policy(obs_space, act_space))   
+solver.do_training(max_episodes=1000)     
+```                   
 
-| Cartpool                                                       | Flatland                                                                                                               | Flatland Dynamics                                                                                                         |
-|:---------------------------------------------------------------|:-----------------------------------------------------------------------------------------------------------------------|:--------------------------------------------------------------------------------------------------------------------------| 
-|                                                                | `observation_builder = FlattenTreeObsForRailEnv(max_depth=3, predictor=ShortestPathPredictorForRailEnv(max_depth=50))` | `observation_builder = FlattenTreeObsForRailEnv( max_depth=3, predictor=ShortestPathPredictorForRailEnv(max_depth=50) )`  | 
-| `env, obs_space, act_space = create_environment() `            | `env, obs_space, act_space = create_environment(obs_builder_object=observation_builder, number_of_agents=10)`          | `env, obs_space, act_space = create_environment(obs_builder_object=observation_builder, number_of_agents=10)`             |
-| `solver = CartPoolSolver(env)`                                 | `solver = FlatlandSolver(env) `                                                                                        | `solver = FlatlandDynamicsSolver(env)`                                                                                    |
-| `renderer = CartPoolRenderer(env)`                             | `renderer = FlatlandSimpleRenderer(env) `                                                                              | `renderer = FlatlandDynamicsSimpleRenderer(env, render_each_episode=1)`                                                   |
-| `solver.set_renderer(renderer)`                                | `solver.set_renderer(renderer) `                                                                                       | `solver.set_renderer(renderer) `                                                                                          |
-| `solver.activate_rendering()`                                  | `solver.activate_rendering() `                                                                                         | `solver.activate_rendering() `                                                                                            |
-| `solver.set_policy(create_cart_pool_analytical_policy())`      | `solver.set_policy(create_deadlock_avoidance_policy(env, act_space, False)) `                                          | `solver.set_policy(create_deadlock_avoidance_policy(env, act_space, False)) `                                             |
-| `solver.do_training(max_episodes=10)`                          | `solver.do_training(max_episodes=10) `                                                                                 | `solver.do_training(max_episodes=10) `                                                                                    |
-| `solver.deactivate_rendering()`                                | `solver.deactivate_rendering() `                                                                                       | `solver.deactivate_rendering() `                                                                                          |
-| `solver.set_policy(create_ppo_policy(obs_space, act_space))`   | `solver.set_policy(create_ppo_policy(obs_space, act_space))`                                                           | `solver.set_policy(create_ppo_policy(obs_space, act_space))`                                                              |
-| `solver.do_training(max_episodes=1000)`                        | `solver.do_training(max_episodes=1000)`                                                                                | `solver.do_training(max_episodes=1000)`                                                                                   |
-| `solver.deactivate_rendering()`                                | `solver.deactivate_rendering()`                                                                                        | `solver.deactivate_rendering()`                                                                                           |
-| `solver.set_policy(create_dddqn_policy(obs_space, act_space))` | `solver.set_policy(create_dddqn_policy(obs_space, act_space))`                                                         | `solver.set_policy(create_dddqn_policy(obs_space, act_space))`                                                            |
-| `solver.do_training(max_episodes=1000)`                        | `solver.do_training(max_episodes=1000)`                                                                                | `solver.do_training(max_episodes=1000)`                                                                                   |
+### Flatland                                                                                                                 
+```python
+env, obs_space, act_space = create_environment(obs_builder_object=FlattenTreeObsForRailEnv(max_depth=3, predictor=ShortestPathPredictorForRailEnv(max_depth=50)) , number_of_agents=10)           
+solver = FlatlandSolver(env)                                                                                                                                                                        
+                                                                                
+solver.set_policy(create_ppo_policy(obs_space, act_space))                                                            
+solver.do_training(max_episodes=1000)                                                                                 
+                                                                                        
+solver.set_policy(create_dddqn_policy(obs_space, act_space))                                                          
+solver.do_training(max_episodes=1000)                    
+```                                                              
+
+### Flatland Dynamics      
+```python
+env, obs_space, act_space = create_environment(obs_builder_object=observation_builder = FlattenTreeObsForRailEnv( max_depth=3, predictor=ShortestPathPredictorForRailEnv(max_depth=50) )   
+, number_of_agents=10)              
+solver = FlatlandDynamicsSolver(env)                                                                                     
+                                                                                          
+solver.set_policy(create_ppo_policy(obs_space, act_space))                                                               
+solver.do_training(max_episodes=1000)                                                                                    
+                                                                                         
+solver.set_policy(create_dddqn_policy(obs_space, act_space))                                                             
+solver.do_training(max_episodes=1000)                 
+```                                                                
 
 
 ### Example
