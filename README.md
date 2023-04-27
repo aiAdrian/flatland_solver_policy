@@ -25,7 +25,7 @@ Environments which can be used and are tested:
     - Learning policy
         - DDDQNPolicy
         - PPOPolicy
-        - [AnalyticalPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/gymnasium_cartpool/cartpool_analytical_policy.py)
+    - [AnalyticalPolicy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/gymnasium_cartpool/cartpool_analytical_policy.py)
     
 
 - Extras:
