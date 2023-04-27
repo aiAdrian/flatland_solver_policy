@@ -38,7 +38,7 @@ flowchart TD
     D2 --> |run_internal_episode| E{step loop}
     F1 --> |collect actions| G{agent loop}
     E --> |next step : run_step| F1(policy.start_step)
-    G -->  G1(policy.start_step)
+    G -->  |collect action for agent| G1(policy.start_step)
     G1 --> G2(policy.act)
     G2 --> G3(policy.end_act)
     G3 --> G
