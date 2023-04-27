@@ -75,31 +75,6 @@ gitGraph:
     merge do_training
     commit id:"                "
 ```
- 
-
-
-Solver-->do_training;
-do_training-->for_all_episode;
-for_all_episode-->run_episode;
-run_episode-->before_episode_starts;  
-run_episode-->policy.start_episode;  
-run_episode-->run_internal_episode;   
-run_episode-->policy.end_episode;  
-run_episode-->after_episode_ends;
-run_internal_episode-->before_step_starts
-run_internal_episode-->run_step
-run_internal_episode-->render
-run_internal_episode-->after_steps_ends
-run_step-->policy.start_step
-run_step-->for_all_agents
-for_all_agents-->policy.start_act
-for_all_agents-->policy.act 
-for_all_agents-->policy.end_act 
-run_step-->env.step
-run_step-->policy.step
-run_step-->policy.end_step
- 
-
 
 ### Examples
 
