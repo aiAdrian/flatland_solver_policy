@@ -29,6 +29,9 @@ graph TD;
 
 ### Class diagram
 
+The class diagram shows the most important classes and their dependencies, generalization and specialization of
+Environment, BaseSolver and Policy.
+
 ```mermaid
 classDiagram
        
