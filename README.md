@@ -92,7 +92,7 @@ classDiagram
         run_step(env, policy, state, eps, info, training_mode) state_next, tot_reward, all_terminal, info
         update_state(state_next) state
         before_step_starts() bool
-        after_steps_ends() bool
+        after_step_ends() bool
         run_internal_episode( episode, env, policy, state, eps, info, training_mode) tot_reward[int]
         before_episode_starts()
         after_episode_ends()
