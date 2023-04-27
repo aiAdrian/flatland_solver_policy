@@ -22,9 +22,9 @@ If reinforcement learning is not used, the observation can be replaced by the du
 
 ```mermaid
 graph TD;
-    Env-->Solver;
-    Policy-->Solver;
-    Renderer-->Solver;
+    Environment ---> |required| BaseSolver;
+    Policy ---> |required| BaseSolver;
+    BaseRenderer ---> |optional| BaseSolver;
 ```
 
 ### Class diagram
