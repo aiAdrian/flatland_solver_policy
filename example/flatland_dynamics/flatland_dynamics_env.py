@@ -60,13 +60,24 @@ class FlatlandDynamicsSolver(FlatlandSolver):
         if isinstance(self.env, FlatlandDynamics):
             self.env.set_infrastructure_data(self._create_infrastructure_data())
 
-    def before_run_internal_episode_call(self):
+    def before_episode_starts(self):
         self.railroad_switch_analyser = RailroadSwitchAnalyser(env=self.env)
         self._map_infrastructure_data()
 
-    def before_run_step_call(self):
+    def before_step_starts(self):
         if self.renderer is not None and isinstance(self.renderer, FlatlandDynamicsSimpleRenderer):
             self.renderer.renderer.set_flatland_resource_allocator(self.env.get_active_flatland_resource_allocator())
             if self.renderer.renderer.is_closed():
                 return True
         return False
+
+    def render_flatland_dynamics_details(self):
+        if self.renderer is not None and self.rendering_enabled:
+            for i_agent, agent in enumerate(self.env.agents):
+                n_agents = self.env.get_num_agents()
+                agent.do_debug_plot(i_agent + 1, n_agents, i_agent + 1 == n_agents, i_agent == 0)
+
+    def run_episode(self, episode, env, policy, eps, training_mode):
+        total_reward = super(FlatlandDynamicsSolver, self).run_episode(episode, env, policy, eps, training_mode)
+        self.render_flatland_dynamics_details()
+        return total_reward

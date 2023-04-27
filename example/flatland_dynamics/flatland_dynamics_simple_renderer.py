@@ -25,6 +25,8 @@ class FlatlandDynamicsSimpleRenderer(BaseRenderer):
         return flatland_renderer
 
     def reset(self):
+        if self.renderer.is_closed():
+            self.renderer: FlatlandDynamicsRenderer = self._create_renderer()
         self.renderer.env_renderer.reset()
 
     def render(self, episode, step, terminal):

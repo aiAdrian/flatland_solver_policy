@@ -63,17 +63,17 @@ class BaseSolver:
     def update_state(self, state_next):
         return np.copy(state_next)
 
-    def before_run_step_call(self):
+    def before_step_starts(self):
         return False
 
-    def after_run_step_call(self):
+    def after_steps_ends(self):
         return False
 
     def run_internal_episode(self, episode, env, policy, state, eps, info, training_mode):
         tot_reward = 0
         step = 0
         while True:
-            if self.before_run_step_call():
+            if self.before_step_starts():
                 return tot_reward
 
             state_next, reward, terminal, info = self.run_step(env, policy, state, eps, info, training_mode)
@@ -81,7 +81,7 @@ class BaseSolver:
             state = self.update_state(state_next)
             self.render(episode, step, terminal)
 
-            if self.after_run_step_call():
+            if self.after_steps_ends():
                 return tot_reward
 
             if terminal:
@@ -90,20 +90,19 @@ class BaseSolver:
             step += 1
         return tot_reward
 
-    def before_run_internal_episode_call(self):
+    def before_episode_starts(self):
         pass
 
-    def after_run_internal_episode_call(self):
+    def after_episode_ends(self):
         pass
 
     def run_episode(self, episode, env, policy, eps, training_mode):
         state, info = self.reset()
-        self.before_run_internal_episode_call()
+        self.before_episode_starts()
         policy.start_episode(train=training_mode)
         tot_reward = self.run_internal_episode(episode, env, policy, state, eps, info, training_mode)
         policy.end_episode(train=training_mode)
-        self.after_run_internal_episode_call()
-
+        self.after_episode_ends()
         return tot_reward
 
     def do_training(self, max_episodes=2000):

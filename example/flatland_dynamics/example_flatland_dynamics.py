@@ -59,12 +59,6 @@ def create_environment(obs_builder_object: Union[ObservationBuilder, None] = Non
     return flatland_environment_helper.get_rail_env(), observation_space, action_space
 
 
-def plot_flatland_dynamics_details(fd_env: FlatlandDynamics):
-    for i_agent, agent in enumerate(env.agents):
-        n_agents = fd_env.get_num_agents()
-        agent.do_debug_plot(i_agent + 1, n_agents, i_agent + 1 == n_agents, i_agent == 0)
-
-
 if __name__ == "__main__":
     observation_builder = FlattenTreeObsForRailEnv(
         max_depth=3,
@@ -82,8 +76,7 @@ if __name__ == "__main__":
 
     solver.activate_rendering()
     solver.set_policy(create_deadlock_avoidance_policy(env, act_space, False))
-    solver.do_training(max_episodes=1)
-    plot_flatland_dynamics_details(solver.env)
+    solver.do_training(max_episodes=10)
 
     solver.deactivate_rendering()
     solver.set_policy(create_ppo_policy(obs_space, act_space))
