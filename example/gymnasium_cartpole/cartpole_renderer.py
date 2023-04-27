@@ -1,9 +1,9 @@
 from solver.base_renderer import BaseRenderer
 
 
-class CartPoolRenderer(BaseRenderer):
+class cartpoleRenderer(BaseRenderer):
     def __init__(self, environment):
-        super(CartPoolRenderer, self).__int__()
+        super(cartpoleRenderer, self).__int__()
         self.env = environment
 
     def render(self, episode, step, terminal):

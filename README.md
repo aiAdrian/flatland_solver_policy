@@ -37,12 +37,12 @@ classDiagram
     BaseSolver o-- BaseRenderer
     BaseSolver o-- Environment
 
-    Environment <|-- cartpool : package(Gymnasium)
+    Environment <|-- cartpole : package(Gymnasium)
     Environment <|-- RailEnv : package(Flatland)
     RailEnv <|-- FlatlandDynamics : package(Flatland Railway Extension)
     
     BaseSolver <|-- FlatlandSolver
-    BaseSolver <|-- CartPoolSolver
+    BaseSolver <|-- cartpoleSolver
     FlatlandSolver <|-- FlatlandDynamicsSolver
     
     Policy  <|-- HeuristicPolicy
@@ -157,11 +157,11 @@ flowchart TD
 
 ### Examples
 
-#### Cartpool
+#### cartpole
 
 ```python 
 env, obs_space, act_space = create_environment(...)
-solver = CartPoolSolver(env)
+solver = cartpoleSolver(env)
 
 solver.set_policy(create_ppo_policy(obs_space, act_space))
 solver.do_training(max_episodes=1000)
@@ -204,7 +204,7 @@ Environments which can be used and are tested:
 - [Flatland](https://github.com/flatland-association/flatland-rl)
 - [Flatland Railway Extension](https://github.com/aiAdrian/flatland_railway_extension)
 
-| Policy                  | Cartpool | Flatland | Flatland Dynamics |
+| Policy                  | cartpole | Flatland | Flatland Dynamics |
 |-------------------------|----------|----------|-------------------|
 | AnalyticalPolicy        | yes      | no       | no                |
 | DDDQNPolicy             | yes      | yes      | yes               |

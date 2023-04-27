@@ -1,8 +1,8 @@
 import gym
 
-from example.gymnasium_cartpool.cartpool_analytical_policy import CartPoolAnalyticalPolicy
-from example.gymnasium_cartpool.cartpool_renderer import CartPoolRenderer
-from example.gymnasium_cartpool.cartpool_solver import CartPoolSolver
+from example.gymnasium_cartpole.cartpole_analytical_policy import cartpoleAnalyticalPolicy
+from example.gymnasium_cartpole.cartpole_renderer import cartpoleRenderer
+from example.gymnasium_cartpole.cartpole_solver import cartpoleSolver
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQNPolicy, DDDQN_Param
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
@@ -34,15 +34,15 @@ def create_ppo_policy(observation_space: int, action_space: int) -> Policy:
 
 
 def create_cart_pool_analytical_policy() -> Policy:
-    return CartPoolAnalyticalPolicy()
+    return cartpoleAnalyticalPolicy()
 
 
 if __name__ == "__main__":
     env, obs_space, act_space = create_environment()
 
-    solver = CartPoolSolver(env)
+    solver = cartpoleSolver(env)
 
-    renderer = CartPoolRenderer(env)
+    renderer = cartpoleRenderer(env)
     solver.set_renderer(renderer)
 
     solver.activate_rendering()
