@@ -31,15 +31,15 @@ graph TD;
 
 ```mermaid
 gitGraph
-       commit a
-       commit b 
+       commit  
+       commit  
        branch develop
-       commit 1
-       commit 2 
-       commit 3 
+       commit  
+       commit  
+       commit  
        checkout main
-       commit 4 
-       commit 5 
+       commit   
+       commit  
 ```
 Solver-->do_training;
 do_training-->for_all_episode;
