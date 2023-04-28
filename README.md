@@ -186,7 +186,7 @@ def create_environment(obs_builder_object: Union[ObservationBuilder, None] = Non
 ```                                                                
 
 ```python
-env, obs_space, act_space = create_environment(create_observation_builder())
+env, obs_space, act_space = create_environment(create_observation_builder(), number_of_agents = 10))
 solver = FlatlandDynamicsSolver(env)
 
 solver.set_policy(PPOPolicy(obs_space, act_space))
