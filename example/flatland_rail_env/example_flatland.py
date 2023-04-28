@@ -12,7 +12,7 @@ from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_av
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQN_Param, DDDQNPolicy
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
-from solver.flatland_solver import FlatlandSolver
+from solver.flatland.flatland_solver import FlatlandSolver
 
 
 def create_flatland_env(obs_builder_object: ObservationBuilder,

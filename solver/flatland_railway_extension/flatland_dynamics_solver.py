@@ -9,7 +9,7 @@ from flatland_railway_extension.environments.InfrastructureData import Infrastru
 from example.flatland_dynamics.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
 from policy.policy import Policy
 from solver.base_renderer import BaseRenderer
-from solver.flatland_solver import FlatlandSolver
+from solver.flatland.flatland_solver import FlatlandSolver
 
 
 class FlatlandDynamicsSolver(FlatlandSolver):
