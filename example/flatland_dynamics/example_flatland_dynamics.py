@@ -64,19 +64,12 @@ if __name__ == "__main__":
     print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env.__class__.__name__,
                                                                    env.get_num_agents(), act_space, obs_space))
 
-    solver = FlatlandDynamicsSolver(env)
+    solver = FlatlandDynamicsSolver(env, create_deadlock_avoidance_policy(env, act_space, False))
+    solver.set_renderer(FlatlandDynamicsSimpleRenderer(env, render_each_episode=1))
+    solver.do_training(max_episodes=2)
 
-    renderer = FlatlandDynamicsSimpleRenderer(env, render_each_episode=1)
-    solver.set_renderer(renderer)
+    solver = FlatlandDynamicsSolver(env, create_ppo_policy(obs_space, act_space))
+    solver.do_training(max_episodes=2)
 
-    solver.activate_rendering()
-    solver.set_policy(create_deadlock_avoidance_policy(env, act_space, False))
-    solver.do_training(max_episodes=10)
-
-    solver.deactivate_rendering()
-    solver.set_policy(create_ppo_policy(obs_space, act_space))
-    solver.do_training(max_episodes=1000)
-
-    solver.deactivate_rendering()
-    solver.set_policy(create_dddqn_policy(obs_space, act_space))
-    solver.do_training(max_episodes=1000)
+    solver = FlatlandDynamicsSolver(env, create_dddqn_policy(obs_space, act_space))
+    solver.do_training(max_episodes=2)

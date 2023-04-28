@@ -1,12 +1,12 @@
 from flatland.envs.rail_env import RailEnv
 
+from policy.policy import Policy
 from solver.base_solver import BaseSolver
 
 
 class FlatlandSolver(BaseSolver):
-    def __init__(self, env: RailEnv):
-        super(FlatlandSolver, self).__init__(env)
-        self.policy = None
+    def __init__(self, env: RailEnv, policy: Policy):
+        super(FlatlandSolver, self).__init__(env, policy)
 
     def get_name(self) -> str:
         return self.__class__.__name__

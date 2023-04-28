@@ -12,11 +12,10 @@ from solver.flatland_solver import FlatlandSolver
 
 
 class FlatlandDynamicsSolver(FlatlandSolver):
-    def __init__(self, env: FlatlandDynamics):
-        super(FlatlandDynamicsSolver, self).__init__(env)
-        self.env = env
-        self.policy: Union[Policy, None] = None
+    def __init__(self, env: FlatlandDynamics, policy: Policy, max_steps: int = 1000):
+        super(FlatlandDynamicsSolver, self).__init__(env, policy)
         self.railroad_switch_analyser: Union[RailroadSwitchAnalyser, None] = None
+        self.set_max_steps(max_steps)
 
     def get_name(self) -> str:
         return self.__class__.__name__

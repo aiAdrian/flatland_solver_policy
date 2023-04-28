@@ -85,9 +85,9 @@ classDiagram
     class BaseSolver {
         get_name()* str
         set_renderer(renderer: BaseRenderer)
-        set_policy(policy: Policy)
         activate_rendering()
         deactivate_rendering()
+        set_max_steps(steps: int)
         render(episode: int, step: int, terminal: bool)
         reset() state, info
         run_step(env, policy, state, eps, info, training_mode) state_next, tot_reward, all_terminal, info
@@ -159,6 +159,9 @@ flowchart TD
 
 #### Flatland Dynamics
 
+First, an environment must be created and the action space and observation space must be determined. The action space
+and the state space are needed for policy creation.  
+
 
 ```python
 def create_observation_builder() -> ObservationBuilder:
@@ -166,10 +169,7 @@ def create_observation_builder() -> ObservationBuilder:
         max_depth=3,
         predictor=ShortestPathPredictorForRailEnv(max_depth=50)
     )
-```  
 
-
-```python
 def create_environment(obs_builder_object: Union[ObservationBuilder, None] = None,
                        number_of_agents: int = 10):
     flatland_environment_helper = FlatlandEnvironmentHelper(rail_env=FlatlandDynamics,
@@ -183,13 +183,12 @@ def create_environment(obs_builder_object: Union[ObservationBuilder, None] = Non
     observation_space = len(obs_states[0])
 
     return flatland_environment_helper.get_rail_env(), observation_space, action_space
-```                                                                
+```        
+
 
 ```python
-env, obs_space, act_space = create_environment(create_observation_builder(), number_of_agents = 10))
-solver = FlatlandDynamicsSolver(env)
-
-solver.set_policy(PPOPolicy(obs_space, act_space))
+env, obs_space, act_space = create_environment(create_observation_builder(), number_of_agents=10))
+solver = FlatlandDynamicsSolver(env, PPOPolicy(obs_space, act_space))
 solver.do_training(max_episodes=1000)
 ```                                                                
 
@@ -198,19 +197,20 @@ solver.do_training(max_episodes=1000)
 Environments which are tested:
 
 - [Gymnasium](https://github.com/Farama-Foundation/Gymnasium):
-   - [cartpole](https://github.com/Farama-Foundation/Gymnasium/blob/main/gymnasium/envs/classic_control/cartpole.py)
+    - [cartpole](https://github.com/Farama-Foundation/Gymnasium/blob/main/gymnasium/envs/classic_control/cartpole.py)
 - [Flatland](https://github.com/flatland-association/flatland-rl)
-   - [RailEnv](https://github.com/flatland-association/flatland-rl/blob/main/flatland/envs/rail_env.py)
+    - [RailEnv](https://github.com/flatland-association/flatland-rl/blob/main/flatland/envs/rail_env.py)
 - [Flatland Railway Extension](https://github.com/aiAdrian/flatland_railway_extension)
-   - [FlatlandDynamics](https://github.com/aiAdrian/flatland_railway_extension/blob/master/flatland_railway_extension/environments/FlatlandDynamics.py)
+    - [FlatlandDynamics](https://github.com/aiAdrian/flatland_railway_extension/blob/master/flatland_railway_extension/environments/FlatlandDynamics.py)
 
-| Policy                    | cartpole | RailEnv    | Flatland Dynamics |
-|---------------------------|----------|------------|-------------------|
-| CartpoleAnalyticalPolicy  | **yes**  | no         | no                |
-| DDDQNPolicy               | **yes**  | **yes**    | **yes**           |
-| PPOPolicy                 | **yes**  | **yes**    | **yes**           |
-| DeadLockAvoidancePolicy   | no       | **yes**    | **yes**           |
+| Policy                   | cartpole | RailEnv | Flatland Dynamics |
+|--------------------------|----------|---------|-------------------|
+| CartpoleAnalyticalPolicy | **yes**  | no      | no                |
+| DDDQNPolicy              | **yes**  | **yes** | **yes**           |
+| PPOPolicy                | **yes**  | **yes** | **yes**           |
+| DeadLockAvoidancePolicy  | no       | **yes** | **yes**           |
 
-### Tensorboard 
+### Tensorboard
+
 Training / quality logging is done with tensorboard. Navigate to the example folder
 and call ``tensorboard --logdir runs``

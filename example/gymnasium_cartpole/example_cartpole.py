@@ -40,19 +40,13 @@ def create_cart_pool_analytical_policy() -> Policy:
 if __name__ == "__main__":
     env, obs_space, act_space = create_environment()
 
-    solver = CartpoleSolver(env)
-
-    renderer = CartpoleRenderer(env)
-    solver.set_renderer(renderer)
-
-    solver.activate_rendering()
-    solver.set_policy(create_cart_pool_analytical_policy())
+    solver = CartpoleSolver(env, create_ppo_policy(obs_space, act_space))
     solver.do_training(max_episodes=10)
 
-    solver.deactivate_rendering()
-    solver.set_policy(create_ppo_policy(obs_space, act_space))
-    solver.do_training(max_episodes=1000)
+    solver = CartpoleSolver(env, create_dddqn_policy(obs_space, act_space))
+    solver.do_training(max_episodes=10)
 
-    solver.deactivate_rendering()
-    solver.set_policy(create_dddqn_policy(obs_space, act_space))
-    solver.do_training(max_episodes=1000)
+    solver = CartpoleSolver(env, create_cart_pool_analytical_policy())
+    solver.set_renderer(CartpoleRenderer(env))
+    solver.do_training(max_episodes=2)
+

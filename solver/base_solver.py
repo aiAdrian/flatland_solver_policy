@@ -9,26 +9,28 @@ from solver.base_renderer import BaseRenderer
 
 
 class BaseSolver:
-    def __init__(self, env):
+    def __init__(self, env, policy: Policy):
         self.env = env
-        self.policy: Union[Policy, None] = None
+        self.policy: Policy = policy
         self.rendering_enabled = False
         self.renderer: Union[BaseRenderer, None] = None
+        self.max_steps = np.inf
 
     def get_name(self) -> str:
         raise NotImplementedError
 
     def set_renderer(self, renderer: BaseRenderer):
         self.renderer = renderer
-
-    def set_policy(self, policy: Policy):
-        self.policy = policy
+        self.activate_rendering()
 
     def activate_rendering(self):
         self.rendering_enabled = True
 
     def deactivate_rendering(self):
         self.rendering_enabled = False
+
+    def set_max_steps(self, steps: int):
+        self.max_steps = steps
 
     def render(self, episode: int, step: int, terminal: bool):
         if self.rendering_enabled:
@@ -72,7 +74,7 @@ class BaseSolver:
     def run_internal_episode(self, episode, env, policy, state, eps, info, training_mode):
         tot_reward = 0
         step = 0
-        while True:
+        while True and step < self.max_steps:
             if self.before_step_starts():
                 return tot_reward
 
@@ -111,10 +113,6 @@ class BaseSolver:
         min_eps = 0.01
         training_mode = True
 
-        if self.policy is None:
-            print('No policy set: please use set_policy(policy)')
-            return
-
         episode = 0
         checkpoint_interval = 50
         scores_window = deque(maxlen=100)
@@ -138,6 +136,8 @@ class BaseSolver:
 
             if episode >= max_episodes:
                 break
+
+        print(' >> done.')
 
     def save_policy(self, filename: str):
         if self.policy is not None:
