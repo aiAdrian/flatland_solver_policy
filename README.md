@@ -155,7 +155,7 @@ flowchart TD
     style Env fill:#fcc,stroke:#333,stroke-width:1px,color:#300        
 ```
 
-### [Example](https://github.com/aiAdrian/flatland_solver_policy/tree/main/example                                                  )
+### [Examples](https://github.com/aiAdrian/flatland_solver_policy/tree/main/example                                                  )
 
 #### Flatland Dynamics
 
