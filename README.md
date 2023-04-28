@@ -170,7 +170,7 @@ solver.set_policy(create_dddqn_policy(obs_space, act_space))
 solver.do_training(max_episodes=1000)
 ```                                                                
 
-### Implemented environments (examples)
+#### Environments
 
 Environments which are tested:
 
