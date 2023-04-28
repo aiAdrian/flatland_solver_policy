@@ -4,7 +4,7 @@ from flatland.envs.predictions import ShortestPathPredictorForRailEnv
 from flatland.envs.rail_env import RailEnv
 from flatland.envs.rail_generators import sparse_rail_generator
 
-from example.flatland_rail_env.flatland_simple_renderer import FlatlandSimpleRenderer
+from solver.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
 from observation.flatland.flatten_tree_observation_for_rail_env.flatten_tree_observation_for_rail_env import \
     FlattenTreeObsForRailEnv
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
@@ -88,10 +88,10 @@ if __name__ == "__main__":
                                                                    env.get_num_agents(), act_space, obs_space))
 
     solver = FlatlandSolver(env, create_deadlock_avoidance_policy(env, act_space), FlatlandSimpleRenderer(env))
-    solver.do_training(max_episodes=10)
+    solver.do_training(max_episodes=2)
 
     solver = FlatlandSolver(env, create_dddqn_policy(obs_space, act_space))
-    solver.do_training(max_episodes=10)
+    solver.do_training(max_episodes=2)
 
     solver = FlatlandSolver(env, create_ppo_policy(obs_space, act_space))
-    solver.do_training(max_episodes=10)
+    solver.do_training(max_episodes=2)

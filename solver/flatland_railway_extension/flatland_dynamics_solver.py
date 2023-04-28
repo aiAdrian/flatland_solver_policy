@@ -6,7 +6,7 @@ from flatland_railway_extension.environments.DynamicAgent import DynamicAgent
 from flatland_railway_extension.environments.FlatlandDynamics import FlatlandDynamics
 from flatland_railway_extension.environments.InfrastructureData import InfrastructureData
 
-from example.flatland_dynamics.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
+from solver.flatland_railway_extension.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
 from policy.policy import Policy
 from solver.base_renderer import BaseRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
