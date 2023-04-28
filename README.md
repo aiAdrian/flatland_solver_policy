@@ -155,33 +155,7 @@ flowchart TD
     style Env fill:#fcc,stroke:#333,stroke-width:1px,color:#300        
 ```
 
-### Examples
-
-#### Cartpole
-
-```python 
-env, obs_space, act_space = create_environment(...)
-solver = CartpoleSolver(env)
-
-solver.set_policy(create_ppo_policy(obs_space, act_space))
-solver.do_training(max_episodes=1000)
-
-solver.set_policy(create_dddqn_policy(obs_space, act_space))
-solver.do_training(max_episodes=1000)
-```                   
-
-#### Flatland: RailEnv
-
-```python
-env, obs_space, act_space = create_environment(...)
-solver = FlatlandSolver(env)
-
-solver.set_policy(create_ppo_policy(obs_space, act_space))
-solver.do_training(max_episodes=1000)
-
-solver.set_policy(create_dddqn_policy(obs_space, act_space))
-solver.do_training(max_episodes=1000)
-```                                                              
+### [Example](https://github.com/aiAdrian/flatland_solver_policy/tree/main/example                                                  )
 
 #### Flatland Dynamics
 
