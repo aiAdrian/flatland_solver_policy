@@ -205,9 +205,9 @@ Environments which are tested:
 - [Flatland](https://github.com/flatland-association/flatland-rl)
    - [RailEnv](https://github.com/flatland-association/flatland-rl/blob/main/flatland/envs/rail_env.py)
 - [Flatland Railway Extension](https://github.com/aiAdrian/flatland_railway_extension)
-   - [FlatlandDyanmics]()
+   - [FlatlandDynamics](https://github.com/aiAdrian/flatland_railway_extension/blob/master/flatland_railway_extension/environments/FlatlandDynamics.py)
 
-| Policy                    | cartpole | Flatland   | Flatland Dynamics |
+| Policy                    | cartpole | RailEnv  | Flatland Dynamics |
 |---------------------------|----------|------------|-------------------|
 | CartpoleAnalyticalPolicy  | **yes**  | no         | no                |
 | DDDQNPolicy               | **yes**  | **yes**    | **yes**           |
