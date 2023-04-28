@@ -6,7 +6,7 @@ from flatland.envs.rail_env import RailEnv
 from flatland_railway_extension.FlatlandEnvironmentHelper import FlatlandEnvironmentHelper
 from flatland_railway_extension.environments.FlatlandDynamics import FlatlandDynamics
 
-from example.flatland_dynamics.flatland_dynamics_env import FlatlandDynamicsSolver
+from solver.flatland_dynamics_solver import FlatlandDynamicsSolver
 from example.flatland_dynamics.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
 from observation.flatland.flatten_tree_observation_for_rail_env.flatten_tree_observation_for_rail_env import \
     FlattenTreeObsForRailEnv

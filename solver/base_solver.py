@@ -9,11 +9,14 @@ from solver.base_renderer import BaseRenderer
 
 
 class BaseSolver:
-    def __init__(self, env, policy: Policy):
+    def __init__(self,
+                 env,
+                 policy: Policy,
+                 renderer: Union[BaseRenderer, None] = None):
         self.env = env
         self.policy: Policy = policy
         self.rendering_enabled = False
-        self.renderer: Union[BaseRenderer, None] = None
+        self.renderer: Union[BaseRenderer, None] = renderer
         self.max_steps = np.inf
 
     def get_name(self) -> str:

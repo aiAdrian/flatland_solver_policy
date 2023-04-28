@@ -1,12 +1,18 @@
+from typing import Union
+
 from flatland.envs.rail_env import RailEnv
 
 from policy.policy import Policy
+from solver.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver
 
 
 class FlatlandSolver(BaseSolver):
-    def __init__(self, env: RailEnv, policy: Policy):
-        super(FlatlandSolver, self).__init__(env, policy)
+    def __init__(self,
+                 env: RailEnv,
+                 policy: Policy,
+                 renderer: Union[BaseRenderer, None] = None):
+        super(FlatlandSolver, self).__init__(env, policy, renderer)
 
     def get_name(self) -> str:
         return self.__class__.__name__

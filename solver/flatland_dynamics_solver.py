@@ -8,12 +8,17 @@ from flatland_railway_extension.environments.InfrastructureData import Infrastru
 
 from example.flatland_dynamics.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
 from policy.policy import Policy
+from solver.base_renderer import BaseRenderer
 from solver.flatland_solver import FlatlandSolver
 
 
 class FlatlandDynamicsSolver(FlatlandSolver):
-    def __init__(self, env: FlatlandDynamics, policy: Policy, max_steps: int = 1000):
-        super(FlatlandDynamicsSolver, self).__init__(env, policy)
+    def __init__(self,
+                 env: FlatlandDynamics,
+                 policy: Policy,
+                 renderer: Union[BaseRenderer, None] = None,
+                 max_steps: int = 1000):
+        super(FlatlandDynamicsSolver, self).__init__(env, policy, renderer)
         self.railroad_switch_analyser: Union[RailroadSwitchAnalyser, None] = None
         self.set_max_steps(max_steps)
 
