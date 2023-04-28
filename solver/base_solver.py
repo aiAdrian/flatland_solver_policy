@@ -17,14 +17,13 @@ class BaseSolver:
         self.policy: Policy = policy
         self.rendering_enabled = False
         self.renderer: Union[BaseRenderer, None] = renderer
+        if renderer is not None:
+            self.activate_rendering()
+
         self.max_steps = np.inf
 
     def get_name(self) -> str:
         raise NotImplementedError
-
-    def set_renderer(self, renderer: BaseRenderer):
-        self.renderer = renderer
-        self.activate_rendering()
 
     def activate_rendering(self):
         self.rendering_enabled = True

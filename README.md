@@ -83,6 +83,7 @@ classDiagram
     }
 
     class BaseSolver {
+        __init__(env: Environment, policy: Policy, renderer: Union[BaseRenderer, None] = None)
         get_name()* str
         set_renderer(renderer: BaseRenderer)
         activate_rendering()
