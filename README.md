@@ -198,7 +198,7 @@ solver.do_training(max_episodes=1000)
 
 ### Implemented environments (examples)
 
-Environments which can be used and are tested:
+Environments which are tested:
 
 - [Gymnasium](https://github.com/Farama-Foundation/Gymnasium)
 - [Flatland](https://github.com/flatland-association/flatland-rl)
