@@ -200,9 +200,12 @@ solver.do_training(max_episodes=1000)
 
 Environments which are tested:
 
-- [Gymnasium](https://github.com/Farama-Foundation/Gymnasium) : [cartpole](https://github.com/Farama-Foundation/Gymnasium/blob/main/gymnasium/envs/classic_control/cartpole.py)
+- [Gymnasium](https://github.com/Farama-Foundation/Gymnasium):
+   - [cartpole](https://github.com/Farama-Foundation/Gymnasium/blob/main/gymnasium/envs/classic_control/cartpole.py)
 - [Flatland](https://github.com/flatland-association/flatland-rl)
+   - [RailEnv](https://github.com/flatland-association/flatland-rl/blob/main/flatland/envs/rail_env.py)
 - [Flatland Railway Extension](https://github.com/aiAdrian/flatland_railway_extension)
+   - [FlatlandDyanmics]()
 
 | Policy                    | cartpole | Flatland   | Flatland Dynamics |
 |---------------------------|----------|------------|-------------------|
