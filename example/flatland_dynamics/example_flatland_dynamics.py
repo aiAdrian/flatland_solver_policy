@@ -6,7 +6,6 @@ from flatland.envs.rail_env import RailEnv
 from flatland_railway_extension.FlatlandEnvironmentHelper import FlatlandEnvironmentHelper
 from flatland_railway_extension.environments.FlatlandDynamics import FlatlandDynamics
 
-from solver.flatland_railway_extension.flatland_dynamics_solver import FlatlandDynamicsSolver
 from example.flatland_dynamics.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
 from observation.flatland.flatten_tree_observation_for_rail_env.flatten_tree_observation_for_rail_env import \
     FlattenTreeObsForRailEnv
@@ -15,6 +14,7 @@ from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_av
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQN_Param, DDDQNPolicy
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
+from solver.flatland_railway_extension.flatland_dynamics_solver import FlatlandDynamicsSolver
 
 
 def create_deadlock_avoidance_policy(rail_env: RailEnv, action_space: int, show_debug_plot=False) -> Policy:
@@ -64,8 +64,8 @@ if __name__ == "__main__":
     print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env.__class__.__name__,
                                                                    env.get_num_agents(), act_space, obs_space))
 
-    solver = FlatlandDynamicsSolver(env, create_deadlock_avoidance_policy(env, act_space, False))
-    solver.set_renderer(FlatlandDynamicsSimpleRenderer(env, render_each_episode=1))
+    solver = FlatlandDynamicsSolver(env, create_deadlock_avoidance_policy(env, act_space, False),
+                                    FlatlandDynamicsSimpleRenderer(env, render_each_episode=1))
     solver.do_training(max_episodes=2)
 
     solver = FlatlandDynamicsSolver(env, create_ppo_policy(obs_space, act_space))

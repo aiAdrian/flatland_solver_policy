@@ -87,8 +87,7 @@ if __name__ == "__main__":
     print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env.__class__.__name__,
                                                                    env.get_num_agents(), act_space, obs_space))
 
-    solver = FlatlandSolver(env, create_deadlock_avoidance_policy(env, act_space))
-    solver.set_renderer(FlatlandSimpleRenderer(env))
+    solver = FlatlandSolver(env, create_deadlock_avoidance_policy(env, act_space), FlatlandSimpleRenderer(env))
     solver.do_training(max_episodes=10)
 
     solver = FlatlandSolver(env, create_dddqn_policy(obs_space, act_space))

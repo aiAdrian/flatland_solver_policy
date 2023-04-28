@@ -46,7 +46,5 @@ if __name__ == "__main__":
     solver = CartpoleSolver(env, create_dddqn_policy(obs_space, act_space))
     solver.do_training(max_episodes=10)
 
-    solver = CartpoleSolver(env, create_cart_pool_analytical_policy())
-    solver.set_renderer(CartpoleRenderer(env))
+    solver = CartpoleSolver(env, create_cart_pool_analytical_policy(), CartpoleRenderer(env))
     solver.do_training(max_episodes=2)
-
