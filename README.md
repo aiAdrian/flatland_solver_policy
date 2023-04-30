@@ -157,8 +157,6 @@ flowchart TD
 
 ### [Examples](https://github.com/aiAdrian/flatland_solver_policy/tree/main/example                                                  )
 
-#### Flatland Dynamics
-
 First, an environment must be created and the action space and observation space must be determined. The action space
 and the state space are needed for policy creation.  
 
