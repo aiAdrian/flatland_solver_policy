@@ -6,7 +6,6 @@ from flatland.envs.rail_env import RailEnv
 from flatland_railway_extension.FlatlandEnvironmentHelper import FlatlandEnvironmentHelper
 from flatland_railway_extension.environments.FlatlandDynamics import FlatlandDynamics
 
-from solver.flatland_railway_extension.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
 from observation.flatland.flatten_tree_observation_for_rail_env.flatten_tree_observation_for_rail_env import \
     FlattenTreeObsForRailEnv
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
@@ -14,6 +13,7 @@ from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_av
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQN_Param, DDDQNPolicy
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
+from solver.flatland_railway_extension.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
 from solver.flatland_railway_extension.flatland_dynamics_solver import FlatlandDynamicsSolver
 
 
@@ -39,8 +39,8 @@ def create_ppo_policy(observation_space: int, action_space: int) -> Policy:
     return PPOPolicy(observation_space, action_space, True)
 
 
-def create_environment(obs_builder_object: Union[ObservationBuilder, None] = None,
-                       number_of_agents: int = 10):
+def make_environment_flatland_dynamics(obs_builder_object: Union[ObservationBuilder, None] = None,
+                                       number_of_agents: int = 10):
     flatland_environment_helper = FlatlandEnvironmentHelper(rail_env=FlatlandDynamics,
                                                             number_of_agents=number_of_agents,
                                                             random_seed=2341,
@@ -60,7 +60,8 @@ if __name__ == "__main__":
         predictor=ShortestPathPredictorForRailEnv(max_depth=50)
     )
 
-    env, obs_space, act_space = create_environment(obs_builder_object=observation_builder, number_of_agents=10)
+    env, obs_space, act_space = make_environment_flatland_dynamics(obs_builder_object=observation_builder,
+                                                                   number_of_agents=10)
     print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env.__class__.__name__,
                                                                    env.get_num_agents(), act_space, obs_space))
 

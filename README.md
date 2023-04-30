@@ -162,13 +162,13 @@ and the state space are needed for policy creation.
 
 
 ```python
-def create_observation_builder() -> ObservationBuilder:
+def make_observation_builder() -> ObservationBuilder:
     return FlattenTreeObsForRailEnv(
         max_depth=3,
         predictor=ShortestPathPredictorForRailEnv(max_depth=50)
     )
 
-def create_environment(obs_builder_object: Union[ObservationBuilder, None] = None,
+def make_environment(obs_builder_object: Union[ObservationBuilder, None] = None,
                        number_of_agents: int = 10):
     flatland_environment_helper = FlatlandEnvironmentHelper(rail_env=FlatlandDynamics,
                                                             number_of_agents=number_of_agents,
@@ -185,7 +185,7 @@ def create_environment(obs_builder_object: Union[ObservationBuilder, None] = Non
 
 
 ```python
-env, obs_space, act_space = create_environment(create_observation_builder(), number_of_agents=10))
+env, obs_space, act_space = make_environment(make_observation_builder(), number_of_agents=10))
 solver = FlatlandDynamicsSolver(env, PPOPolicy(obs_space, act_space))
 solver.do_training(max_episodes=1000)
 ```                                                                
