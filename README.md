@@ -55,11 +55,16 @@ classDiagram
     LearningPolicy <|-- DDDQNPolicy : Environment
 
     class Environment {
+        get_name()* str       
         env.reset() state, info
-        step(action) state_next, reward, terminal, info = 
+        step(actions) state_next, reward, terminal, info
+        get_observation_space() int
+        get_action_space() int
+        get_agent_handles() List[int] 
+        get_num_agents() int 
     }
 
-    class Policy{
+    class Policy {
       get_name()* str
       start_episode(train: bool)
       start_step(train: bool)
@@ -160,32 +165,9 @@ flowchart TD
 First, an environment must be created and the action space and observation space must be determined. The action space
 and the state space are needed for policy creation.  
 
-
+ 
 ```python
-def make_observation_builder() -> ObservationBuilder:
-    return FlattenTreeObsForRailEnv(
-        max_depth=3,
-        predictor=ShortestPathPredictorForRailEnv(max_depth=50)
-    )
-
-def make_environment(obs_builder_object: Union[ObservationBuilder, None] = None,
-                       number_of_agents: int = 10):
-    flatland_environment_helper = FlatlandEnvironmentHelper(rail_env=FlatlandDynamics,
-                                                            number_of_agents=number_of_agents,
-                                                            random_seed=2341,
-                                                            obs_builder_object=obs_builder_object)
-
-    action_space = flatland_environment_helper.get_rail_env().action_space[0]
-
-    obs_states, _ = flatland_environment_helper.get_rail_env().reset()
-    observation_space = len(obs_states[0])
-
-    return flatland_environment_helper.get_rail_env(), observation_space, action_space
-```        
-
-
-```python
-env, obs_space, act_space = make_environment(make_observation_builder(), number_of_agents=10))
+env, obs_space, act_space = FlatlandDynamicsEnvironment(make_observation_builder(), number_of_agents=10))
 solver = FlatlandDynamicsSolver(env, PPOPolicy(obs_space, act_space))
 solver.do_training(max_episodes=1000)
 ```                                                                

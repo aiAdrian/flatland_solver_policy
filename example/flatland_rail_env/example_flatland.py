@@ -1,9 +1,6 @@
-from flatland.core.env_observation_builder import ObservationBuilder
-from flatland.envs.malfunction_generators import ParamMalfunctionGen, MalfunctionParameters
 from flatland.envs.predictions import ShortestPathPredictorForRailEnv
-from flatland.envs.rail_env import RailEnv
-from flatland.envs.rail_generators import sparse_rail_generator
 
+from environment.flatland.rail_env import RailEnvironment
 from observation.flatland.flatten_tree_observation_for_rail_env.flatten_tree_observation_for_rail_env import \
     FlattenTreeObsForRailEnv
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
@@ -11,52 +8,13 @@ from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_av
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQN_Param, DDDQNPolicy
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
+from solver.environment import Environment
 from solver.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
 
 
-def create_flatland_env(obs_builder_object: ObservationBuilder,
-                        max_rails_between_cities=2,
-                        max_rails_in_city=4,
-                        malfunction_rate=1 / 1000,
-                        n_cities=5,
-                        number_of_agents=10,
-                        grid_width=30,
-                        grid_height=40,
-                        random_seed=0) -> RailEnv:
-    return RailEnv(
-        width=grid_width,
-        height=grid_height,
-        rail_generator=sparse_rail_generator(
-            max_num_cities=n_cities,
-            seed=random_seed,
-            grid_mode=True,
-            max_rails_between_cities=max_rails_between_cities,
-            max_rail_pairs_in_city=max_rails_in_city
-        ),
-        malfunction_generator=ParamMalfunctionGen(
-            MalfunctionParameters(
-                malfunction_rate=malfunction_rate, min_duration=10, max_duration=50
-            )
-        ),
-        random_seed=random_seed,
-        number_of_agents=number_of_agents,
-        obs_builder_object=obs_builder_object
-    )
-
-
-def make_environment_flatland_railenv(obs_builder_object: ObservationBuilder, number_of_agents: int):
-    environment = create_flatland_env(obs_builder_object, number_of_agents=number_of_agents)
-    action_space = environment.action_space[0]
-
-    obs_states, _ = environment.reset()
-    observation_space = len(obs_states[0])
-
-    return environment, observation_space, action_space
-
-
-def create_deadlock_avoidance_policy(rail_env: RailEnv, action_space: int, show_debug_plot=False) -> Policy:
-    return DeadLockAvoidancePolicy(rail_env, action_space, enable_eps=False, show_debug_plot=show_debug_plot)
+def create_deadlock_avoidance_policy(env: Environment, action_space: int, show_debug_plot=False) -> Policy:
+    return DeadLockAvoidancePolicy(env, action_space, enable_eps=False, show_debug_plot=show_debug_plot)
 
 
 def create_dddqn_policy(observation_space: int, action_space: int) -> Policy:
@@ -83,16 +41,19 @@ if __name__ == "__main__":
         predictor=ShortestPathPredictorForRailEnv(max_depth=50)
     )
 
-    env, obs_space, act_space = make_environment_flatland_railenv(obs_builder_object=observation_builder,
-                                                                  number_of_agents=10)
-    print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env.__class__.__name__,
-                                                                   env.get_num_agents(), act_space, obs_space))
+    env = RailEnvironment(obs_builder_object=observation_builder, number_of_agents=10)
 
-    solver = FlatlandSolver(env, create_deadlock_avoidance_policy(env, act_space), FlatlandSimpleRenderer(env))
+    print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env.get_name(),
+                                                                   env.get_num_agents(),
+                                                                   env.get_action_space(),
+                                                                   env.get_observation_space()))
+
+    solver = FlatlandSolver(env, create_deadlock_avoidance_policy(env, env.get_action_space()),
+                            FlatlandSimpleRenderer(env))
     solver.do_training(max_episodes=2)
 
-    solver = FlatlandSolver(env, create_dddqn_policy(obs_space, act_space))
+    solver = FlatlandSolver(env, create_dddqn_policy(env.get_observation_space(), env.get_action_space()))
     solver.do_training(max_episodes=2)
 
-    solver = FlatlandSolver(env, create_ppo_policy(obs_space, act_space))
+    solver = FlatlandSolver(env, create_ppo_policy(env.get_observation_space(), env.get_action_space()))
     solver.do_training(max_episodes=2)

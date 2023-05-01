@@ -1,19 +1,10 @@
-import gym
-
+from environment.gymnasium.cartpole import CartpoleEnvironment
 from example.gymnasium_cartpole.cartpole_analytical_policy import CartpoleAnalyticalPolicy
 from example.gymnasium_cartpole.cartpole_renderer import CartpoleRenderer
 from example.gymnasium_cartpole.cartpole_solver import CartpoleSolver
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQNPolicy, DDDQN_Param
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
-
-
-def make_environment_gymnasium_cartpole():
-    environment = gym.make("CartPole-v1")
-    observation_space = environment.observation_space.shape[0]
-    action_space = environment.action_space.n
-    return environment, observation_space, action_space
-
 
 def create_dddqn_policy(observation_space: int, action_space: int) -> Policy:
     param = DDDQN_Param(hidden_size=128,
@@ -38,13 +29,12 @@ def create_cartpole_analytical_policy() -> Policy:
 
 
 if __name__ == "__main__":
-    env, obs_space, act_space = make_environment_gymnasium_cartpole()
+    env = CartpoleEnvironment()
+    solver = CartpoleSolver(env, create_ppo_policy(env.get_observation_space(), env.get_action_space()))
+    solver.do_training(max_episodes=10)
 
-    solver = CartpoleSolver(env, create_ppo_policy(obs_space, act_space))
-    solver.do_training(max_episodes=1000)
-
-    solver = CartpoleSolver(env, create_dddqn_policy(obs_space, act_space))
-    solver.do_training(max_episodes=1000)
+    solver = CartpoleSolver(env, create_dddqn_policy(env.get_observation_space(), env.get_action_space()))
+    solver.do_training(max_episodes=10)
 
     solver = CartpoleSolver(env, create_cartpole_analytical_policy(), CartpoleRenderer(env))
     solver.do_training(max_episodes=2)

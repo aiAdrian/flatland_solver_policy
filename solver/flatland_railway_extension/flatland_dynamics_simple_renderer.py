@@ -1,14 +1,14 @@
-from flatland.envs.rail_env import RailEnv
 from flatland.utils.rendertools import AgentRenderVariant
 from flatland_railway_extension.utils.FlatlandDynamicsRenderer import FlatlandDynamicsRenderer
 
 from solver.base_renderer import BaseRenderer
+from solver.environment import Environment
 
 
 class FlatlandDynamicsSimpleRenderer(BaseRenderer):
-    def __init__(self, rail_env: RailEnv, render_each_episode=1, render_each_step=10):
+    def __init__(self, env: Environment, render_each_episode=1, render_each_step=10):
         super(FlatlandDynamicsSimpleRenderer, self).__int__()
-        self.env = rail_env
+        self.env = env
         self.renderer: FlatlandDynamicsRenderer = self._create_renderer()
         self.render_each_episode = render_each_episode
         self.render_each_step = render_each_step
@@ -16,7 +16,7 @@ class FlatlandDynamicsSimpleRenderer(BaseRenderer):
     def _create_renderer(self, show_debug=False,
                          agent_render_variant=AgentRenderVariant.AGENT_SHOWS_OPTIONS_AND_BOX):
         flatland_renderer = FlatlandDynamicsRenderer(
-            env=self.env,
+            env=self.env.get_raw_env(),
             show_debug=show_debug,
             agent_render_variant=agent_render_variant,
             show_agents=False,

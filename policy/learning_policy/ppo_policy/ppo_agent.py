@@ -148,9 +148,6 @@ class PPOPolicy(LearningPolicy):
     def get_name(self):
         return self.__class__.__name__
 
-    def reset(self, env):
-        pass
-
     def act(self, handle, state, eps=None):
         # sample a action to take
         torch_state = torch.tensor(state, dtype=torch.float).to(self.device)

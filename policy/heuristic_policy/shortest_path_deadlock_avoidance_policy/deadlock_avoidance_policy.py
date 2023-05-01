@@ -7,6 +7,7 @@ from flatland.envs.step_utils.states import TrainState
 from policy.heuristic_policy.heuristic_policy import HeuristicPolicy
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.shortest_distance_walker \
     import ShortestDistanceWalker
+from solver.environment import Environment
 
 
 class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
@@ -52,10 +53,21 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
         self.full_shortest_distance_agent_map[(handle, position[0], position[1])] = 1
 
 
-class DeadLockAvoidancePolicy(HeuristicPolicy):
-    def __init__(self, env: RailEnv, action_size, enable_eps=False, show_debug_plot=False):
-        super(HeuristicPolicy, self).__init__()
+# define Python user-defined exceptions
+class InvalidRawEnvironmentException(Exception):
+    def __init__(self, env, message="This policy works only with a RailEnv or its specialized version. "
+                                    "Please check the raw_env . "):
         self.env = env
+        self.message = message
+        super().__init__(self.message)
+
+
+class DeadLockAvoidancePolicy(HeuristicPolicy):
+    def __init__(self, env: Environment, action_size, enable_eps=False, show_debug_plot=False):
+        super(HeuristicPolicy, self).__init__()
+        if not isinstance(env.get_raw_env(), RailEnv):
+            raise InvalidRawEnvironmentException(env.get_raw_env())
+        self.env: RailEnv = env.get_raw_env()
         self.loss = 0
         self.action_size = action_size
         self.agent_can_move = {}
@@ -86,8 +98,8 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
     def get_agent_can_move_value(self, handle):
         return self.agent_can_move_value.get(handle, np.inf)
 
-    def reset(self, env):
-        self.env = env
+    def reset(self, env: Environment):
+        self.env = env.get_raw_env()
         self.agent_positions = None
         self.shortest_distance_walker = None
         self.switches = {}

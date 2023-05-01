@@ -1,5 +1,7 @@
 from flatland.envs.rail_env import RailEnv
 
+from solver.environment import Environment
+
 
 class Policy:
 
@@ -45,7 +47,7 @@ class Policy:
     def test(self):
         pass
 
-    def reset(self, env: RailEnv):
+    def reset(self, env: Environment):
         pass
 
     def clone(self):

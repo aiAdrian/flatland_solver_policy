@@ -3,10 +3,11 @@ from flatland.envs.rail_env import RailEnv
 from flatland.utils.rendertools import AgentRenderVariant, RenderTool
 
 from solver.base_renderer import BaseRenderer
+from solver.environment import Environment
 
 
 class FlatlandSimpleRenderer(BaseRenderer):
-    def __init__(self, rail_env: RailEnv, render_each_episode=1):
+    def __init__(self, rail_env: Environment, render_each_episode=1):
         super(FlatlandSimpleRenderer, self).__int__()
         self.env = rail_env
         self.renderer = self._create_renderer()
@@ -15,11 +16,11 @@ class FlatlandSimpleRenderer(BaseRenderer):
     def _create_renderer(self, show_debug=False,
                          agent_render_variant=AgentRenderVariant.AGENT_SHOWS_OPTIONS_AND_BOX,
                          screen_width_scale=40, screen_height_scale=25):
-        render_tool = RenderTool(self.env,
+        render_tool = RenderTool(self.env.get_raw_env(),
                                  agent_render_variant=agent_render_variant,
                                  show_debug=show_debug,
-                                 screen_width=int(np.round(self.env.width * screen_width_scale)),
-                                 screen_height=int(np.round(self.env.height * screen_height_scale)))
+                                 screen_width=int(np.round(self.env.get_raw_env().width * screen_width_scale)),
+                                 screen_height=int(np.round(self.env.get_raw_env().height * screen_height_scale)))
         render_tool.reset()
         return render_tool
 

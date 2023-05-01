@@ -5,11 +5,12 @@ from flatland.envs.rail_env import RailEnv
 from policy.policy import Policy
 from solver.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver
+from solver.environment import Environment
 
 
 class FlatlandSolver(BaseSolver):
     def __init__(self,
-                 env: RailEnv,
+                 env: Environment,
                  policy: Policy,
                  renderer: Union[BaseRenderer, None] = None):
         super(FlatlandSolver, self).__init__(env, policy, renderer)

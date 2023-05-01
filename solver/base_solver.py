@@ -1,16 +1,17 @@
 from collections import deque
-from typing import Union
+from typing import Union, Dict
 
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
 from policy.policy import Policy
 from solver.base_renderer import BaseRenderer
+from solver.environment import Environment
 
 
 class BaseSolver:
     def __init__(self,
-                 env,
+                 env: Environment,
                  policy: Policy,
                  renderer: Union[BaseRenderer, None] = None):
         self.env = env
@@ -31,25 +32,35 @@ class BaseSolver:
     def deactivate_rendering(self):
         self.rendering_enabled = False
 
-    def set_max_steps(self, steps: int):
+    def set_max_steps(self,
+                      steps: int):
         self.max_steps = steps
 
-    def render(self, episode: int, step: int, terminal: bool):
+    def render(self,
+               episode: int,
+               step: int,
+               terminal: bool):
         if self.rendering_enabled:
             self.renderer.render(episode, step, terminal)
 
     def reset(self):
-        state = self.env.reset()
+        state, info = self.env.reset()
         self.policy.reset(self.env)
-        return state, {}
+        return state, info
 
-    def run_step(self, env, policy, state, eps, info, training_mode):
+    def run_step(self,
+                 env: Environment,
+                 policy: Policy,
+                 state,
+                 eps: float,
+                 info: Dict,
+                 training_mode: bool):
 
         tot_reward = 0
         all_terminal = True
         policy.start_step(train=training_mode)
 
-        for handle in [0]:
+        for handle in self.env.get_agent_handles():
             policy.start_act(handle, train=training_mode)
             action = policy.act(handle, state, eps)
             policy.end_act(handle, train=training_mode)
@@ -64,7 +75,8 @@ class BaseSolver:
         policy.end_step(train=training_mode)
         return state_next, tot_reward, all_terminal, info
 
-    def update_state(self, state_next):
+    def update_state(self,
+                     state_next):
         return np.copy(state_next)
 
     def before_step_starts(self):
@@ -73,7 +85,13 @@ class BaseSolver:
     def after_step_ends(self):
         return False
 
-    def run_internal_episode(self, episode, env, policy, state, eps, info, training_mode):
+    def run_internal_episode(self,
+                             episode: int,
+                             env: Environment, policy: Policy,
+                             state,
+                             eps: float,
+                             info: Dict,
+                             training_mode: bool):
         tot_reward = 0
         step = 0
         while True and step < self.max_steps:
@@ -100,7 +118,12 @@ class BaseSolver:
     def after_episode_ends(self):
         pass
 
-    def run_episode(self, episode, env, policy, eps, training_mode):
+    def run_episode(self,
+                    episode: int,
+                    env: Environment,
+                    policy: Policy,
+                    eps: float,
+                    training_mode: bool):
         state, info = self.reset()
         self.before_episode_starts()
         policy.start_episode(train=training_mode)
@@ -109,7 +132,8 @@ class BaseSolver:
         self.after_episode_ends()
         return tot_reward
 
-    def do_training(self, max_episodes=2000):
+    def do_training(self,
+                    max_episodes=2000):
         eps = 1.0
         eps_decay = 0.99
         min_eps = 0.01
@@ -141,10 +165,12 @@ class BaseSolver:
 
         print(' >> done.')
 
-    def save_policy(self, filename: str):
+    def save_policy(self,
+                    filename: str):
         if self.policy is not None:
             self.policy.save(filename)
 
-    def load_policy(self, filename: str):
+    def load_policy(self,
+                    filename: str):
         if self.policy is not None:
             self.policy.load(filename)
