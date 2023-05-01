@@ -2,7 +2,7 @@ from flatland.utils.rendertools import AgentRenderVariant
 from flatland_railway_extension.utils.FlatlandDynamicsRenderer import FlatlandDynamicsRenderer
 
 from solver.base_renderer import BaseRenderer
-from solver.environment import Environment
+from environment.environment import Environment
 
 
 class FlatlandDynamicsSimpleRenderer(BaseRenderer):

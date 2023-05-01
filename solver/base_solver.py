@@ -6,7 +6,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from policy.policy import Policy
 from solver.base_renderer import BaseRenderer
-from solver.environment import Environment
+from environment.environment import Environment
 
 
 class BaseSolver:

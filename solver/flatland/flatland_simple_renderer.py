@@ -1,9 +1,8 @@
 import numpy as np
-from flatland.envs.rail_env import RailEnv
 from flatland.utils.rendertools import AgentRenderVariant, RenderTool
 
 from solver.base_renderer import BaseRenderer
-from solver.environment import Environment
+from environment.environment import Environment
 
 
 class FlatlandSimpleRenderer(BaseRenderer):

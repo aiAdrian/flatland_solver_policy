@@ -7,7 +7,7 @@ from flatland.envs.step_utils.states import TrainState
 from policy.heuristic_policy.heuristic_policy import HeuristicPolicy
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.shortest_distance_walker \
     import ShortestDistanceWalker
-from solver.environment import Environment
+from environment.environment import Environment
 
 
 class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):

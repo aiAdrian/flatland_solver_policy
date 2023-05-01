@@ -1,6 +1,4 @@
-from flatland.envs.rail_env import RailEnv
-
-from solver.environment import Environment
+from environment.environment import Environment
 
 
 class Policy:

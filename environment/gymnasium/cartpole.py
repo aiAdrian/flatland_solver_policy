@@ -2,7 +2,7 @@ from typing import List
 
 import gym
 
-from solver.environment import Environment
+from environment.environment import Environment
 
 
 class CartpoleEnvironment(Environment):

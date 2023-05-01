@@ -3,7 +3,7 @@ from flatland.envs.malfunction_generators import ParamMalfunctionGen, Malfunctio
 from flatland.envs.rail_env import RailEnv
 from flatland.envs.rail_generators import sparse_rail_generator
 
-from solver.environment import Environment
+from environment.environment import Environment
 
 
 class RailEnvironment(Environment):

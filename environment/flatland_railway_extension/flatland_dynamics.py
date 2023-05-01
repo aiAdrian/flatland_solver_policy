@@ -2,7 +2,7 @@ from flatland.core.env_observation_builder import ObservationBuilder
 from flatland_railway_extension.FlatlandEnvironmentHelper import FlatlandEnvironmentHelper
 from flatland_railway_extension.environments.FlatlandDynamics import FlatlandDynamics
 
-from solver.environment import Environment
+from environment.environment import Environment
 
 
 class FlatlandDynamicsEnvironment(Environment):

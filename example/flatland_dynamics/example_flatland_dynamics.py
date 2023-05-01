@@ -8,7 +8,7 @@ from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_av
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQN_Param, DDDQNPolicy
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
-from solver.environment import Environment
+from environment.environment import Environment
 from solver.flatland_railway_extension.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
 from solver.flatland_railway_extension.flatland_dynamics_solver import FlatlandDynamicsSolver
 
