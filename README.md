@@ -167,7 +167,13 @@ and the state space are needed for policy creation.
 
  
 ```python
-env, obs_space, act_space = FlatlandDynamicsEnvironment(make_observation_builder(), number_of_agents=10))
+observation_builder = FlattenTreeObsForRailEnv(
+  max_depth=3,
+  predictor=ShortestPathPredictorForRailEnv(max_depth=50)
+)
+
+env, obs_space, act_space = FlatlandDynamicsEnvironment(obs_builder_object=observation_builder,
+                                                        number_of_agents=10)
 solver = FlatlandDynamicsSolver(env, PPOPolicy(obs_space, act_space))
 solver.do_training(max_episodes=1000)
 ```                                                                
