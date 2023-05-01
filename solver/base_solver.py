@@ -196,6 +196,9 @@ class BaseSolver:
             if episode >= max_episodes:
                 break
 
+            if episode % checkpoint_interval == 0:
+                self.save_policy(filename=self.get_name() + "_" + self.policy.get_name() + "_" + episode)
+
         print(' >> done.')
 
     def save_policy(self,
