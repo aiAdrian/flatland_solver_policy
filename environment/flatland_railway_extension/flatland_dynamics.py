@@ -8,8 +8,8 @@ from environment.environment import Environment
 class FlatlandDynamicsEnvironment(Environment):
 
     def __init__(self,
-                obs_builder_object: ObservationBuilder,
-                number_of_agents=10):
+                 obs_builder_object: ObservationBuilder,
+                 number_of_agents=10):
         environment, action_space, observation_space = FlatlandDynamicsEnvironment._make_environment_flatland_dynamics(
             obs_builder_object,
             number_of_agents)

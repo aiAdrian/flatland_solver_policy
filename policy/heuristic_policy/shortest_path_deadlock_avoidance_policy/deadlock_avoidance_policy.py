@@ -4,10 +4,10 @@ from flatland.envs.fast_methods import fast_count_nonzero
 from flatland.envs.rail_env import RailEnv, RailEnvActions
 from flatland.envs.step_utils.states import TrainState
 
+from environment.environment import Environment
 from policy.heuristic_policy.heuristic_policy import HeuristicPolicy
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.shortest_distance_walker \
     import ShortestDistanceWalker
-from environment.environment import Environment
 
 
 class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):

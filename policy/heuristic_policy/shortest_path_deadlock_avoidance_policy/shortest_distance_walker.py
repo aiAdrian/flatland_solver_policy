@@ -79,7 +79,10 @@ class ShortestDistanceWalker:
             position = agent.initial_position
         direction = agent.direction
         possible_transitions = (0, 1, 0, 0)
-        if (position != agent.target):
+        new_position = agent.target
+        new_direction = agent.direction
+        action = RailEnvActions.STOP_MOVING
+        if position != agent.target:
             new_position, new_direction, dist, action, possible_transitions = self.walk(handle, position, direction)
             if new_position is None:
                 return position, direction, RailEnvActions.STOP_MOVING, possible_transitions

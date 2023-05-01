@@ -9,15 +9,15 @@ from environment.environment import Environment
 class RailEnvironment(Environment):
 
     def __init__(self,
-                obs_builder_object: ObservationBuilder,
-                max_rails_between_cities=2,
-                max_rails_in_city=4,
-                malfunction_rate=1 / 1000,
-                n_cities=5,
-                number_of_agents=10,
-                grid_width=30,
-                grid_height=40,
-                random_seed=0):
+                 obs_builder_object: ObservationBuilder,
+                 max_rails_between_cities=2,
+                 max_rails_in_city=4,
+                 malfunction_rate=1 / 1000,
+                 n_cities=5,
+                 number_of_agents=10,
+                 grid_width=30,
+                 grid_height=40,
+                 random_seed=0):
         environment = RailEnvironment._create_flatland_env(
             obs_builder_object,
             max_rails_between_cities,
@@ -34,7 +34,6 @@ class RailEnvironment(Environment):
         observation_space = len(obs_states[0])
 
         super(RailEnvironment, self).__init__(environment, action_space, observation_space)
-
 
     def get_name(self) -> str:
         return "Environment:Flatland:RailEnv"
@@ -77,4 +76,3 @@ class RailEnvironment(Environment):
             number_of_agents=number_of_agents,
             obs_builder_object=obs_builder_object
         )
-

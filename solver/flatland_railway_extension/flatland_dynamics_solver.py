@@ -6,9 +6,9 @@ from flatland_railway_extension.environments.DynamicAgent import DynamicAgent
 from flatland_railway_extension.environments.FlatlandDynamics import FlatlandDynamics
 from flatland_railway_extension.environments.InfrastructureData import InfrastructureData
 
+from environment.environment import Environment
 from policy.policy import Policy
 from solver.base_renderer import BaseRenderer
-from environment.environment import Environment
 from solver.flatland.flatland_solver import FlatlandSolver
 from solver.flatland_railway_extension.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
 
@@ -62,7 +62,8 @@ class FlatlandDynamicsSolver(FlatlandSolver):
 
     def before_step_starts(self):
         if self.renderer is not None and isinstance(self.renderer, FlatlandDynamicsSimpleRenderer):
-            self.renderer.renderer.set_flatland_resource_allocator(self.raw_env.get_active_flatland_resource_allocator())
+            self.renderer.renderer.set_flatland_resource_allocator(
+                self.raw_env.get_active_flatland_resource_allocator())
             if self.renderer.renderer.is_closed():
                 return True
         return False

@@ -1,8 +1,8 @@
 import numpy as np
 from flatland.utils.rendertools import AgentRenderVariant, RenderTool
 
-from solver.base_renderer import BaseRenderer
 from environment.environment import Environment
+from solver.base_renderer import BaseRenderer
 
 
 class FlatlandSimpleRenderer(BaseRenderer):

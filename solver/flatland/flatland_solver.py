@@ -1,9 +1,9 @@
 from typing import Union
 
+from environment.environment import Environment
 from policy.policy import Policy
 from solver.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver
-from environment.environment import Environment
 
 
 class FlatlandSolver(BaseSolver):

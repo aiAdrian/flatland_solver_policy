@@ -25,7 +25,6 @@ class CartpoleEnvironment(Environment):
         state_next, reward, terminal, info = self.raw_env.step(actions)
         return state_next, reward, terminal, info
 
-
     def get_agent_handles(self) -> List[int]:
         return [0]
 

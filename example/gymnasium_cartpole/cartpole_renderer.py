@@ -1,5 +1,5 @@
-from solver.base_renderer import BaseRenderer
 from environment.environment import Environment
+from solver.base_renderer import BaseRenderer
 
 
 class CartpoleRenderer(BaseRenderer):

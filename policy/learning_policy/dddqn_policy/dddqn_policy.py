@@ -57,8 +57,8 @@ class DDDQNPolicy(LearningPolicy):
         # Q-Network
         self.qnetwork_local = DuelingQNetwork(state_size,
                                               action_size,
-                                              hidsize1=self.hidsize,
-                                              hidsize2=self.hidsize).to(self.device)
+                                              hide_size_1=self.hidsize,
+                                              hide_size_2=self.hidsize).to(self.device)
 
         if not evaluation_mode:
             self.qnetwork_target = copy.deepcopy(self.qnetwork_local)

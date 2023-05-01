@@ -1,12 +1,4 @@
-from typing import List, Union
-
-import gym
-from flatland.core.env_observation_builder import ObservationBuilder
-from flatland.envs.malfunction_generators import ParamMalfunctionGen, MalfunctionParameters
-from flatland.envs.rail_env import RailEnv
-from flatland.envs.rail_generators import sparse_rail_generator
-from flatland_railway_extension.FlatlandEnvironmentHelper import FlatlandEnvironmentHelper
-from flatland_railway_extension.environments.FlatlandDynamics import FlatlandDynamics
+from typing import List
 
 
 class Environment:

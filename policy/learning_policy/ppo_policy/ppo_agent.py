@@ -105,10 +105,14 @@ class PPOPolicy(LearningPolicy):
                  use_replay_buffer=False,
                  in_parameters: Union[PPO_Param, None] = None):
         super(PPOPolicy, self).__init__()
+
+        self.state_size = state_size
+        self.action_size = action_size
+
         # parameters
         self.ppo_parameters = in_parameters
         if self.ppo_parameters is not None:
-            self.hidsize = self.ppo_parameters.hidden_size
+            self.hide_size = self.ppo_parameters.hidden_size
             self.buffer_size = self.ppo_parameters.buffer_size
             self.batch_size = self.ppo_parameters.batch_size
             self.learning_rate = self.ppo_parameters.learning_rate
@@ -121,7 +125,7 @@ class PPOPolicy(LearningPolicy):
                 self.device = torch.device("cpu")
                 # print("🐢 Using CPU")
         else:
-            self.hidsize = 128
+            self.hide_size = 128
             self.learning_rate = 1.0e-3
             self.gamma = 0.95
             self.buffer_size = 32_000
@@ -140,8 +144,8 @@ class PPOPolicy(LearningPolicy):
         self.memory = ReplayBuffer(action_size, self.buffer_size, self.batch_size, self.device)
         self.loss = 0
         self.actor_critic_model = ActorCriticModel(state_size, action_size, self.device,
-                                                   hidsize1=self.hidsize,
-                                                   hidsize2=self.hidsize)
+                                                   hidsize1=self.hide_size,
+                                                   hidsize2=self.hide_size)
         self.optimizer = optim.Adam(self.actor_critic_model.parameters(), lr=self.learning_rate)
         self.loss_function = nn.MSELoss()  # nn.SmoothL1Loss()
 

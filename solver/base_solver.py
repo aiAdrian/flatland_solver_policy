@@ -141,7 +141,7 @@ class BaseSolver:
         episode = 0
         checkpoint_interval = 50
         scores_window = deque(maxlen=100)
-        writer = SummaryWriter(comment=self.get_name() + "_eval_" + self.policy.get_name())
+        writer = SummaryWriter(comment="_" + self.get_name() + "_evaluation_" + self.policy.get_name())
 
         while True:
             episode += 1
@@ -155,8 +155,8 @@ class BaseSolver:
                                                                            np.mean(scores_window)),
                   end='\n' if episode % checkpoint_interval == 0 else '')
 
-            writer.add_scalar(self.get_name() + "/eval_value", tot_reward, episode)
-            writer.add_scalar(self.get_name() + "/eval_smoothed_value", np.mean(scores_window), episode)
+            writer.add_scalar(self.get_name() + "/evaluation_value", tot_reward, episode)
+            writer.add_scalar(self.get_name() + "/evaluation_smoothed_value", np.mean(scores_window), episode)
             writer.flush()
 
             if episode >= max_episodes:
@@ -175,7 +175,7 @@ class BaseSolver:
         episode = 0
         checkpoint_interval = 50
         scores_window = deque(maxlen=100)
-        writer = SummaryWriter(comment=self.get_name() + "_" + self.policy.get_name())
+        writer = SummaryWriter(comment="_" + self.get_name() + "_training_" + self.policy.get_name())
 
         while True:
             episode += 1
@@ -189,16 +189,17 @@ class BaseSolver:
                                                                            np.mean(scores_window)),
                   end='\n' if episode % checkpoint_interval == 0 else '')
 
-            writer.add_scalar(self.get_name() + "/value", tot_reward, episode)
-            writer.add_scalar(self.get_name() + "/smoothed_value", np.mean(scores_window), episode)
+            writer.add_scalar(self.get_name() + "/training_value", tot_reward, episode)
+            writer.add_scalar(self.get_name() + "/training_smoothed_value", np.mean(scores_window), episode)
             writer.flush()
+
+            if episode % checkpoint_interval == 0 or episode >= max_episodes:
+                self.save_policy(filename="{}/{}_{}_{}".format(writer.get_logdir(),
+                                                               self.get_name(), self.policy.get_name(),
+                                                               episode))
 
             if episode >= max_episodes:
                 break
-
-            if episode % checkpoint_interval == 0:
-                self.save_policy(
-                    filename="./runs/{}_{}_{}".format(self.get_name(), self.policy.get_name(), episode))
 
         print(' >> done.')
 
