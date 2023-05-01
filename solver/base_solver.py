@@ -4,9 +4,9 @@ from typing import Union, Dict
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
+from environment.environment import Environment
 from policy.policy import Policy
 from solver.base_renderer import BaseRenderer
-from environment.environment import Environment
 
 
 class BaseSolver:
@@ -132,11 +132,44 @@ class BaseSolver:
         self.after_episode_ends()
         return tot_reward
 
-    def do_training(self,
-                    max_episodes=2000):
-        eps = 1.0
-        eps_decay = 0.99
-        min_eps = 0.01
+    def perform_evaluation(self,
+                           max_episodes=2000,
+                           eps=0.0):
+
+        training_mode = False
+
+        episode = 0
+        checkpoint_interval = 50
+        scores_window = deque(maxlen=100)
+        writer = SummaryWriter(comment=self.get_name() + "_eval_" + self.policy.get_name())
+
+        while True:
+            episode += 1
+
+            tot_reward = self.run_episode(episode, self.env, self.policy, eps, training_mode)
+
+            scores_window.append(tot_reward)
+
+            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f}'.format(episode,
+                                                                           tot_reward,
+                                                                           np.mean(scores_window)),
+                  end='\n' if episode % checkpoint_interval == 0 else '')
+
+            writer.add_scalar(self.get_name() + "/eval_value", tot_reward, episode)
+            writer.add_scalar(self.get_name() + "/eval_smoothed_value", np.mean(scores_window), episode)
+            writer.flush()
+
+            if episode >= max_episodes:
+                break
+
+        print(' >> done.')
+
+    def perform_training(self,
+                         max_episodes=2000,
+                         eps=1.0,
+                         eps_decay=0.99,
+                         min_eps=0.01):
+
         training_mode = True
 
         episode = 0
