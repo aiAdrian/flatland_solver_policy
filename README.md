@@ -56,8 +56,8 @@ classDiagram
 
     class Environment {
         get_name()* str       
-        env.reset() state, info
-        step(actions) state_next, reward, terminal, info
+        reset()* state, info
+        step(actions)* state_next, reward, terminal, info
         get_observation_space() int
         get_action_space() int
         get_agent_handles() List[int] 
