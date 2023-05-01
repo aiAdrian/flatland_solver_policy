@@ -13,8 +13,9 @@ from solver.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
 
 
-def create_deadlock_avoidance_policy(env: Environment, action_space: int, show_debug_plot=False) -> Policy:
-    return DeadLockAvoidancePolicy(env, action_space, enable_eps=False, show_debug_plot=show_debug_plot)
+def create_deadlock_avoidance_policy(environment: Environment, action_space: int, show_debug_plot=False) -> Policy:
+    return DeadLockAvoidancePolicy(environment.get_raw_env(), action_space, enable_eps=False,
+                                   show_debug_plot=show_debug_plot)
 
 
 def create_dddqn_policy(observation_space: int, action_space: int) -> Policy:

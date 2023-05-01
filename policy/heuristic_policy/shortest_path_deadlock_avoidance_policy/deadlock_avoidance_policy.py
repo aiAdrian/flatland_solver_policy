@@ -63,11 +63,9 @@ class InvalidRawEnvironmentException(Exception):
 
 
 class DeadLockAvoidancePolicy(HeuristicPolicy):
-    def __init__(self, env: Environment, action_size, enable_eps=False, show_debug_plot=False):
+    def __init__(self, env: RailEnv, action_size, enable_eps=False, show_debug_plot=False):
         super(HeuristicPolicy, self).__init__()
-        if not isinstance(env.get_raw_env(), RailEnv):
-            raise InvalidRawEnvironmentException(env.get_raw_env())
-        self.env: RailEnv = env.get_raw_env()
+        self.env: RailEnv = env
         self.loss = 0
         self.action_size = action_size
         self.agent_can_move = {}
