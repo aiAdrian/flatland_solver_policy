@@ -197,7 +197,8 @@ class BaseSolver:
                 break
 
             if episode % checkpoint_interval == 0:
-                self.save_policy(filename=self.get_name() + "_" + self.policy.get_name() + "_" + episode)
+                self.save_policy(
+                    filename="./runs/{}_{}_{}".format(self.get_name(), self.policy.get_name(), episode))
 
         print(' >> done.')
 

@@ -8,7 +8,6 @@ from environment.environment import Environment
 class CartpoleEnvironment(Environment):
 
     def __init__(self):
-        print('ok')
         environment = gym.make("CartPole-v1")
         observation_space = environment.observation_space.shape[0]
         action_space = environment.action_space.n

@@ -12,7 +12,6 @@ from flatland_railway_extension.environments.FlatlandDynamics import FlatlandDyn
 class Environment:
 
     def __init__(self, raw_env, action_space, observation_space):
-        print('Environment')
         self.raw_env = raw_env
         self._action_space: int = action_space
         self._observation_space: int = observation_space
