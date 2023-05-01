@@ -13,3 +13,9 @@ class CartpoleAnalyticalPolicy(Policy):
 
     def step(self, handle: int, state, action, reward, next_state, done):
         pass
+
+    def save(self, filename):
+        pass
+
+    def load(self, filename):
+        pass
