@@ -7,13 +7,13 @@ from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
 
 def create_dddqn_policy(observation_space: int, action_space: int) -> Policy:
-    param = DDDQN_Param(hidden_size=128,
+    param = DDDQN_Param(hidden_size=256,
                         buffer_size=5_000,
                         batch_size=512,
-                        update_every=10,
+                        update_every=5,
                         learning_rate=0.5e-3,
-                        tau=1.e-2,
-                        gamma=0.95,
+                        tau=0.5e-3,
+                        gamma=0.995,
                         buffer_min_size=0,
                         use_gpu=False)
 
