@@ -15,7 +15,7 @@ If reinforcement learning is not used, the observation can be replaced by the du
 ## One solver for multiple environments and policy
 
 The **[BaseSolver](https://github.com/aiAdrian/flatland_solver_policy/blob/main/solver/base_solver.py)** requires an
-**Environment** and a **[Policy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/policy.py)**. The
+**[Environment](https://github.com/aiAdrian/flatland_solver_policy/blob/main/environment/environment.py)** and a **[Policy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/policy.py)**. The
 BaseRenderer can be optionally enabled.
 
 ```mermaid
