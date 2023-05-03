@@ -6,6 +6,7 @@ from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQNPolicy, DDDQN_
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy
 from policy.policy import Policy
 
+
 def create_dddqn_policy(observation_space: int, action_space: int) -> Policy:
     param = DDDQN_Param(hidden_size=256,
                         buffer_size=8_192,
@@ -31,13 +32,15 @@ def create_cartpole_analytical_policy() -> Policy:
 if __name__ == "__main__":
     env = CartpoleEnvironment()
     solver = CartpoleSolver(env, create_ppo_policy(env.get_observation_space(), env.get_action_space()))
-    solver.perform_training(max_episodes=500)
-    solver.perform_evaluation(max_episodes=10)
+    solver.perform_training(max_episodes=1000)
+    solver.perform_evaluation(max_episodes=100)
 
     solver = CartpoleSolver(env, create_dddqn_policy(env.get_observation_space(), env.get_action_space()))
-    solver.perform_training(max_episodes=500)
-    solver.perform_evaluation(max_episodes=10)
+    solver.perform_training(max_episodes=1000)
+    solver.perform_evaluation(max_episodes=100)
+
+    solver = CartpoleSolver(env, create_cartpole_analytical_policy())
+    solver.perform_evaluation(max_episodes=100)
 
     solver = CartpoleSolver(env, create_cartpole_analytical_policy(), CartpoleRenderer(env))
-    solver.perform_training(max_episodes=2)
-    solver.perform_evaluation(max_episodes=2)
+    solver.perform_evaluation(max_episodes=1)
