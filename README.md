@@ -183,6 +183,13 @@ solver.perform_evaluation(max_episodes=1000)
 
 Environments which are tested:
 
+### Flatland
+- [**Flatland**](https://github.com/flatland-association/flatland-rl)
+    - [RailEnv](https://github.com/flatland-association/flatland-rl/blob/main/flatland/envs/rail_env.py)
+- [**Flatland Railway Extension**](https://github.com/aiAdrian/flatland_railway_extension)
+    - [FlatlandDynamics](https://github.com/aiAdrian/flatland_railway_extension/blob/master/flatland_railway_extension/environments/FlatlandDynamics.py)
+
+### Non Flatland
 - [Gymnasium](https://github.com/Farama-Foundation/Gymnasium):
     - [cartpole](https://github.com/Farama-Foundation/Gymnasium/blob/main/gymnasium/envs/classic_control/cartpole.py)
 - [ma-gym](https://github.com/koulanurag/ma-gym)
@@ -196,10 +203,6 @@ Environments which are tested:
     - [switch 4](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_switch_4.py)
     - [traffic junction 4](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_traffic_junction_4.py)
     - [traffic junction 10](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_traffic_junction_10.py)
-- [**Flatland**](https://github.com/flatland-association/flatland-rl)
-    - [RailEnv](https://github.com/flatland-association/flatland-rl/blob/main/flatland/envs/rail_env.py)
-- [**Flatland Railway Extension**](https://github.com/aiAdrian/flatland_railway_extension)
-    - [FlatlandDynamics](https://github.com/aiAdrian/flatland_railway_extension/blob/master/flatland_railway_extension/environments/FlatlandDynamics.py)
 
 
 | Policy                   | RailEnv | Flatland Dynamics | cartpole | checkers | combat  | lumberjacks  | pong duel  | predator prey 5x5 | predator prey 7x7   | switch 2 | switch 4 | traffic junction 4 | traffic junction 10 |
