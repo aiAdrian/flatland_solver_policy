@@ -196,9 +196,9 @@ Environments which are tested:
     - [switch 4](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_switch_4.py)
     - [traffic junction 4](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_traffic_junction_4.py)
     - [traffic junction 10](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_traffic_junction_10.py)
-- [Flatland](https://github.com/flatland-association/flatland-rl)
+- [**Flatland**](https://github.com/flatland-association/flatland-rl)
     - [RailEnv](https://github.com/flatland-association/flatland-rl/blob/main/flatland/envs/rail_env.py)
-- [Flatland Railway Extension](https://github.com/aiAdrian/flatland_railway_extension)
+- [**Flatland Railway Extension**](https://github.com/aiAdrian/flatland_railway_extension)
     - [FlatlandDynamics](https://github.com/aiAdrian/flatland_railway_extension/blob/master/flatland_railway_extension/environments/FlatlandDynamics.py)
 
 
