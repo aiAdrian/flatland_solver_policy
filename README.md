@@ -202,12 +202,12 @@ Environments which are tested:
     - [FlatlandDynamics](https://github.com/aiAdrian/flatland_railway_extension/blob/master/flatland_railway_extension/environments/FlatlandDynamics.py)
 
 
-| Policy                   | cartpole | RailEnv | Flatland Dynamics | checkers | combat  | lumberjacks  | pong duel  | predator prey 5x5 | predator prey 7x7   | switch 2 | switch 4 | traffic junction 4 | traffic junction 10 |
-|--------------------------|----------|---------|-------------------|----------|---------|--------------|------------|-------------------|---------------------|----------|----------|--------------------|---------------------|
-| CartpoleAnalyticalPolicy | **yes**  | no      | no                | no       | no      | no           | no         | no                | no                  | no       | no       | no                 | no                  |
-| DDDQNPolicy              | **yes**  | **yes** | **yes**           | **yes**  | **yes** | **yes**      | **yes**    | **yes**           | **yes**             | **yes**  | **yes**  | **yes**            | **yes**             |
-| PPOPolicy                | **yes**  | **yes** | **yes**           | **yes**  | **yes** | **yes**      | **yes**    | **yes**           | **yes**             | **yes**  | **yes**  | **yes**            | **yes**             |
-| DeadLockAvoidancePolicy  | no       | **yes** | **yes**           | no       | no      | no           | no         | no                | no                  | no       | no       | no                 | no                  |
+| Policy                   | RailEnv | Flatland Dynamics | cartpole | checkers | combat  | lumberjacks  | pong duel  | predator prey 5x5 | predator prey 7x7   | switch 2 | switch 4 | traffic junction 4 | traffic junction 10 |
+|--------------------------|---------|-------------------|----------|----------|---------|--------------|------------|-------------------|---------------------|----------|----------|--------------------|---------------------|
+| CartpoleAnalyticalPolicy | no      | no                | **yes**  | no       | no      | no           | no         | no                | no                  | no       | no       | no                 | no                  |
+| DDDQNPolicy              | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**      | **yes**    | **yes**           | **yes**             | **yes**  | **yes**  | **yes**            | **yes**             |
+| PPOPolicy                | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**      | **yes**    | **yes**           | **yes**             | **yes**  | **yes**  | **yes**            | **yes**             |
+| DeadLockAvoidancePolicy  | **yes** | **yes**           | no       | no       | no      | no           | no         | no                | no                  | no       | no       | no                 | no                  |
 
 ### Tensorboard
 
