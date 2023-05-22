@@ -49,12 +49,12 @@ if __name__ == "__main__":
                                                                    env.get_action_space(),
                                                                    env.get_observation_space()))
 
-    solver = FlatlandSolver(env, create_deadlock_avoidance_policy(env, env.get_action_space()),
+    solver_dddqn = FlatlandSolver(env, create_dddqn_policy(env.get_observation_space(), env.get_action_space()))
+    solver_dddqn.perform_training(max_episodes=2)
+
+    solver_ppo = FlatlandSolver(env, create_ppo_policy(env.get_observation_space(), env.get_action_space()))
+    solver_ppo.perform_training(max_episodes=2)
+
+    solver_deadlock = FlatlandSolver(env, create_deadlock_avoidance_policy(env, env.get_action_space()),
                             FlatlandSimpleRenderer(env))
-    solver.perform_training(max_episodes=2)
-
-    solver = FlatlandSolver(env, create_dddqn_policy(env.get_observation_space(), env.get_action_space()))
-    solver.perform_training(max_episodes=2)
-
-    solver = FlatlandSolver(env, create_ppo_policy(env.get_observation_space(), env.get_action_space()))
-    solver.perform_training(max_episodes=2)
+    solver_deadlock.perform_training(max_episodes=2)
