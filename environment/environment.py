@@ -7,6 +7,7 @@ class Environment:
         self.raw_env = raw_env
         self._action_space: int = action_space
         self._observation_space: int = observation_space
+        print(">>", self.get_name())
 
     def get_name(self):
         raise NotImplementedError  # return self.__class__.__name__
