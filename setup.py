@@ -22,6 +22,7 @@ setup(
         'torch',
         'tensorboard',
         'gym',
-        'numpy'
+        'numpy',
+        'ma_gym'
     ],
 )

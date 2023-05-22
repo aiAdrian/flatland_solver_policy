@@ -1,0 +1,63 @@
+from typing import List
+
+import gym
+import numpy as np
+
+from environment.environment import Environment
+from solver.base_renderer import BaseRenderer
+from solver.flatland.flatland_solver import FlatlandSolver
+
+
+class MaGymRenderer(BaseRenderer):
+    def __init__(self, environment: Environment):
+        super(MaGymRenderer, self).__int__()
+        self.env = environment
+
+    def render(self, episode, step, terminal):
+        self.env.get_raw_env().render()
+
+
+class MaGymSolver(FlatlandSolver):
+    def get_name(self) -> str:
+        return self.__class__.__name__
+
+    def transform_state(self, state):
+        return state
+
+
+class MaGymEnvironment(Environment):
+    def reset(self):
+        state = self.raw_env.reset()
+        info = {'action_required': np.ones(self.get_num_agents())}
+        return state, info
+
+    def step(self, actions):
+        transformed_actions = []
+        for i in range(self.get_num_agents()):
+            transformed_actions.append(actions.get(i))
+        state_next, reward, dones, info = self.raw_env.step(transformed_actions)
+        info['action_required'] = np.ones(self.get_num_agents())
+        terminal = {}
+        for i in range(self.get_num_agents()):
+            terminal.update({i: dones[i]})
+        terminal['__all__'] = np.sum(dones) == self.get_num_agents()
+        return state_next, reward, terminal, info
+
+    def get_agent_handles(self) -> List[int]:
+        return range(self.get_num_agents())
+
+    def get_num_agents(self) -> int:
+        return self.raw_env.n_agents
+
+
+class TrafficJunction10Environment(MaGymEnvironment):
+
+    def __init__(self):
+        environment = gym.make('ma_gym:TrafficJunction10-v0')
+        obs_n = environment.reset()
+        observation_space = len(obs_n[0])
+        action_space = environment.action_space[0].n
+        super(TrafficJunction10Environment, self).__init__(environment, action_space, observation_space)
+
+    def get_name(self) -> str:
+        return "Environment:Ma-Gym:TrafficJunction10-v0"
