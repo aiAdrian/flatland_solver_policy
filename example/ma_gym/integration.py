@@ -26,6 +26,18 @@ class MaGymSolver(FlatlandSolver):
 
 
 class MaGymEnvironment(Environment):
+
+    def __init__(self, env_to_load):
+        self.env_to_load = env_to_load
+        environment = gym.make(self.env_to_load)
+        obs_n = environment.reset()
+        observation_space = len(obs_n[0])
+        action_space = environment.action_space[0].n
+        super(MaGymEnvironment, self).__init__(environment, action_space, observation_space)
+
+    def get_name(self) -> str:
+        return "Environment:{}".format(self.env_to_load)
+
     def reset(self):
         state = self.raw_env.reset()
         info = {'action_required': np.ones(self.get_num_agents())}
@@ -48,16 +60,3 @@ class MaGymEnvironment(Environment):
 
     def get_num_agents(self) -> int:
         return self.raw_env.n_agents
-
-
-class TrafficJunction10Environment(MaGymEnvironment):
-
-    def __init__(self):
-        environment = gym.make('ma_gym:TrafficJunction10-v0')
-        obs_n = environment.reset()
-        observation_space = len(obs_n[0])
-        action_space = environment.action_space[0].n
-        super(TrafficJunction10Environment, self).__init__(environment, action_space, observation_space)
-
-    def get_name(self) -> str:
-        return "Environment:Ma-Gym:TrafficJunction10-v0"
