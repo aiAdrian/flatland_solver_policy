@@ -32,7 +32,7 @@ class BaseSolver:
     def deactivate_rendering(self):
         self.rendering_enabled = False
 
-    def set_and_activate_renderer(self, renderer: BaseRenderer):
+    def activate_renderer(self, renderer: BaseRenderer):
         self.renderer = renderer
         self.activate_rendering()
 

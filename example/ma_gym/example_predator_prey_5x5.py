@@ -34,5 +34,5 @@ solver_dddqn = MultiAgentGymSolver(env,
 solver_dddqn.perform_training(max_episodes=1000)
 solver_dddqn.perform_evaluation(max_episodes=100)
 
-solver_dddqn.set_and_activate_renderer(MultiAgentGymRenderer(env))
+solver_dddqn.activate_renderer(MultiAgentGymRenderer(env))
 solver_dddqn.perform_evaluation(max_episodes=100)
