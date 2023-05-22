@@ -74,7 +74,7 @@ class DDDQNPolicy(LearningPolicy):
         return self.__class__.__name__
 
     def act(self, handle, state, eps=0.):
-        state = torch.from_numpy(state).float().unsqueeze(0).to(self.device)
+        state = torch.tensor(state, dtype=torch.float).to(self.device)
         self.qnetwork_local.eval()
         with torch.no_grad():
             action_values = self.qnetwork_local(state)
