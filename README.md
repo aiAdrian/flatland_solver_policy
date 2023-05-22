@@ -183,13 +183,13 @@ solver.perform_evaluation(max_episodes=1000)
 
 Environments which are tested:
 
-### Flatland
+#### Flatland
 - [**Flatland**](https://github.com/flatland-association/flatland-rl)
     - [RailEnv](https://github.com/flatland-association/flatland-rl/blob/main/flatland/envs/rail_env.py)
 - [**Flatland Railway Extension**](https://github.com/aiAdrian/flatland_railway_extension)
     - [FlatlandDynamics](https://github.com/aiAdrian/flatland_railway_extension/blob/master/flatland_railway_extension/environments/FlatlandDynamics.py)
 
-### Non Flatland
+#### Non Flatland
 - [Gymnasium](https://github.com/Farama-Foundation/Gymnasium):
     - [cartpole](https://github.com/Farama-Foundation/Gymnasium/blob/main/gymnasium/envs/classic_control/cartpole.py)
 - [ma-gym](https://github.com/koulanurag/ma-gym)
