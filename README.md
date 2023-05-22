@@ -185,17 +185,29 @@ Environments which are tested:
 
 - [Gymnasium](https://github.com/Farama-Foundation/Gymnasium):
     - [cartpole](https://github.com/Farama-Foundation/Gymnasium/blob/main/gymnasium/envs/classic_control/cartpole.py)
+- [ma-gym](https://github.com/koulanurag/ma-gym)
+    - [checkers](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_checkers.py)
+    - [combat](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_combat.py)
+    - [lumberjacks](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_lumberjacks.py)
+    - [pong duel](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_pong_duel.py)
+    - [predator prey 5x5](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_predator_prey_5x5.py)
+    - [predator prey 7x7](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_predator_prey_7x7.py)
+    - [switch 2](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_switch_2.py)
+    - [switch 4](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_switch_4.py)
+    - [traffic junction 4](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_traffic_junction_4.py)
+    - [traffic junction 10](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_traffic_junction_10.py)
 - [Flatland](https://github.com/flatland-association/flatland-rl)
     - [RailEnv](https://github.com/flatland-association/flatland-rl/blob/main/flatland/envs/rail_env.py)
 - [Flatland Railway Extension](https://github.com/aiAdrian/flatland_railway_extension)
     - [FlatlandDynamics](https://github.com/aiAdrian/flatland_railway_extension/blob/master/flatland_railway_extension/environments/FlatlandDynamics.py)
 
-| Policy                   | cartpole | RailEnv | Flatland Dynamics |
-|--------------------------|----------|---------|-------------------|
-| CartpoleAnalyticalPolicy | **yes**  | no      | no                |
-| DDDQNPolicy              | **yes**  | **yes** | **yes**           |
-| PPOPolicy                | **yes**  | **yes** | **yes**           |
-| DeadLockAvoidancePolicy  | no       | **yes** | **yes**           |
+
+| Policy                   | checkers | combat  | lumberjacks  | pong duel  | predator prey 5x5 | predator prey 7x7   | switch 2 | switch 4 | traffic junction 4 | traffic junction 10 | cartpole | RailEnv | Flatland Dynamics |
+|--------------------------|----------|---------|--------------|------------|-------------------|---------------------|----------|----------|--------------------|---------------------|----------|---------|-------------------|
+| CartpoleAnalyticalPolicy | no       | no      | no           | no         | no                | no                  | no       | no       | no                 | no                  | **yes**  | no      | no                |
+| DDDQNPolicy              | **yes**  | **yes** | **yes**      | **yes**    | **yes**           | **yes**             | **yes**  | **yes**  | **yes**            | **yes**             | **yes**  | **yes** | **yes**           |
+| PPOPolicy                | **yes**  | **yes** | **yes**      | **yes**    | **yes**           | **yes**             | **yes**  | **yes**  | **yes**            | **yes**             | **yes**  | **yes** | **yes**           |
+| DeadLockAvoidancePolicy  | no       | no      | no           | no         | no                | no                  | no       | no       | no                 | no                  | no       | **yes** | **yes**           |
 
 ### Tensorboard
 
