@@ -16,5 +16,3 @@ solver.deactivate_rendering()
 solver.perform_training(max_episodes=1000)
 solver.activate_rendering()
 solver.perform_evaluation(max_episodes=100)
-
-

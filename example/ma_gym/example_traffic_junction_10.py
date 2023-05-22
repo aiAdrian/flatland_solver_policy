@@ -8,7 +8,7 @@ def create_ppo_policy(observation_space: int, action_space: int) -> Policy:
     return PPOPolicy(observation_space, action_space, True)
 
 
-env = MaGymEnvironment(env_to_load='ma_gym:TrafficJunction4-v0')
+env = MaGymEnvironment(env_to_load='ma_gym:TrafficJunction10-v0')
 solver = MaGymSolver(env,
                      create_ppo_policy(env.get_observation_space(), env.get_action_space()),
                      MaGymRenderer(env))
