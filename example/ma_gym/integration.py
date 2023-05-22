@@ -8,16 +8,16 @@ from solver.base_renderer import BaseRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
 
 
-class MaGymRenderer(BaseRenderer):
+class MultiAgentGymRenderer(BaseRenderer):
     def __init__(self, environment: Environment):
-        super(MaGymRenderer, self).__int__()
+        super(MultiAgentGymRenderer, self).__int__()
         self.env = environment
 
     def render(self, episode, step, terminal):
         self.env.get_raw_env().render()
 
 
-class MaGymSolver(FlatlandSolver):
+class MultiAgentGymSolver(FlatlandSolver):
     def get_name(self) -> str:
         return '{}_{}'.format(self.__class__.__name__, self.env.get_name().replace(':', '_'))
 
@@ -25,7 +25,7 @@ class MaGymSolver(FlatlandSolver):
         return state
 
 
-class MaGymEnvironment(Environment):
+class MultiAgentGymEnvironment(Environment):
 
     def __init__(self, env_to_load):
         self.env_to_load = env_to_load
@@ -33,7 +33,7 @@ class MaGymEnvironment(Environment):
         obs_n = environment.reset()
         observation_space = len(obs_n[0])
         action_space = environment.action_space[0].n
-        super(MaGymEnvironment, self).__init__(environment, action_space, observation_space)
+        super(MultiAgentGymEnvironment, self).__init__(environment, action_space, observation_space)
 
     def get_name(self) -> str:
         return "Environment:{}".format(self.env_to_load)
