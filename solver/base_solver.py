@@ -154,7 +154,7 @@ class BaseSolver:
 
             scores_window.append(tot_reward)
 
-            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f}'.format(episode,
+            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f} '.format(episode,
                                                                            tot_reward,
                                                                            np.mean(scores_window)),
                   end='\n' if episode % checkpoint_interval == 0 else '')
@@ -171,8 +171,8 @@ class BaseSolver:
     def perform_training(self,
                          max_episodes=2000,
                          eps=1.0,
-                         eps_decay=0.99,
-                         min_eps=0.01):
+                         eps_decay=0.995,
+                         min_eps=0.001):
 
         training_mode = True
 
@@ -188,9 +188,10 @@ class BaseSolver:
             eps = max(min_eps, eps * eps_decay)
             scores_window.append(tot_reward)
 
-            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f}'.format(episode,
+            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f} \t eps: {:7.3f}'.format(episode,
                                                                            tot_reward,
-                                                                           np.mean(scores_window)),
+                                                                           np.mean(scores_window),
+                                                                           eps),
                   end='\n' if episode % checkpoint_interval == 0 else '')
 
             writer.add_scalar(self.get_name() + "/training_value", tot_reward, episode)
