@@ -12,15 +12,13 @@ from policy.learning_policy.ppo_policy.ppo_agent import EpisodeBuffers
 
 # Actor module
 class A2CShared(nn.Module):
-    def __init__(self, state_size, action_size, device, hidsize1=512, hidsize2=256):
+    def __init__(self, state_size, action_size, device, hidsize1=128, hidsize2=256):
         super(A2CShared, self).__init__()
         self.device = device
         self.model = nn.Sequential(
             nn.Linear(state_size, hidsize1),
             nn.Tanh(),
             nn.Linear(hidsize1, hidsize2),
-            nn.Tanh(),
-            nn.Linear(hidsize2, hidsize2),
             nn.Tanh()
         ).to(self.device)
 
@@ -51,6 +49,8 @@ class A2CActor(nn.Module):
         self.device = device
         self.shared_model = shared_model
         self.model = nn.Sequential(
+            nn.Linear(hidsize2, hidsize2),
+            nn.Tanh(),
             nn.Linear(hidsize2, hidsize2),
             nn.Tanh(),
             nn.Linear(hidsize2, action_size),
@@ -90,6 +90,8 @@ class A2CCritic(nn.Module):
         self.device = device
         self.shared_model = shared_model
         self.model = nn.Sequential(
+            nn.Linear(hidsize2, hidsize2),
+            nn.Tanh(),
             nn.Linear(hidsize2, hidsize2),
             nn.Tanh(),
             nn.Linear(hidsize2, 1)
@@ -137,7 +139,7 @@ class A2CPolicy(LearningPolicy):
         else:
             self.hidsize = 128
             self.learning_rate = 0.5e-3
-            self.gamma = 0.99
+            self.gamma = 0.95
             self.device = torch.device("cpu")
 
         self.current_episode_memory = EpisodeBuffers()
@@ -174,9 +176,7 @@ class A2CPolicy(LearningPolicy):
         return self.__class__.__name__
 
     def shape_reward(self, handle, action, state, reward, done, deadlocked=None):
-        if done == 1:
-            return 1.0
-        return 0.0
+        return reward
 
     def reset(self, env):
         pass

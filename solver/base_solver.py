@@ -155,8 +155,8 @@ class BaseSolver:
             scores_window.append(tot_reward)
 
             print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f} '.format(episode,
-                                                                           tot_reward,
-                                                                           np.mean(scores_window)),
+                                                                            tot_reward,
+                                                                            np.mean(scores_window)),
                   end='\n' if episode % checkpoint_interval == 0 else '')
 
             writer.add_scalar(self.get_name() + "/evaluation_value", tot_reward, episode)
@@ -189,9 +189,9 @@ class BaseSolver:
             scores_window.append(tot_reward)
 
             print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f} \t eps: {:7.3f}'.format(episode,
-                                                                           tot_reward,
-                                                                           np.mean(scores_window),
-                                                                           eps),
+                                                                                           tot_reward,
+                                                                                           np.mean(scores_window),
+                                                                                           eps),
                   end='\n' if episode % checkpoint_interval == 0 else '')
 
             writer.add_scalar(self.get_name() + "/training_value", tot_reward, episode)

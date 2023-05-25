@@ -26,7 +26,7 @@ class MultiAgentGymRenderer(BaseRenderer):
 
 class MultiAgentGymSolver(FlatlandSolver):
     def get_name(self) -> str:
-        return '{}_{}'.format(self.__class__.__name__, self.env.get_name().replace(':', '_'))
+        return 'MAGym_{}'.format(self.env.get_name().replace(':', '_'))
 
     def transform_state(self, state):
         return state
