@@ -63,7 +63,7 @@ class MultiAgentGymEnvironment(Environment):
         return state_next, reward, terminal, info
 
     def get_agent_handles(self) -> List[int]:
-        return range(self.get_num_agents())
+        return list(range(self.get_num_agents()))
 
     def get_num_agents(self) -> int:
         return self.raw_env.n_agents
