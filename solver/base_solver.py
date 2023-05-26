@@ -1,3 +1,4 @@
+import os
 from collections import deque
 from typing import Union, Dict
 
@@ -206,14 +207,28 @@ class BaseSolver:
             if episode >= max_episodes:
                 break
 
+        # --- end training --------------------------------------------------------------------------
+        self.save_policy(None)
         print(' >> done.')
 
     def save_policy(self,
-                    filename: str):
+                    filename: Union[str, None] = None):
+        """
+        If the filename is None use default policy output destination and default name.
+        """
+        if filename is None:
+            if not os.path.exists('training_output'):
+                os.makedirs('training_output')
+            filename = "training_output/{}_{}".format(self.get_name(), self.policy.get_name())
         if self.policy is not None:
             self.policy.save(filename)
 
     def load_policy(self,
-                    filename: str):
+                    filename: Union[str, None] = None):
+        """
+        If the filename is None use default policy output source location and default name.
+        """
+        if filename is None:
+            filename = "training_output/{}_{}".format(self.get_name(), self.policy.get_name())
         if self.policy is not None:
             self.policy.load(filename)
