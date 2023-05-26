@@ -13,8 +13,8 @@ def crate_random_policy(observation_space: int, action_space: int) -> Policy:
 
 def create_dddqn_policy(observation_space: int, action_space: int) -> Policy:
     param = DDDQN_Param(hidden_size=256,
-                        buffer_size=8_192,
-                        batch_size=512,
+                        buffer_size=32_000,
+                        batch_size=1024,
                         update_every=5,
                         learning_rate=0.5e-3,
                         tau=0.5e-2,
