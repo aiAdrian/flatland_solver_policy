@@ -10,55 +10,22 @@ from policy.learning_policy.ppo_policy.ppo_agent import EpisodeBuffers
 
 # https://lilianweng.github.io/lil-log/2018/04/08/policy-gradient-algorithms.html
 
-# Actor module
-class A2CShared(nn.Module):
-    def __init__(self, state_size, action_size, device, hidsize1=128, hidsize2=256):
-        super(A2CShared, self).__init__()
+
+class A2CActor(nn.Module):
+    def __init__(self, state_size, action_size, device, hidsize1=512, hidsize2=256):
+        super(A2CActor, self).__init__()
         self.device = device
         self.model = nn.Sequential(
             nn.Linear(state_size, hidsize1),
             nn.Tanh(),
             nn.Linear(hidsize1, hidsize2),
-            nn.Tanh()
-        ).to(self.device)
-
-    def forward(self, X):
-        return self.model(X)
-
-    def save(self, filename):
-        # print("Saving model from checkpoint:", filename)
-        torch.save(self.model.state_dict(), filename + ".a2c_shared")
-
-    def _load(self, obj, filename):
-        if os.path.exists(filename):
-            print(' >> ', filename)
-            try:
-                obj.load_state_dict(torch.load(filename, map_location=self.device))
-            except:
-                print(" >> failed!")
-        return obj
-
-    def load(self, filename):
-        print("load model from file", filename)
-        self.model = self._load(self.model, filename + ".a2c_shared")
-
-
-class A2CActor(nn.Module):
-    def __init__(self, state_size, action_size, device, shared_model, hidsize1=512, hidsize2=256):
-        super(A2CActor, self).__init__()
-        self.device = device
-        self.shared_model = shared_model
-        self.model = nn.Sequential(
-            nn.Linear(hidsize2, hidsize2),
-            nn.Tanh(),
-            nn.Linear(hidsize2, hidsize2),
             nn.Tanh(),
             nn.Linear(hidsize2, action_size),
             nn.Softmax(dim=-1)
         ).to(self.device)
 
-    def forward(self, X):
-        return self.model(self.shared_model(X))
+    def forward(self, x):
+        return self.model(x)
 
     def get_actor_dist(self, state):
         probs = self.forward(state)
@@ -85,20 +52,19 @@ class A2CActor(nn.Module):
 
 # Critic module
 class A2CCritic(nn.Module):
-    def __init__(self, state_size, device, shared_model, hidsize1=512, hidsize2=256):
+    def __init__(self, state_size, device, hidsize1=512, hidsize2=256):
         super(A2CCritic, self).__init__()
         self.device = device
-        self.shared_model = shared_model
         self.model = nn.Sequential(
-            nn.Linear(hidsize2, hidsize2),
+            nn.Linear(state_size, hidsize1),
             nn.Tanh(),
-            nn.Linear(hidsize2, hidsize2),
+            nn.Linear(hidsize1, hidsize2),
             nn.Tanh(),
             nn.Linear(hidsize2, 1)
         ).to(self.device)
 
-    def forward(self, X):
-        return self.model(self.shared_model(X))
+    def forward(self, x):
+        return self.model(x)
 
     def save(self, filename):
         # print("Saving model from checkpoint:", filename)
@@ -150,21 +116,13 @@ class A2CPolicy(LearningPolicy):
         self.loss_function = nn.MSELoss()
         self.loss = 0
 
-        self.shared_model = A2CShared(state_size,
-                                      action_size,
-                                      self.device,
-                                      hidsize1=self.hidsize,
-                                      hidsize2=self.hidsize)
-
         self.actor = A2CActor(state_size,
                               action_size,
                               self.device,
-                              shared_model=self.shared_model,
                               hidsize1=self.hidsize,
                               hidsize2=self.hidsize)
         self.critic = A2CCritic(state_size,
                                 self.device,
-                                shared_model=self.shared_model,
                                 hidsize1=self.hidsize,
                                 hidsize2=self.hidsize)
 
@@ -272,7 +230,6 @@ class A2CPolicy(LearningPolicy):
     # Checkpointing methods
     def save(self, filename):
         # print("Saving model from checkpoint:", filename)
-        self.shared_model.save(filename)
         self.actor.save(filename)
         self.critic.save(filename)
         torch.save(self.optimizer_actor.state_dict(), filename + ".a2c_optimizer_actor")
@@ -291,7 +248,6 @@ class A2CPolicy(LearningPolicy):
 
     def load(self, filename):
         print("load policy from file", filename)
-        self.shared_model.load(filename)
         self.actor.load(filename)
         self.critic.load(filename)
         print("load optimizer from file", filename)
@@ -300,7 +256,6 @@ class A2CPolicy(LearningPolicy):
 
     def clone(self):
         policy = A2CPolicy(self.state_size, self.action_size)
-        policy.shared_model = copy.deepcopy(self.shared_model)
         policy.actor = copy.deepcopy(self.actor)
         policy.critic = copy.deepcopy(self.critic)
         policy.optimizer_actor = copy.deepcopy(self.optimizer_actor)
