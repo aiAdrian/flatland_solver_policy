@@ -35,6 +35,7 @@ class DDDQNPolicy(LearningPolicy):
         self.action_size = action_size
         self.double_dqn = True
         self.hidsize = 128
+        self.train = False
 
         if not evaluation_mode:
             self.hidsize = self.ddqn_parameters.hidden_size
@@ -73,13 +74,17 @@ class DDDQNPolicy(LearningPolicy):
     def get_name(self):
         return self.__class__.__name__
 
+    def start_step(self, train: bool):
+        self.train = train
+
     def act(self, handle, state, eps=0.):
         state = torch.tensor(state, dtype=torch.float).to(self.device)
         self.qnetwork_local.eval()
         with torch.no_grad():
             action_values = self.qnetwork_local(state)
 
-        self.qnetwork_local.train()
+        if self.train:
+            self.qnetwork_local.train()
 
         # Epsilon-greedy action selection
         if random.random() >= eps:
