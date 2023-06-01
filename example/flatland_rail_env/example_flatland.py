@@ -9,7 +9,7 @@ from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_av
 from policy.policy import Policy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
-from training_evaluation_pipeline import experimental_training_evaluation_pipeline
+from utils.training_evaluation_pipeline import experimental_training_evaluation_pipeline
 
 
 def create_deadlock_avoidance_policy(environment: Environment, action_space: int, show_debug_plot=False) -> Policy:

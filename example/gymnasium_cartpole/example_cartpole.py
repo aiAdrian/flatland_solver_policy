@@ -3,7 +3,7 @@ from example.gymnasium_cartpole.cartpole_analytical_policy import CartpoleAnalyt
 from policy.policy import Policy
 from rendering.gymnasium.gymnasium_renderer import GymnasiumRenderer
 from solver.gymnasium.gymnasium_solver import GymnasiumSolver
-from training_evaluation_pipeline import create_ppo_policy, experimental_training_evaluation_pipeline
+from utils.training_evaluation_pipeline import create_ppo_policy, experimental_training_evaluation_pipeline
 
 
 def create_cartpole_analytical_policy() -> Policy:
