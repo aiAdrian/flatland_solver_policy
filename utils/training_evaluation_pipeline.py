@@ -55,7 +55,7 @@ def execute_single_policy_experiment(env: Environment,
                                      solver_creator: Type[BaseSolver],
                                      policy_creator: Callable[[int, int], Policy],
                                      max_episodes=1000,
-                                     max_evaluation_episodes=1000,
+                                     max_evaluation_episodes=100,
                                      do_training=True,
                                      do_evaluation=True,
                                      renderer: BaseRenderer = None):
