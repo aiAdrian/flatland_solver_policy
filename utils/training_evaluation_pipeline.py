@@ -41,40 +41,44 @@ def create_td3_policy(observation_space: int, action_space: int) -> Policy:
     return TD3Policy(observation_space, action_space)
 
 
-def execute(env: Environment,
-            solver_creator: Type[BaseSolver],
-            policy_creator: Callable[[int, int], Policy],
-            max_episodes=100,
-            max_evaluation_episodes=100,
-            do_training=True,
-            do_evaluation=True,
-            renderer: BaseRenderer = None):
+def create_solver(env: Environment,
+                  solver_creator: Type[BaseSolver],
+                  policy_creator: Callable[[int, int], Policy],
+                  renderer: BaseRenderer) -> BaseSolver:
+    print('-' * 61)
+    return solver_creator(env,
+                          policy_creator(env.get_observation_space(), env.get_action_space()),
+                          renderer)
+
+
+def execute_single_policy_experiment(env: Environment,
+                                     solver_creator: Type[BaseSolver],
+                                     policy_creator: Callable[[int, int], Policy],
+                                     max_episodes=100,
+                                     max_evaluation_episodes=100,
+                                     do_training=True,
+                                     do_evaluation=True,
+                                     renderer: BaseRenderer = None):
     """
     example usage:
         experimental_training_evaluation_pipeline(env, FlatlandSolver)
     """
-    print('=' * 61)
-    solver = solver_creator(env,
-                            policy_creator(env.get_observation_space(), env.get_action_space()))
-    print('-' * 61)
-
-    if renderer is not None:
-        solver.activate_renderer(renderer)
+    solver = create_solver(env, solver_creator, policy_creator, renderer)
 
     if do_training:
-        print('- Training')
+        print('-- Training')
         solver.perform_training(max_episodes=max_episodes)
 
     if do_evaluation:
-        print('- Evaluation')
+        print('-- Evaluation')
         solver.perform_evaluation(max_episodes=max_evaluation_episodes)
 
 
-def experimental_training_evaluation_pipeline(env: Environment,
-                                              solver_creator: Type[BaseSolver],
-                                              renderer: BaseRenderer = None):
-    execute(env, solver_creator, crate_random_policy, renderer=renderer)
-    execute(env, solver_creator, create_td3_policy, renderer=renderer)
-    execute(env, solver_creator, create_a2c_policy, renderer=renderer)
-    execute(env, solver_creator, create_ppo_policy, renderer=renderer)
-    execute(env, solver_creator, create_dddqn_policy, renderer=renderer)
+def execute_policy_comparison(env: Environment,
+                              solver_creator: Type[BaseSolver],
+                              renderer: BaseRenderer = None):
+    execute_single_policy_experiment(env, solver_creator, crate_random_policy, renderer=renderer)
+    execute_single_policy_experiment(env, solver_creator, create_td3_policy, renderer=renderer)
+    execute_single_policy_experiment(env, solver_creator, create_a2c_policy, renderer=renderer)
+    execute_single_policy_experiment(env, solver_creator, create_ppo_policy, renderer=renderer)
+    execute_single_policy_experiment(env, solver_creator, create_dddqn_policy, renderer=renderer)

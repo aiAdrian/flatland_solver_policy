@@ -9,7 +9,7 @@ from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_av
 from policy.policy import Policy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
-from utils.training_evaluation_pipeline import experimental_training_evaluation_pipeline
+from utils.training_evaluation_pipeline import execute_policy_comparison
 
 
 def create_deadlock_avoidance_policy(environment: Environment, action_space: int, show_debug_plot=False) -> Policy:
@@ -30,7 +30,7 @@ if __name__ == "__main__":
                                                                    env.get_action_space(),
                                                                    env.get_observation_space()))
 
-    experimental_training_evaluation_pipeline(env, FlatlandSolver)
+    execute_policy_comparison(env, FlatlandSolver)
 
     solver_deadlock = FlatlandSolver(env,
                                      create_deadlock_avoidance_policy(env, env.get_action_space()),

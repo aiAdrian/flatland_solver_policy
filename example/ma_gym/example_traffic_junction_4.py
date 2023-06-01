@@ -1,6 +1,6 @@
 from environment.ma_gym.multi_agent_gym_environment import MultiAgentGymEnvironment
 from solver.ma_gym.multi_agent_gym_solver import MultiAgentGymSolver
-from utils.training_evaluation_pipeline import experimental_training_evaluation_pipeline
+from utils.training_evaluation_pipeline import execute_policy_comparison
 
 environment = MultiAgentGymEnvironment(env_to_load='ma_gym:TrafficJunction4-v0')
-experimental_training_evaluation_pipeline(environment, MultiAgentGymSolver)
+execute_policy_comparison(environment, MultiAgentGymSolver)
