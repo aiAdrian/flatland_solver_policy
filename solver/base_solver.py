@@ -7,7 +7,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from environment.environment import Environment
 from policy.policy import Policy
-from solver.base_renderer import BaseRenderer
+from rendering.base_renderer import BaseRenderer
 
 
 class BaseSolver:
@@ -167,7 +167,7 @@ class BaseSolver:
             if episode >= max_episodes:
                 break
 
-        print(' >> done.')
+        print('done.')
 
     def perform_training(self,
                          max_episodes=2000,
@@ -209,7 +209,7 @@ class BaseSolver:
 
         # --- end training --------------------------------------------------------------------------
         self.save_policy(None)
-        print(' >> done.')
+        print('done.')
 
     def save_policy(self,
                     filename: Union[str, None] = None):

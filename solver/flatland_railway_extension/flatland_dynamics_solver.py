@@ -8,9 +8,9 @@ from flatland_railway_extension.environments.InfrastructureData import Infrastru
 
 from environment.environment import Environment
 from policy.policy import Policy
-from solver.base_renderer import BaseRenderer
+from rendering.base_renderer import BaseRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
-from solver.flatland_railway_extension.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
+from rendering.flatland_railway_extension.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
 
 
 class FlatlandDynamicsSolver(FlatlandSolver):

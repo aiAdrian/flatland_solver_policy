@@ -5,17 +5,18 @@ import gym
 from environment.environment import Environment
 
 
-class CartpoleEnvironment(Environment):
+class GymnasiumEnvironment(Environment):
 
-    def __init__(self):
-        environment = gym.make("CartPole-v1")
+    def __init__(self, env_to_load):
+        self.env_to_load = env_to_load
+        environment = gym.make(self.env_to_load)
         observation_space = environment.observation_space.shape[0]
         action_space = environment.action_space.n
 
-        super(CartpoleEnvironment, self).__init__(environment, action_space, observation_space)
+        super(GymnasiumEnvironment, self).__init__(environment, action_space, observation_space)
 
     def get_name(self) -> str:
-        return "Environment:Gymnasium:CartPole-v1"
+        return "Environment:{}".format(self.env_to_load)
 
     def reset(self):
         state = self.raw_env.reset()

@@ -1,35 +1,9 @@
-import time
 from typing import List
 
 import gym
 import numpy as np
 
 from environment.environment import Environment
-from solver.base_renderer import BaseRenderer
-from solver.flatland.flatland_solver import FlatlandSolver
-
-
-class MultiAgentGymRenderer(BaseRenderer):
-    def __init__(self, environment: Environment):
-        super(MultiAgentGymRenderer, self).__int__()
-        self.env = environment
-        self.sleep_time = 0.0
-
-    def set_sleep_time(self, st):
-        self.sleep_time = st
-
-    def render(self, episode, step, terminal):
-        self.env.get_raw_env().render()
-        if self.sleep_time > 0:
-            time.sleep(self.sleep_time)
-
-
-class MultiAgentGymSolver(FlatlandSolver):
-    def get_name(self) -> str:
-        return 'MAGym_{}'.format(self.env.get_name().replace(':', '_'))
-
-    def transform_state(self, state):
-        return state
 
 
 class MultiAgentGymEnvironment(Environment):

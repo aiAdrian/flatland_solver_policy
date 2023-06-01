@@ -2,7 +2,7 @@ from typing import Union
 
 from environment.environment import Environment
 from policy.policy import Policy
-from solver.base_renderer import BaseRenderer
+from rendering.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver
 
 
