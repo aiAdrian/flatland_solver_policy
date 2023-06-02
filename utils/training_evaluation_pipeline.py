@@ -1,4 +1,4 @@
-from typing import Callable, Type
+from typing import Callable, Type, List
 
 from environment.environment import Environment
 from policy.learning_policy.a2c_policy.a2c_agent import A2CPolicy
@@ -75,17 +75,18 @@ def execute_single_policy_experiment(env: Environment,
         solver.perform_evaluation(max_episodes=max_evaluation_episodes)
 
 
-policy_creator_list = [crate_random_policy,
-                       create_td3_policy,
-                       create_a2c_policy,
-                       create_ppo_policy,
-                       create_dddqn_policy]
+policy_creator_list: List[Callable[[int, int], Policy]] = [crate_random_policy,
+                                                           create_td3_policy,
+                                                           create_a2c_policy,
+                                                           create_ppo_policy,
+                                                           create_dddqn_policy]
 
 
 def execute_policy_comparison(env: Environment,
                               solver_creator: Type[BaseSolver],
-                              renderer: BaseRenderer = None):
-    for policy_creator in policy_creator_list:
+                              renderer: BaseRenderer = None,
+                              pcl: List[Callable[[int, int], Policy]] = policy_creator_list):
+    for policy_creator in pcl:
         execute_single_policy_experiment(env, solver_creator, policy_creator, renderer=renderer)
 
 
@@ -93,8 +94,8 @@ def execute_replay_policy_comparison(env: Environment,
                                      solver_creator: Type[BaseSolver],
                                      renderer: BaseRenderer = None,
                                      max_evaluation_episodes=10,
-                                     policy_creator_list=policy_creator_list):
-    for policy_creator in policy_creator_list:
+                                     pcl: List[Callable[[int, int], Policy]] = policy_creator_list):
+    for policy_creator in pcl:
         execute_single_policy_experiment(env=env,
                                          solver_creator=solver_creator,
                                          policy_creator=policy_creator,
