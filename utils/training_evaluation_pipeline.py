@@ -71,14 +71,33 @@ def execute_single_policy_experiment(env: Environment,
 
     if do_evaluation:
         print('-- Evaluation')
+        solver.load_policy(None)
         solver.perform_evaluation(max_episodes=max_evaluation_episodes)
+
+
+policy_creator_list = [crate_random_policy,
+                       create_td3_policy,
+                       create_a2c_policy,
+                       create_ppo_policy,
+                       create_dddqn_policy]
 
 
 def execute_policy_comparison(env: Environment,
                               solver_creator: Type[BaseSolver],
                               renderer: BaseRenderer = None):
-    execute_single_policy_experiment(env, solver_creator, crate_random_policy, renderer=renderer)
-    execute_single_policy_experiment(env, solver_creator, create_td3_policy, renderer=renderer)
-    execute_single_policy_experiment(env, solver_creator, create_a2c_policy, renderer=renderer)
-    execute_single_policy_experiment(env, solver_creator, create_ppo_policy, renderer=renderer)
-    execute_single_policy_experiment(env, solver_creator, create_dddqn_policy, renderer=renderer)
+    for policy_creator in policy_creator_list:
+        execute_single_policy_experiment(env, solver_creator, policy_creator, renderer=renderer)
+
+
+def execute_replay_policy_comparison(env: Environment,
+                                     solver_creator: Type[BaseSolver],
+                                     renderer: BaseRenderer = None,
+                                     max_evaluation_episodes=10):
+    for policy_creator in policy_creator_list:
+        execute_single_policy_experiment(env=env,
+                                         solver_creator=solver_creator,
+                                         policy_creator=policy_creator,
+                                         max_evaluation_episodes=max_evaluation_episodes,
+                                         do_training=False,
+                                         do_evaluation=True,
+                                         renderer=renderer)

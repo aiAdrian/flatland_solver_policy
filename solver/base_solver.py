@@ -139,14 +139,18 @@ class BaseSolver:
 
     def perform_evaluation(self,
                            max_episodes=2000,
-                           eps=0.0):
+                           eps=0.0,
+                           write_summary=True):
 
         training_mode = False
 
         episode = 0
         checkpoint_interval = 50
         scores_window = deque(maxlen=100)
-        writer = SummaryWriter(comment="_" + self.get_name() + "_evaluation_" + self.policy.get_name())
+
+        writer = None
+        if write_summary:
+            writer = SummaryWriter(comment="_" + self.get_name() + "_evaluation_" + self.policy.get_name())
 
         while True:
             episode += 1
@@ -160,9 +164,10 @@ class BaseSolver:
                                                                             np.mean(scores_window)),
                   end='\n' if episode % checkpoint_interval == 0 else '')
 
-            writer.add_scalar(self.get_name() + "/evaluation_value", tot_reward, episode)
-            writer.add_scalar(self.get_name() + "/evaluation_smoothed_value", np.mean(scores_window), episode)
-            writer.flush()
+            if writer is not None:
+                writer.add_scalar(self.get_name() + "/evaluation_value", tot_reward, episode)
+                writer.add_scalar(self.get_name() + "/evaluation_smoothed_value", np.mean(scores_window), episode)
+                writer.flush()
 
             if episode >= max_episodes:
                 break
