@@ -15,7 +15,8 @@ If reinforcement learning is not used, the observation can be replaced by the du
 ## One solver for multiple environments and policy
 
 The **[BaseSolver](https://github.com/aiAdrian/flatland_solver_policy/blob/main/solver/base_solver.py)** requires an
-**[Environment](https://github.com/aiAdrian/flatland_solver_policy/blob/main/environment/environment.py)** and a **[Policy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/policy.py)**. The
+**[Environment](https://github.com/aiAdrian/flatland_solver_policy/blob/main/environment/environment.py)** and a *
+*[Policy](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/policy.py)**. The
 BaseRenderer can be optionally enabled.
 
 ```mermaid
@@ -168,8 +169,8 @@ and the state space are needed for policy creation.
 
 ```python
 observation_builder = FlattenTreeObsForRailEnv(
-  max_depth=3,
-  predictor=ShortestPathPredictorForRailEnv(max_depth=50)
+    max_depth=3,
+    predictor=ShortestPathPredictorForRailEnv(max_depth=50)
 )
 
 env, obs_space, act_space = FlatlandDynamicsEnvironment(obs_builder_object=observation_builder,
@@ -184,12 +185,14 @@ solver.perform_evaluation(max_episodes=1000)
 Environments which are tested:
 
 #### Flatland
+
 - [**Flatland**](https://github.com/flatland-association/flatland-rl)
     - [RailEnv](https://github.com/flatland-association/flatland-rl/blob/main/flatland/envs/rail_env.py)
 - [**Flatland Railway Extension**](https://github.com/aiAdrian/flatland_railway_extension)
     - [FlatlandDynamics](https://github.com/aiAdrian/flatland_railway_extension/blob/master/flatland_railway_extension/environments/FlatlandDynamics.py)
 
 #### Non Flatland
+
 - [Gymnasium](https://github.com/Farama-Foundation/Gymnasium):
     - [cartpole](https://github.com/Farama-Foundation/Gymnasium/blob/main/gymnasium/envs/classic_control/cartpole.py)
 - [ma-gym](https://github.com/koulanurag/ma-gym)
@@ -204,17 +207,20 @@ Environments which are tested:
     - [traffic junction 4](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_traffic_junction_4.py)
     - [traffic junction 10](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_traffic_junction_10.py)
 
-
-| Policy                   | RailEnv | Flatland Dynamics | cartpole | checkers | combat  | lumberjacks  | pong duel  | predator prey 5x5 | predator prey 7x7   | switch 2 | switch 4 | traffic junction 4 | traffic junction 10 |
-|--------------------------|---------|-------------------|----------|----------|---------|--------------|------------|-------------------|---------------------|----------|----------|--------------------|---------------------|
-| CartpoleAnalyticalPolicy |         |                   | **yes**  |          |         |              |            |                   |                     |          |          |                    |                     |
-| RandomPolicy             | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**      | **yes**    | **yes**           | **yes**             | **yes**  | **yes**  | **yes**            | **yes**             |
-| DDDQNPolicy              | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**      | **yes**    | **yes**           | **yes**             | **yes**  | **yes**  | **yes**            | **yes**             |
-| PPOPolicy                | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**      | **yes**    | **yes**           | **yes**             | **yes**  | **yes**  | **yes**            | **yes**             |
-| A2CPolicy                | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**      | **yes**    | **yes**           | **yes**             | **yes**  | **yes**  | **yes**            | **yes**             |
-| DeadLockAvoidancePolicy  | **yes** | **yes**           |          |          |         |              |            |                   |                     |          |          |                    |                     |
+| Policy                   | RailEnv | Flatland Dynamics | cartpole | checkers | combat  | lumberjacks | pong duel | predator prey 5x5 | predator prey 7x7 | switch 2 | switch 4 | traffic junction 4 | traffic junction 10 |
+|--------------------------|---------|-------------------|----------|----------|---------|-------------|-----------|-------------------|-------------------|----------|----------|--------------------|---------------------|
+| CartpoleAnalyticalPolicy |         |                   | **yes**  |          |         |             |           |                   |                   |          |          |                    |                     |
+| RandomPolicy             | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
+| DDDQNPolicy              | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
+| PPOPolicy                | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
+| A2CPolicy                | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
+| DeadLockAvoidancePolicy  | **yes** | **yes**           |          |          |         |             |           |                   |                   |          |          |                    |                     |
 
 ### Tensorboard
 
 Training / quality logging is done with tensorboard. Navigate to the example folder
 and call ``tensorboard --logdir runs``
+
+### Future integration ideas
+
+[MARL-Algorithms](https://github.com/starry-sky6688/MARL-Algorithms/tree/master)
