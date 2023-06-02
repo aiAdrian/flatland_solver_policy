@@ -5,5 +5,5 @@ from utils.training_evaluation_pipeline import execute_replay_policy_comparison
 
 environment = MultiAgentGymEnvironment(env_to_load='ma_gym:PredatorPrey7x7-v0')
 renderer = MultiAgentGymRenderer(environment)
-renderer.set_sleep_time(0.5)
+renderer.set_sleep_time(0.1)
 execute_replay_policy_comparison(environment, MultiAgentGymSolver, renderer)

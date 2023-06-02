@@ -92,7 +92,8 @@ def execute_policy_comparison(env: Environment,
 def execute_replay_policy_comparison(env: Environment,
                                      solver_creator: Type[BaseSolver],
                                      renderer: BaseRenderer = None,
-                                     max_evaluation_episodes=10):
+                                     max_evaluation_episodes=10,
+                                     policy_creator_list=policy_creator_list):
     for policy_creator in policy_creator_list:
         execute_single_policy_experiment(env=env,
                                          solver_creator=solver_creator,
