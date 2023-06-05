@@ -3,6 +3,7 @@ import os
 import pickle
 import random
 from collections import namedtuple
+from typing import Union
 
 import numpy as np
 import torch
@@ -15,7 +16,7 @@ from policy.learning_policy.replay_buffer import ReplayBuffer
 
 DDDQN_Param = namedtuple('DDDQN_Param',
                          ['hidden_size', 'buffer_size', 'batch_size', 'update_every', 'learning_rate',
-                          'tau', 'gamma', 'buffer_min_size', 'use_gpu'])
+                          'tau', 'discount', 'buffer_min_size', 'use_gpu'])
 
 
 class DDDQNPolicy(LearningPolicy):
@@ -24,52 +25,50 @@ class DDDQNPolicy(LearningPolicy):
     def __init__(self,
                  state_size: int,
                  action_size: int,
-                 in_parameters: DDDQN_Param,
-                 evaluation_mode=False):
+                 in_parameters: Union[DDDQN_Param, None]):
         super(DDDQNPolicy, self).__init__()
 
         self.ddqn_parameters = in_parameters
-        self.evaluation_mode = evaluation_mode
 
         self.state_size = state_size
         self.action_size = action_size
         self.double_dqn = True
-        self.hidsize = 128
+        self.hidden_size = 128
         self.train = False
 
-        if not evaluation_mode:
-            self.hidsize = self.ddqn_parameters.hidden_size
+        if self.ddqn_parameters is not None:
+            self.hidden_size = self.ddqn_parameters.hidden_size
             self.buffer_size = self.ddqn_parameters.buffer_size
             self.batch_size = self.ddqn_parameters.batch_size
             self.update_every = self.ddqn_parameters.update_every
             self.learning_rate = self.ddqn_parameters.learning_rate
             self.tau = self.ddqn_parameters.tau
-            self.gamma = self.ddqn_parameters.gamma
+            self.discount = self.ddqn_parameters.discount
             self.buffer_min_size = self.ddqn_parameters.buffer_min_size
+        else:
+            self.buffer_size = 1
+            self.batch_size = 1
+            self.learning_rate = 0
 
-            # Device
+        # Device
         if self.ddqn_parameters.use_gpu and torch.cuda.is_available():
             self.device = torch.device("cuda:0")
-            # print("🐇 Using GPU")
+            print("🐇 Using GPU")
         else:
             self.device = torch.device("cpu")
-            # print("🐢 Using CPU")
+            print("🐢 Using CPU")
 
         # Q-Network
         self.qnetwork_local = DuelingQNetwork(state_size,
                                               action_size,
-                                              hide_size_1=self.hidsize,
-                                              hide_size_2=self.hidsize).to(self.device)
+                                              hide_size_1=self.hidden_size,
+                                              hide_size_2=self.hidden_size).to(self.device)
 
-        if not evaluation_mode:
-            self.qnetwork_target = copy.deepcopy(self.qnetwork_local)
-            self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=self.learning_rate)
-            self.memory = ReplayBuffer(action_size, self.buffer_size, self.batch_size, self.device)
-            self.t_step = 0
-            self.loss = 0.0
-        else:
-            self.memory = ReplayBuffer(action_size, 1, 1, self.device)
-            self.loss = 0.0
+        self.qnetwork_target = copy.deepcopy(self.qnetwork_local)
+        self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=self.learning_rate)
+        self.memory = ReplayBuffer(action_size, self.buffer_size, self.batch_size, self.device)
+        self.t_step = 0
+        self.loss = 0.0
 
     def get_name(self):
         return self.__class__.__name__
@@ -93,7 +92,8 @@ class DDDQNPolicy(LearningPolicy):
             return random.choice(np.arange(self.action_size))
 
     def step(self, handle, state, action, reward, next_state, done):
-        assert not self.evaluation_mode, "Policy has been initialized for evaluation only."
+        if not self.train:
+            return
 
         # Save experience in replay memory
         self.memory.add(state, action, reward, next_state, done)
@@ -121,7 +121,7 @@ class DDDQNPolicy(LearningPolicy):
             q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(-1)
 
         # Compute Q targets for current states
-        q_targets = rewards + (self.gamma * q_targets_next * (1 - dones))
+        q_targets = rewards + (self.discount * q_targets_next * (1 - dones))
 
         # Compute loss
         self.loss = F.mse_loss(q_expected, q_targets)
@@ -174,7 +174,7 @@ class DDDQNPolicy(LearningPolicy):
         self._learn()
 
     def clone(self):
-        me = DDDQNPolicy(self.state_size, self.action_size, self.ddqn_parameters, evaluation_mode=True)
-        me.qnetwork_target = copy.deepcopy(self.qnetwork_local)
-        me.qnetwork_target = copy.deepcopy(self.qnetwork_target)
-        return me
+        policy = DDDQNPolicy(self.state_size, self.action_size, self.ddqn_parameters)
+        policy.qnetwork_target = copy.deepcopy(self.qnetwork_local)
+        policy.qnetwork_target = copy.deepcopy(self.qnetwork_target)
+        return policy

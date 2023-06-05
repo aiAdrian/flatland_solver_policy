@@ -95,14 +95,13 @@ class ActorCriticModel(nn.Module):
 
 PPO_Param = namedtuple('PPO_Param',
                        ['hidden_size', 'buffer_size', 'batch_size', 'learning_rate',
-                        'gamma', 'buffer_min_size', 'use_gpu'])
+                        'discount', 'buffer_min_size', 'use_replay_buffer', 'use_gpu'])
 
 
 class PPOPolicy(LearningPolicy):
     def __init__(self,
                  state_size: int,
                  action_size: int,
-                 use_replay_buffer=False,
                  in_parameters: Union[PPO_Param, None] = None):
         super(PPOPolicy, self).__init__()
 
@@ -112,25 +111,28 @@ class PPOPolicy(LearningPolicy):
         # parameters
         self.ppo_parameters = in_parameters
         if self.ppo_parameters is not None:
-            self.hide_size = self.ppo_parameters.hidden_size
+            self.hidden_size = self.ppo_parameters.hidden_size
             self.buffer_size = self.ppo_parameters.buffer_size
             self.batch_size = self.ppo_parameters.batch_size
             self.learning_rate = self.ppo_parameters.learning_rate
-            self.gamma = self.ppo_parameters.gamma
-            # Device
-            if self.ppo_parameters.use_gpu and torch.cuda.is_available():
-                self.device = torch.device("cuda:0")
-                # print("🐇 Using GPU")
-            else:
-                self.device = torch.device("cpu")
-                # print("🐢 Using CPU")
+            self.use_replay_buffer = self.ppo_parameters.use_replay_buffer
+            self.discount = self.ppo_parameters.discount
         else:
-            self.hide_size = 128
+            self.hidden_size = 128
             self.learning_rate = 1.0e-3
-            self.gamma = 0.95
+            self.discount = 0.95
             self.buffer_size = 32_000
             self.batch_size = 1024
+            self.use_replay_buffer = True
             self.device = torch.device("cpu")
+
+        # Device
+        if self.ppo_parameters.use_gpu and torch.cuda.is_available():
+            self.device = torch.device("cuda:0")
+            print("🐇 Using GPU")
+        else:
+            self.device = torch.device("cpu")
+            print("🐢 Using CPU")
 
         self.surrogate_eps_clip = 0.1
         self.K_epoch = 10
@@ -138,14 +140,13 @@ class PPOPolicy(LearningPolicy):
         self.weight_entropy = 0.01
 
         self.buffer_min_size = 0
-        self.use_replay_buffer = use_replay_buffer
 
         self.current_episode_memory = EpisodeBuffers()
         self.memory = ReplayBuffer(action_size, self.buffer_size, self.batch_size, self.device)
         self.loss = 0
         self.actor_critic_model = ActorCriticModel(state_size, action_size, self.device,
-                                                   hidsize1=self.hide_size,
-                                                   hidsize2=self.hide_size)
+                                                   hidsize1=self.hidden_size,
+                                                   hidsize2=self.hidden_size)
         self.optimizer = optim.Adam(self.actor_critic_model.parameters(), lr=self.learning_rate)
         self.loss_function = nn.MSELoss()  # nn.SmoothL1Loss()
 
@@ -202,7 +203,7 @@ class PPOPolicy(LearningPolicy):
             else:
                 done_list.insert(0, 0)
 
-            discounted_reward = reward_i + self.gamma * discounted_reward
+            discounted_reward = reward_i + self.discount * discounted_reward
             reward_list.insert(0, discounted_reward)
             state_next_list.insert(0, state_next_i)
             prob_a_list.insert(0, prob_action_i)
@@ -310,7 +311,7 @@ class PPOPolicy(LearningPolicy):
         self.optimizer = self._load(self.optimizer, filename + ".optimizer")
 
     def clone(self):
-        policy = PPOPolicy(self.state_size, self.action_size)
+        policy = PPOPolicy(self.state_size, self.action_size, self.ppo_parameters)
         policy.actor_critic_model = copy.deepcopy(self.actor_critic_model)
         policy.optimizer = copy.deepcopy(self.optimizer)
-        return self
+        return policy

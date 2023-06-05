@@ -1,4 +1,6 @@
 import copy
+from collections import namedtuple
+from typing import Union
 
 import torch
 import torch.nn as nn
@@ -72,31 +74,63 @@ class Critic(nn.Module):
         return self.model_q1(sa)
 
 
+T3D_Param = namedtuple('T3D_Param',
+                       ['hidden_size',
+                        'buffer_size',
+                        'buffer_min_size',
+                        'batch_size',
+                        'discount',
+                        'learning_rate',
+                        'tau',
+                        'policy_noise',
+                        'noise_clip',
+                        'policy_freq',
+                        'use_gpu'])
+
+
 # Twin Delayed Deep Deterministic Policy Gradients (TD3)
 class TD3Policy(LearningPolicy):
     def __init__(
             self,
             state_size,
             action_size,
-            buffer_size=32_000,
-            batch_size=256,
-            discount=0.95,
-            learning_rate=0.5e-3,
-            tau=0.02,
-            policy_noise=0.5,
-            noise_clip=1.0,
-            policy_freq=2
+            in_parameters: Union[T3D_Param, None] = None
     ):
         super(TD3Policy, self).__init__()
 
         self.state_size = state_size
         self.action_size = action_size
 
-        self.device = torch.device("cpu")
-        self.buffer_size = buffer_size
-        self.batch_size = batch_size
-        self.buffer_min_size = 0
-        self.learning_rate = learning_rate
+        self.t3d_param = in_parameters
+
+        if self.t3d_param is not None:
+            self.buffer_size = self.t3d_param.buffer_size
+            self.batch_size = self.t3d_param.batch_size
+            self.buffer_min_size = self.t3d_param.buffer_min_size
+            self.learning_rate = self.t3d_param.learning_rate
+            self.discount = self.t3d_param.discount
+            self.tau = self.t3d_param.tau
+            self.policy_noise = self.t3d_param.policy_noise
+            self.noise_clip = self.t3d_param.noise_clip
+            self.policy_freq = self.t3d_param.policy_freq
+        else:
+            self.buffer_size = 32_000
+            self.batch_size = 256
+            self.buffer_min_size = 0
+            self.learning_rate = 0.5e-4
+            self.discount = 0.95
+            self.tau = 0.1e-2
+            self.policy_noise = 0.2
+            self.noise_clip = 0.1
+            self.policy_freq = 2
+
+        # Device
+        if self.t3d_param.use_gpu and torch.cuda.is_available():
+            self.device = torch.device("cuda:0")
+            # print("🐇 Using GPU")
+        else:
+            self.device = torch.device("cpu")
+            # print("🐢 Using CPU")
 
         self.actor = Actor(state_size, action_size).to(self.device)
         self.actor_target = Actor(state_size, action_size).to(self.device)
@@ -105,12 +139,6 @@ class TD3Policy(LearningPolicy):
         self.critic = Critic(state_size, action_size).to(self.device)
         self.critic_target = Critic(state_size, action_size).to(self.device)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.learning_rate)
-
-        self.discount = discount
-        self.tau = tau
-        self.policy_noise = policy_noise
-        self.noise_clip = noise_clip
-        self.policy_freq = policy_freq
 
         self.memory = ReplayBuffer(action_size, self.buffer_size, self.batch_size, self.device)
         self.loss = 0
@@ -218,3 +246,11 @@ class TD3Policy(LearningPolicy):
         self.actor.load_state_dict(torch.load(filename + "_actor"))
         self.actor_optimizer.load_state_dict(torch.load(filename + "_actor_optimizer"))
         self.actor_target = copy.deepcopy(self.actor)
+
+    def clone(self):
+        policy = TD3Policy(self.state_size, self.action_size, self.t3d_param)
+        policy.actor = copy.deepcopy(self.actor)
+        policy.critic = copy.deepcopy(self.critic)
+        policy.actor_optimizer = copy.deepcopy(self.actor_optimizer)
+        policy.critic_optimizer = copy.deepcopy(self.critic_optimizer)
+        return policy

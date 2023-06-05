@@ -1,5 +1,7 @@
 import copy
 import os
+from collections import namedtuple
+from typing import Union
 
 import torch
 import torch.nn as nn
@@ -84,29 +86,44 @@ class A2CCritic(nn.Module):
         self.model = self._load(self.model, filename + ".a2c_critic")
 
 
+A2C_Param = namedtuple('A2C_Param',
+                       ['hidden_size',
+                        'learning_rate',
+                        'discount',
+                        'clip_grad_norm',
+                        'use_gpu'])
+
+
 class A2CPolicy(LearningPolicy):
-    def __init__(self, state_size, action_size, in_parameters=None, clip_grad_norm=0.1):
+    def __init__(self,
+                 state_size,
+                 action_size,
+                 in_parameters: Union[A2C_Param, None] = None):
         super(A2CPolicy, self).__init__()
         # parameters
         self.state_size = state_size
         self.action_size = action_size
         self.a2c_parameters = in_parameters
         if self.a2c_parameters is not None:
-            self.hidsize = self.a2c_parameters.hidden_size
+            self.hidden_size = self.a2c_parameters.hidden_size
             self.learning_rate = self.a2c_parameters.learning_rate
-            self.gamma = self.a2c_parameters.gamma
-            # Device
-            if self.a2c_parameters.use_gpu and torch.cuda.is_available():
-                self.device = torch.device("cuda:0")
-                # print("🐇 Using GPU")
-            else:
-                self.device = torch.device("cpu")
-                # print("🐢 Using CPU")
+            self.discount = self.a2c_parameters.discount
+            self.clip_grad_norm = self.a2c_parameters.clip_grad_norm
+
         else:
-            self.hidsize = 128
+            self.hidden_size = 128
             self.learning_rate = 0.5e-3
-            self.gamma = 0.95
+            self.discount = 0.95
+            self.clip_grad_norm = 0.1
             self.device = torch.device("cpu")
+
+        # Device
+        if self.a2c_parameters.use_gpu and torch.cuda.is_available():
+            self.device = torch.device("cuda:0")
+            print("🐇 Using GPU")
+        else:
+            self.device = torch.device("cpu")
+            print("🐢 Using CPU")
 
         self.current_episode_memory = EpisodeBuffers()
 
@@ -119,16 +136,15 @@ class A2CPolicy(LearningPolicy):
         self.actor = A2CActor(state_size,
                               action_size,
                               self.device,
-                              hidsize1=self.hidsize,
-                              hidsize2=self.hidsize)
+                              hidsize1=self.hidden_size,
+                              hidsize2=self.hidden_size)
         self.critic = A2CCritic(state_size,
                                 self.device,
-                                hidsize1=self.hidsize,
-                                hidsize2=self.hidsize)
+                                hidsize1=self.hidden_size,
+                                hidsize2=self.hidden_size)
 
         self.optimizer_actor = torch.optim.Adam(self.actor.parameters(), lr=self.learning_rate)
         self.optimizer_critic = torch.optim.Adam(self.critic.parameters(), lr=self.learning_rate)
-        self.clip_grad_norm = clip_grad_norm
 
     def get_name(self):
         return self.__class__.__name__
@@ -171,7 +187,7 @@ class A2CPolicy(LearningPolicy):
             action_list.insert(0, action_i)
             done_list.insert(0, int(done_i))
             mask_i = 1.0 - int(done_i)
-            discounted_reward = reward_i + self.gamma * mask_i * discounted_reward
+            discounted_reward = reward_i + self.discount * mask_i * discounted_reward
             reward_list.insert(0, discounted_reward)
             state_next_list.insert(0, state_next_i)
             prob_a_list.insert(0, prob_action_i)
@@ -260,4 +276,4 @@ class A2CPolicy(LearningPolicy):
         policy.critic = copy.deepcopy(self.critic)
         policy.optimizer_actor = copy.deepcopy(self.optimizer_actor)
         policy.optimizer_critic = copy.deepcopy(self.optimizer_critic)
-        return self
+        return policy
