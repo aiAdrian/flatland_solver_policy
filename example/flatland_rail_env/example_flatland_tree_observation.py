@@ -80,7 +80,7 @@ class FlatlandTreeObservation(ObservationBuilder):
 
         if not (agent.state.is_on_map_state() or agent.state == TrainState.READY_TO_DEPART):
             return [handle, {'agent_attr': agent_attr,
-                             'forest': np.array([]),
+                             'features': np.array([]),
                              'adjacency': np.array([])}]
 
         # do calculation only for active agent
@@ -124,7 +124,7 @@ class FlatlandTreeObservation(ObservationBuilder):
         # print(handle, 'feature', feature)
 
         return [handle, {'agent_attr': agent_attr,
-                         'forest': feature,
+                         'features': feature,
                          'adjacency': np.array(adj)}]
 
 
