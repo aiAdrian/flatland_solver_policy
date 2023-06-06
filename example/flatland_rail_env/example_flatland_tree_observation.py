@@ -72,7 +72,7 @@ class FlatlandTreeObservation(ObservationBuilder):
 
     def get(self, handle: int = 0):
         '''
-       The get method returns a feature vector (agent_attr) for each agent and a tree containing the collected features
+        The get method returns a feature vector (agent_attr) for each agent and a tree containing the collected features
         at each node. The collected features are the number of other agents per direction, the estimated mean delta
         distance on the "edge" (between decision points), and a flag for whether the branch contains the target cell.
         '''
