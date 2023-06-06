@@ -16,7 +16,6 @@ from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_av
 from policy.policy import Policy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
-from utils.treelstm.util import calculate_evaluation_orders
 
 
 class TreeObservationSearchStrategy(Enum):
@@ -82,9 +81,7 @@ class FlatlandTreeObservation(ObservationBuilder):
         if not (agent.state.is_on_map_state() or agent.state == TrainState.READY_TO_DEPART):
             return [handle, {'agent_attr': agent_attr,
                              'forest': np.array([]),
-                             'adjacency': np.array([]),
-                             'node_order': np.array([]),
-                             'edge_order': np.array([])}]
+                             'adjacency': np.array([])}]
 
         # do calculation only for active agent
         node = self.graph.get_mapped_vertex(position, direction)
@@ -126,13 +123,9 @@ class FlatlandTreeObservation(ObservationBuilder):
         # print(handle, 'adj', adj)
         # print(handle, 'feature', feature)
 
-        node_order, edge_order = calculate_evaluation_orders(adj, len(nodes))
-
         return [handle, {'agent_attr': agent_attr,
                          'forest': feature,
-                         'adjacency': np.array(adj),
-                         'node_order': node_order,
-                         'edge_order': edge_order}]
+                         'adjacency': np.array(adj)}]
 
 
 def create_deadlock_avoidance_policy(environment: Environment, action_space: int, show_debug_plot=False) -> Policy:
