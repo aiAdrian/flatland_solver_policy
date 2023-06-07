@@ -1,4 +1,5 @@
 from enum import Enum
+from functools import lru_cache
 from typing import Optional, List, Union
 
 import numpy as np
@@ -17,6 +18,23 @@ from policy.policy import Policy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
 
+# activate LRU caching
+_flatland_tree_observation_lru_cache_functions = []
+
+
+def _enable_flatland_tree_observation_lru_cache(*args, **kwargs):
+    def decorator(func):
+        func = lru_cache(*args, **kwargs)(func)
+        _flatland_tree_observation_lru_cache_functions.append(func)
+        return func
+
+    return decorator
+
+
+def _send_flatland_tree_observation_data_change_signal_to_reset_lru_cache():
+    for func in _flatland_tree_observation_lru_cache_functions:
+        func.cache_clear()
+
 
 class TreeObservationSearchStrategy(Enum):
     DepthFirstSearch = 0
@@ -32,9 +50,10 @@ class FlatlandTreeObservation(ObservationBuilder):
         self.depth_limit = depth_limit
         self.graph: Union[FlatlandGraphBuilder, None] = None
         self.switchAnalyser: Union[RailroadSwitchAnalyser, None] = None
-        self.agent_positions = []
+        self.agents_grid_map: Union[np.ndarray, None] = None
         self.agent_directions = []
         self.agent_state = []
+        self._distance_map: Union[np.ndarray, None] = None
 
     def reset(self):
         print("OptimisedTreeObs.reset")
@@ -44,6 +63,8 @@ class FlatlandTreeObservation(ObservationBuilder):
         print("- FlatlandGraphBuilder", end=" ")
         self.graph = FlatlandGraphBuilder(self.switchAnalyser, activate_simplified=True)
         print("ok.")
+        self._distance_map = self.env.distance_map.get()
+        _send_flatland_tree_observation_data_change_signal_to_reset_lru_cache()
 
     @staticmethod
     def get_agent_position_and_direction(agent: EnvAgent):
@@ -52,19 +73,13 @@ class FlatlandTreeObservation(ObservationBuilder):
         return position, direction
 
     def get_many(self, handles: Optional[List[int]] = None):
-        self.agent_positions = np.zeros(self.env.get_num_agents(), dtype=[('x', int), ('y', int)])
-        self.agent_directions = np.zeros(self.env.get_num_agents())
-        self.agent_state = np.zeros(self.env.get_num_agents())
+        self.agents_grid_map = np.zeros((self.env.rail.height, self.env.rail.width), dtype=int) - 1
 
         for a in self.env.agents:
             agent: EnvAgent = a
             position, direction = FlatlandTreeObservation.get_agent_position_and_direction(agent)
             if agent.state.is_on_map_state():
-                self.agent_positions[agent.handle] = position
-                self.agent_directions[agent.handle] = direction
-                self.agent_state[agent.handle] = agent.state
-            else:
-                self.agent_positions[agent.handle] = (-1, -1)
+                self.agents_grid_map[position] = agent.handle
 
         return super(FlatlandTreeObservation, self).get_many(handles)
 
@@ -76,7 +91,6 @@ class FlatlandTreeObservation(ObservationBuilder):
         '''
         agent: EnvAgent = self.env.agents[handle]
         position, direction = FlatlandTreeObservation.get_agent_position_and_direction(agent)
-        cur_dist = self.env.distance_map.get()[handle][position][direction]
         agent_attr = np.array([handle, agent.state])
 
         self.env.dev_obs_dict[handle] = set([])
@@ -87,40 +101,50 @@ class FlatlandTreeObservation(ObservationBuilder):
                              'adjacency': np.array([])}]
 
         # do calculation only for active agent
-        node = self.graph.get_mapped_vertex(position, direction)
+        cur_dist = self._distance_map[handle][position][direction]
+        node = self._get_mapped_vertex(position, direction)
         if self.search_strategy == TreeObservationSearchStrategy.BreadthFirstSearch:
             search_tree = bfs_tree(self.graph.get_graph(), node[0], depth_limit=self.depth_limit)
         else:
             search_tree = dfs_tree(self.graph.get_graph(), node[0], depth_limit=self.depth_limit)
 
         nodes: List[str] = []
+        nodes_idx = {}
         for n in search_tree.nodes:
             if n not in nodes:
                 nodes.append(n)
+                nodes_idx.update({n: len(nodes) - 1})
         adj = []
         feature = np.zeros((len(nodes), 4 + 1 + 1 + 1))
-        for e in search_tree.edges:
-            e1 = nodes.index(e[0])
-            e2 = nodes.index(e[1])
-            res = self.graph.get_edge_resource(e)
-            x_res = np.array(res, dtype=[('x', int), ('y', int)])
-            other_agents = np.in1d(self.agent_positions, x_res)
-            other_agents[handle] = False
-            for opp_agent_dir in self.agent_directions[other_agents]:
-                feature[e1][int(opp_agent_dir)] += 1
-            feature[e1][4] += len(self.agent_positions[other_agents])
-            mean_dist = 0
+        visited = []
+        for edge in search_tree.edges:
+            edge_node_idx_1 = nodes_idx.get(edge[0])
+            edge_node_idx_2 = nodes_idx.get(edge[1])
+            adj.append((edge_node_idx_1, edge_node_idx_2))
+
+            res = self._get_edge_resource(edge)
 
             # filter res
             if position in res:
                 res = res[res.index(position):]
 
-            for r in res:
-                mean_dist = np.min(self.env.distance_map.get()[handle][r])
-            feature[e1][5] = (mean_dist / (len(res) if len(res) > 0 else 1)) - cur_dist
-            feature[e1][6] = int(agent.target in res)
-            adj.append((e1, e2))
-            self.env.dev_obs_dict[handle] = self.env.dev_obs_dict[handle].union(set(res))
+            # feature extraction
+            other_agents = self._find_other_agents(handle, self.agents_grid_map, res)
+            for opp_agent in other_agents:
+                node = self._get_mapped_vertex(opp_agent.position, opp_agent.direction)
+                _, node_dir = self._get_node_position_direction(node[0])
+                feature[edge_node_idx_1][int(node_dir)] += 1
+            feature[edge_node_idx_1][4] += len(other_agents)
+            node_pos_e1, node_dir_e1 = self._get_node_position_direction(edge[0])
+            node_pos_e2, node_dir_e2 = self._get_node_position_direction(edge[1])
+            dist = min(self._distance_map[handle][node_pos_e1][node_dir_e1],
+                       self._distance_map[handle][node_pos_e2][node_dir_e2])
+
+            feature[edge_node_idx_1][5] = dist - cur_dist
+            feature[edge_node_idx_1][6] = int(agent.target in res)
+            visited = visited + res
+
+        self.env.dev_obs_dict[handle] = set(visited)
 
         # print(handle, 'nodes', nodes)
         # print(handle, 'adj', adj)
@@ -130,6 +154,33 @@ class FlatlandTreeObservation(ObservationBuilder):
                          'features': feature,
                          'adjacency': np.array(adj)}]
 
+    def _find_other_agents(self, handle, agents_grid_map, res) -> List[EnvAgent]:
+        ret: List[EnvAgent] = []
+        for r in res:
+            agent_handle = agents_grid_map[r]
+            if agent_handle == -1:
+                continue
+            if agent_handle == handle:
+                continue
+            agent = self.env.agents[agent_handle]
+            ret.append(agent)
+        return ret
+
+    @_enable_flatland_tree_observation_lru_cache(maxsize=1_000_000)
+    def _get_node_position_direction(self, node: str):
+        node_pos, node_dir = self.graph.get_node_pos_dir(node)
+        return node_pos, node_dir
+
+    @_enable_flatland_tree_observation_lru_cache(maxsize=1_000_000)
+    def _get_mapped_vertex(self, position, direction):
+        node = self.graph.get_mapped_vertex(position, direction)
+        return node
+
+    @_enable_flatland_tree_observation_lru_cache(maxsize=1_000_000)
+    def _get_edge_resource(self, edge):
+        res = self.graph.get_edge_resource(edge)
+        return res
+
 
 def create_deadlock_avoidance_policy(environment: Environment, action_space: int, show_debug_plot=False) -> Policy:
     return DeadLockAvoidancePolicy(environment.get_raw_env(), action_space, enable_eps=False,
@@ -137,14 +188,16 @@ def create_deadlock_avoidance_policy(environment: Environment, action_space: int
 
 
 if __name__ == "__main__":
+    do_rendering = False
+
     env = RailEnvironment(
         obs_builder_object=FlatlandTreeObservation(
             search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
             depth_limit=10
         ),
-        number_of_agents=20)
+        number_of_agents=100)
 
     solver_deadlock = FlatlandSolver(env,
                                      create_deadlock_avoidance_policy(env, env.get_action_space()),
-                                     FlatlandSimpleRenderer(env))
+                                     FlatlandSimpleRenderer(env) if do_rendering else None)
     solver_deadlock.perform_training(max_episodes=2)
