@@ -56,13 +56,8 @@ class FlatlandTreeObservation(ObservationBuilder):
         self._distance_map: Union[np.ndarray, None] = None
 
     def reset(self):
-        print("OptimisedTreeObs.reset")
-        print("- RailroadSwitchAnalyser", end=" ")
         self.switchAnalyser = RailroadSwitchAnalyser(self.env)
-        print("ok.")
-        print("- FlatlandGraphBuilder", end=" ")
         self.graph = FlatlandGraphBuilder(self.switchAnalyser, activate_simplified=True)
-        print("ok.")
         self._distance_map = self.env.distance_map.get()
         _send_flatland_tree_observation_data_change_signal_to_reset_lru_cache()
 
@@ -103,10 +98,7 @@ class FlatlandTreeObservation(ObservationBuilder):
         # do calculation only for active agent
         cur_dist = self._distance_map[handle][position][direction]
         node = self._get_mapped_vertex(position, direction)
-        if self.search_strategy == TreeObservationSearchStrategy.BreadthFirstSearch:
-            search_tree = bfs_tree(self.graph.get_graph(), node[0], depth_limit=self.depth_limit)
-        else:
-            search_tree = dfs_tree(self.graph.get_graph(), node[0], depth_limit=self.depth_limit)
+        search_tree = self._get_search_tree(node[0])
 
         nodes: List[str] = []
         nodes_idx = {}
@@ -114,13 +106,13 @@ class FlatlandTreeObservation(ObservationBuilder):
             if n not in nodes:
                 nodes.append(n)
                 nodes_idx.update({n: len(nodes) - 1})
-        adj = []
+        adj = np.zeros((len(search_tree.edges), 2), dtype=int)
         feature = np.zeros((len(nodes), 4 + 1 + 1 + 1))
         visited = []
-        for edge in search_tree.edges:
+        for i_edge, edge in enumerate(search_tree.edges):
             edge_node_idx_1 = nodes_idx.get(edge[0])
             edge_node_idx_2 = nodes_idx.get(edge[1])
-            adj.append((edge_node_idx_1, edge_node_idx_2))
+            adj[i_edge] = [edge_node_idx_1, edge_node_idx_2]
 
             res = self._get_edge_resource(edge)
 
@@ -152,7 +144,7 @@ class FlatlandTreeObservation(ObservationBuilder):
 
         return [handle, {'agent_attr': agent_attr,
                          'features': feature,
-                         'adjacency': np.array(adj)}]
+                         'adjacency': adj}]
 
     def _find_other_agents(self, handle, agents_grid_map, res) -> List[EnvAgent]:
         ret: List[EnvAgent] = []
@@ -180,6 +172,15 @@ class FlatlandTreeObservation(ObservationBuilder):
     def _get_edge_resource(self, edge):
         res = self.graph.get_edge_resource(edge)
         return res
+
+    @_enable_flatland_tree_observation_lru_cache(maxsize=1_000_000)
+    def _get_search_tree(self, node):
+        if self.search_strategy == TreeObservationSearchStrategy.BreadthFirstSearch:
+            search_tree = bfs_tree(self.graph.get_graph(), node, depth_limit=self.depth_limit)
+        else:
+            search_tree = dfs_tree(self.graph.get_graph(), node, depth_limit=self.depth_limit)
+
+        return search_tree
 
 
 def create_deadlock_avoidance_policy(environment: Environment, action_space: int, show_debug_plot=False) -> Policy:
