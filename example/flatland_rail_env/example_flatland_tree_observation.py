@@ -189,14 +189,14 @@ def create_deadlock_avoidance_policy(environment: Environment, action_space: int
 
 
 if __name__ == "__main__":
-    do_rendering = False
+    do_rendering = True
 
     env = RailEnvironment(
         obs_builder_object=FlatlandTreeObservation(
             search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
             depth_limit=10
         ),
-        number_of_agents=100)
+        number_of_agents=5)
 
     solver_deadlock = FlatlandSolver(env,
                                      create_deadlock_avoidance_policy(env, env.get_action_space()),

@@ -18,21 +18,23 @@ def create_deadlock_avoidance_policy(environment: Environment, action_space: int
 
 
 if __name__ == "__main__":
+    do_rendering = True
+
     observation_builder = FlattenTreeObsForRailEnv(
-        max_depth=3,
-        predictor=ShortestPathPredictorForRailEnv(max_depth=50)
+        max_depth=4,
+        predictor=ShortestPathPredictorForRailEnv(max_depth=0)
     )
 
-    env = RailEnvironment(obs_builder_object=observation_builder, number_of_agents=10)
+    env = RailEnvironment(obs_builder_object=observation_builder, number_of_agents=5)
 
     print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env.get_name(),
                                                                    env.get_num_agents(),
                                                                    env.get_action_space(),
                                                                    env.get_observation_space()))
 
-    execute_policy_comparison(env, FlatlandSolver)
+    # execute_policy_comparison(env, FlatlandSolver)
 
     solver_deadlock = FlatlandSolver(env,
                                      create_deadlock_avoidance_policy(env, env.get_action_space()),
-                                     FlatlandSimpleRenderer(env))
+                                     FlatlandSimpleRenderer(env) if do_rendering else None)
     solver_deadlock.perform_training(max_episodes=2)
