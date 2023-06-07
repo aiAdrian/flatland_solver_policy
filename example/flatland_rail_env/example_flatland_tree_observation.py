@@ -41,7 +41,6 @@ class FlatlandTreeObservation(ObservationBuilder):
         print("- RailroadSwitchAnalyser", end=" ")
         self.switchAnalyser = RailroadSwitchAnalyser(self.env)
         print("ok.")
-        # TODO FlatlandGraphBuild has new argument: activate_simplified / Install latest version and replace here
         print("- FlatlandGraphBuilder", end=" ")
         self.graph = FlatlandGraphBuilder(self.switchAnalyser, activate_simplified=True)
         print("ok.")
