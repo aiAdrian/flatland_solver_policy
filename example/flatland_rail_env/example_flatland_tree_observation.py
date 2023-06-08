@@ -1,7 +1,7 @@
 from collections import namedtuple
 from enum import Enum
 from functools import lru_cache
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Tuple
 
 import networkx
 import numpy as np
@@ -54,7 +54,7 @@ class TreeObservationReturnType(Enum):
 
 TreeObservationData = namedtuple('TreeObservationData',
                                  ['handle', 'agent',
-                                  'agent_attr', 'features', 'adjacency', 'adj_actions',
+                                  'agent_attr', 'features', 'adjacency', 'actions',
                                   'nodes', 'edges', 'search_tree',
                                   'nodes_type'])
 
@@ -69,6 +69,7 @@ class FlatlandTreeObservation(ObservationBuilder):
         self.search_strategy: TreeObservationSearchStrategy = search_strategy
         self.observation_return_type = observation_return_type
         self.depth_limit = depth_limit
+        self.tree_feature_size = 8
         self.render_debug_tree = render_debug_tree
 
         self.switchAnalyser: Union[RailroadSwitchAnalyser, None] = None
@@ -116,27 +117,20 @@ class FlatlandTreeObservation(ObservationBuilder):
         }
 
         pos = {}
-        nodes_color =[]
+        nodes_color = []
         for idx, n in enumerate(obs.nodes):
             p, _ = self._get_node_position_direction(n)
             pos.update({n: [1000 * p[1], -1000 * p[0]]})
             binary = obs.nodes_type[idx]
             color_value = float(sum(val * (2 ** idx) for idx, val in enumerate(reversed(binary))))
-            if color_value == 1:
-                nodes_color.append('gray')
-            elif color_value == 2:
-                nodes_color.append('green')
-            elif color_value == 3:
-                nodes_color.append('magenta')
-            elif color_value == 4:
-                nodes_color.append('yellow')
-            else:
-                nodes_color.append('white')
+            nodes_color.append(color_value)
 
         networkx.draw(obs.search_tree,
                       pos=pos,
                       with_labels=True,
                       node_color=nodes_color,
+                      cmap=plt.cm.Blues,
+                      alpha=0.8,
                       **options
                       )
 
@@ -180,7 +174,7 @@ class FlatlandTreeObservation(ObservationBuilder):
                     agent_attr=agent_attr,
                     features=np.array([]),
                     adjacency=np.array([]),
-                    adj_actions=np.array([]),
+                    actions=np.array([]),
                     nodes=[],
                     edges=[],
                     search_tree=None,
@@ -202,9 +196,10 @@ class FlatlandTreeObservation(ObservationBuilder):
                 n_pos, n_dir = self._get_node_position_direction(n)
                 is_dead_end = self.graph.railroad_switch_analyser.is_dead_end(n_pos)
                 is_diamond_crossing = self.graph.railroad_switch_analyser.is_diamond_crossing(n_pos)
-                agent_at_railroad_switch, agent_near_to_railroad_switch, \
-                    agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell = \
-                    self.graph.railroad_switch_analyser.check_agent_decision(n_pos, n_dir)
+                agent_at_railroad_switch, \
+                    agent_near_to_railroad_switch, \
+                    agent_at_railroad_switch_cell, \
+                    agent_near_to_railroad_switch_cell = self._check_agent_decision(n_pos, n_dir)
                 nt = self._create_node_types(is_dead_end,
                                              is_diamond_crossing,
                                              agent_at_railroad_switch,
@@ -214,15 +209,16 @@ class FlatlandTreeObservation(ObservationBuilder):
                 nodes_type.append(nt)
 
         adj = np.zeros((len(search_tree.edges), 2), dtype=int)
-        adj_actions = np.zeros(len(search_tree.edges))
+        actions = np.zeros(len(search_tree.edges))
         edges = []
-        feature = np.zeros((len(nodes), 4 + 1 + 1 + 1))
+        feature = np.zeros((len(nodes), self.tree_feature_size))
         visited = []
         for i_edge, edge in enumerate(search_tree.edges):
             edges.append(edge)
             edge_node_idx_1 = nodes_idx.get(edge[0])
             edge_node_idx_2 = nodes_idx.get(edge[1])
             adj[i_edge] = [edge_node_idx_1, edge_node_idx_2]
+            actions[i_edge] = self._get_edge_action(edge)[0]
 
             res = self._get_edge_resource(edge)
 
@@ -230,7 +226,9 @@ class FlatlandTreeObservation(ObservationBuilder):
             if position in res:
                 res = res[res.index(position):]
 
+            # ---------------------------------------------------------------------------
             # feature extraction
+            # ---------------------------------------------------------------------------
             other_agents = self._find_other_agents(handle, self.agents_grid_map, res)
             for opp_agent in other_agents:
                 node = self._get_mapped_vertex(opp_agent.position, opp_agent.direction)
@@ -244,6 +242,9 @@ class FlatlandTreeObservation(ObservationBuilder):
 
             feature[edge_node_idx_1][5] = dist - cur_dist
             feature[edge_node_idx_1][6] = int(agent.target in res)
+            feature[edge_node_idx_1][7] = actions[i_edge]
+            # ---------------------------------------------------------------------------
+
             visited = visited + res
 
         self.env.dev_obs_dict[handle] = set(visited)
@@ -259,7 +260,7 @@ class FlatlandTreeObservation(ObservationBuilder):
                 agent_attr=agent_attr,
                 features=feature,
                 adjacency=adj,
-                adj_actions=adj_actions,
+                actions=actions,
                 nodes=nodes,
                 edges=edges,
                 search_tree=search_tree,
@@ -296,6 +297,8 @@ class FlatlandTreeObservation(ObservationBuilder):
         if self.observation_return_type == TreeObservationReturnType.Tree:
             return obs
 
+        self.search_tree_flatten(obs)
+
         if self.render_debug_tree:
             if obs.search_tree is not None and obs.agent.state.is_on_map_state():
                 if len(obs.adjacency) > self.depth_limit:
@@ -303,8 +306,47 @@ class FlatlandTreeObservation(ObservationBuilder):
 
         return obs.agent_attr
 
+    def search_tree_flatten(self, obs: TreeObservationData):
+        flatten_obs = np.zeros((2 ** (self.depth_limit + 1)) * self.tree_feature_size)
+
+        if obs.search_tree is not None:
+            parents = obs.adjacency[:, 0]
+            children = obs.adjacency[:, 1]
+            node_level = {}
+            node_ids = {}
+            cur_level = 0
+            level_idx = 0
+            node_level.update({parents[0]: cur_level})
+            node_ids.update({parents[0]: 0})
+            pre_parsed_parent = -1
+            for i_p, p in enumerate(parents):
+                level = node_level.get(p, cur_level)
+                child = children[i_p]
+                node_level.update({child: level + 1})
+
+                parent_node_id = node_ids.get(p)
+                if pre_parsed_parent != p:
+                    level_idx = 0
+                else:
+                    level_idx += 1
+                pre_parsed_parent = p
+                node_id = (2 * (parent_node_id + 1) - 1) + level_idx
+                node_ids.update({child: node_id})
+            for n_idx in range(len(obs.nodes)):
+                x = self.tree_feature_size * node_ids.get(n_idx)
+                flatten_obs[x:(x + self.tree_feature_size)] = obs.features[n_idx]
+        return flatten_obs
+
     @_enable_flatland_tree_observation_lru_cache(maxsize=1_000_000)
-    def extract_node_types(self, node_type):
+    def _check_agent_decision(self, n_pos, n_dir):
+        agent_at_railroad_switch, agent_near_to_railroad_switch, \
+            agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell = \
+            self.graph.railroad_switch_analyser.check_agent_decision(n_pos, n_dir)
+        return agent_at_railroad_switch, agent_near_to_railroad_switch, \
+            agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell
+
+    @_enable_flatland_tree_observation_lru_cache(maxsize=1_000_000)
+    def extract_node_types(self, node_type) -> (int, int, int, int, int, int):
         is_dead_end = node_type[0]
         is_diamond_crossing = node_type[1]
         agent_at_railroad_switch = node_type[2]
@@ -316,12 +358,12 @@ class FlatlandTreeObservation(ObservationBuilder):
             agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell
 
     @_enable_flatland_tree_observation_lru_cache(maxsize=1_000_000)
-    def _create_node_types(self, is_dead_end, is_diamond_crossing,
-                           agent_at_railroad_switch, agent_near_to_railroad_switch,
-                           agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell):
-        return [is_dead_end, is_diamond_crossing,
-                agent_at_railroad_switch, agent_near_to_railroad_switch,
-                agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell]
+    def _create_node_types(self, is_dead_end: bool, is_diamond_crossing: bool,
+                           agent_at_railroad_switch: bool, agent_near_to_railroad_switch: bool,
+                           agent_at_railroad_switch_cell: bool, agent_near_to_railroad_switch_cell: bool):
+        return [int(is_dead_end), int(is_diamond_crossing),
+                int(agent_at_railroad_switch), int(agent_near_to_railroad_switch),
+                int(agent_at_railroad_switch_cell), int(agent_near_to_railroad_switch_cell)]
 
     @_enable_flatland_tree_observation_lru_cache(maxsize=1_000_000)
     def _get_node_position_direction(self, node: str):
@@ -339,6 +381,11 @@ class FlatlandTreeObservation(ObservationBuilder):
         return res
 
     @_enable_flatland_tree_observation_lru_cache(maxsize=1_000_000)
+    def _get_edge_action(self, edge) -> List[Tuple[int, int]]:
+        edge_data = self.graph.get_graph().get_edge_data(edge[0], edge[1])
+        return edge_data.get('action')
+
+    @_enable_flatland_tree_observation_lru_cache(maxsize=1_000_000)
     def _get_search_tree(self, node):
         if self.search_strategy == TreeObservationSearchStrategy.BreadthFirstSearch:
             search_tree = bfs_tree(self.graph.get_graph(), node, depth_limit=self.depth_limit)
@@ -354,16 +401,17 @@ def create_deadlock_avoidance_policy(environment: Environment, action_space: int
 
 
 if __name__ == "__main__":
-    do_rendering = True
+    do_rendering = False
+    do_render_debug_tree = False
 
     env = RailEnvironment(
         obs_builder_object=FlatlandTreeObservation(
             search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
             observation_return_type=TreeObservationReturnType.Flatten,
             depth_limit=10,
-            render_debug_tree=True and do_rendering
+            render_debug_tree=do_render_debug_tree and do_rendering
         ),
-        number_of_agents=1)
+        number_of_agents=100)
 
     # execute_policy_comparison(env, FlatlandSolver, pcl=[create_ppo_policy])
 

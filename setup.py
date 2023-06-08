@@ -18,7 +18,7 @@ setup(
     python_requires='>=3.6, <4',
     packages=find_packages('.'),
     install_requires=[
-        'flatland-railway-extension',
+        'flatland-railway-extension>=0.2.5',
         'torch',
         'tensorboard',
         'gym',
