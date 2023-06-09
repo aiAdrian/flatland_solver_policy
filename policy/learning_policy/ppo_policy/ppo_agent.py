@@ -305,10 +305,9 @@ class PPOPolicy(LearningPolicy):
         return obj
 
     def load(self, filename):
-        print("load policy from file", filename)
         self.actor_critic_model.load(filename)
-        print("load optimizer from file", filename)
         self.optimizer = self._load(self.optimizer, filename + ".optimizer")
+        print('{} -> load {} ok'.format(self.get_name(), filename))
 
     def clone(self):
         policy = PPOPolicy(self.state_size, self.action_size, self.ppo_parameters)

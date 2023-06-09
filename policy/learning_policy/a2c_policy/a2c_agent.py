@@ -263,12 +263,11 @@ class A2CPolicy(LearningPolicy):
         return obj
 
     def load(self, filename):
-        print("load policy from file", filename)
         self.actor.load(filename)
         self.critic.load(filename)
-        print("load optimizer from file", filename)
         self.optimizer_actor = self._load(self.optimizer_actor, filename + ".a2c_optimizer_actor")
         self.optimizer_critic = self._load(self.optimizer_critic, filename + ".a2c_optimizer_critic")
+        print('{} -> load {} ok'.format(self.get_name(), filename))
 
     def clone(self):
         policy = A2CPolicy(self.state_size, self.action_size)

@@ -246,6 +246,7 @@ class TD3Policy(LearningPolicy):
         self.actor.load_state_dict(torch.load(filename + "_actor"))
         self.actor_optimizer.load_state_dict(torch.load(filename + "_actor_optimizer"))
         self.actor_target = copy.deepcopy(self.actor)
+        print('{} -> load {} ok'.format(self.get_name(), filename))
 
     def clone(self):
         policy = TD3Policy(self.state_size, self.action_size, self.t3d_param)
