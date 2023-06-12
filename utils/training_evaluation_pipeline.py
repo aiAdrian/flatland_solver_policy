@@ -17,10 +17,10 @@ def crate_random_policy(observation_space: int, action_space: int) -> Policy:
 
 
 def create_dddqn_policy(observation_space: int, action_space: int) -> LearningPolicy:
-    param = DDDQN_Param(hidden_size=256,
+    param = DDDQN_Param(hidden_size=128,
                         buffer_size=32_000,
                         buffer_min_size=0,
-                        batch_size=1024,
+                        batch_size=512,
                         learning_rate=0.5e-3,
                         discount=0.95,
                         update_every=5,
@@ -30,10 +30,10 @@ def create_dddqn_policy(observation_space: int, action_space: int) -> LearningPo
 
 
 def create_ppo_policy(observation_space: int, action_space: int) -> LearningPolicy:
-    ppo_param = PPO_Param(hidden_size=256,
+    ppo_param = PPO_Param(hidden_size=128,
                           buffer_size=32_000,
                           buffer_min_size=0,
-                          batch_size=1024,
+                          batch_size=512,
                           learning_rate=0.5e-3,
                           discount=0.95,
                           use_replay_buffer=True,
@@ -42,7 +42,7 @@ def create_ppo_policy(observation_space: int, action_space: int) -> LearningPoli
 
 
 def create_a2c_policy(observation_space: int, action_space: int) -> LearningPolicy:
-    a2c_param = A2C_Param(hidden_size=256,
+    a2c_param = A2C_Param(hidden_size=128,
                           learning_rate=0.5e-3,
                           discount=0.95,
                           clip_grad_norm=0.1,
@@ -52,10 +52,10 @@ def create_a2c_policy(observation_space: int, action_space: int) -> LearningPoli
 
 
 def create_td3_policy(observation_space: int, action_space: int) -> LearningPolicy:
-    t3d_param = T3D_Param(hidden_size=256,
+    t3d_param = T3D_Param(hidden_size=128,
                           buffer_size=32_000,
                           buffer_min_size=0,
-                          batch_size=1024,
+                          batch_size=512,
                           learning_rate=0.5e-3,
                           discount=0.95,
                           tau=0.5e-2,
@@ -101,11 +101,11 @@ def execute_single_policy_experiment(env: Environment,
         solver.perform_evaluation(max_episodes=max_evaluation_episodes)
 
 
-policy_creator_list: List[Callable[[int, int], Policy]] = [crate_random_policy,
-                                                           create_td3_policy,
+policy_creator_list: List[Callable[[int, int], Policy]] = [create_td3_policy,
                                                            create_a2c_policy,
                                                            create_ppo_policy,
-                                                           create_dddqn_policy]
+                                                           create_dddqn_policy,
+                                                           crate_random_policy]
 
 
 def execute_policy_comparison(env: Environment,
