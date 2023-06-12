@@ -1,9 +1,11 @@
-from typing import Union
+from typing import Union, Callable, List, Dict
 
 from environment.environment import Environment
 from policy.policy import Policy
 from rendering.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver
+
+FlatlandRewardShaper = Callable[[List[float], List[bool], Dict], List[float]]
 
 
 class FlatlandSolver(BaseSolver):
@@ -12,6 +14,7 @@ class FlatlandSolver(BaseSolver):
                  policy: Policy,
                  renderer: Union[BaseRenderer, None] = None):
         super(FlatlandSolver, self).__init__(env, policy, renderer)
+        self._reward_shaper: Union[FlatlandRewardShaper, None] = None
 
     def get_name(self) -> str:
         return self.__class__.__name__
@@ -29,6 +32,14 @@ class FlatlandSolver(BaseSolver):
 
     def update_state(self, state_next):
         return state_next
+
+    def set_reward_shaper(self, reward_shaper: FlatlandRewardShaper):
+        self._reward_shaper = reward_shaper
+
+    def shape_reward(self, reward, terminal, info):
+        if self._reward_shaper is not None:
+            return self._reward_shaper(reward, terminal, info)
+        return reward
 
     def run_step(self, env, policy, state, eps, info, training_mode):
         tot_reward = 0
@@ -56,6 +67,7 @@ class FlatlandSolver(BaseSolver):
             policy.end_act(handle, train=training_mode)
 
         raw_state_next, reward, terminal, info = env.step(actions)
+        reward = self.shape_reward(reward, terminal, info)
         state_next = self.transform_state(raw_state_next)
 
         for handle in self.env.get_agent_handles():

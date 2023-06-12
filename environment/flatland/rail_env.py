@@ -1,5 +1,4 @@
 from flatland.core.env_observation_builder import ObservationBuilder
-from flatland.envs.fast_methods import fast_position_equal
 from flatland.envs.malfunction_generators import ParamMalfunctionGen, MalfunctionParameters
 from flatland.envs.rail_env import RailEnv
 from flatland.envs.rail_generators import sparse_rail_generator
@@ -18,17 +17,19 @@ class RailEnvironment(Environment):
                  number_of_agents=10,
                  grid_width=30,
                  grid_height=40,
-                 random_seed=0):
+                 grid_mode=True,
+                 random_seed=25041978):
         environment = RailEnvironment._create_flatland_env(
-            obs_builder_object,
-            max_rails_between_cities,
-            max_rails_in_city,
-            malfunction_rate,
-            n_cities,
-            number_of_agents,
-            grid_width,
-            grid_height,
-            random_seed)
+            obs_builder_object=obs_builder_object,
+            max_rails_between_cities=max_rails_between_cities,
+            max_rails_in_city=max_rails_in_city,
+            malfunction_rate=malfunction_rate,
+            n_cities=n_cities,
+            number_of_agents=number_of_agents,
+            grid_width=grid_width,
+            grid_height=grid_height,
+            grid_mode=grid_mode,
+            random_seed=random_seed)
 
         action_space = environment.action_space[0]
         obs_states, _ = environment.reset()
@@ -57,16 +58,17 @@ class RailEnvironment(Environment):
             number_of_agents=10,
             grid_width=30,
             grid_height=40,
-            random_seed=0) -> RailEnv:
+            grid_mode=True,
+            random_seed=25041978) -> RailEnv:
         return RailEnv(
             width=grid_width,
             height=grid_height,
             rail_generator=sparse_rail_generator(
                 max_num_cities=n_cities,
-                seed=random_seed,
-                grid_mode=True,
+                grid_mode=grid_mode,
                 max_rails_between_cities=max_rails_between_cities,
-                max_rail_pairs_in_city=max_rails_in_city
+                max_rail_pairs_in_city=max_rails_in_city,
+                seed=None,
             ),
             malfunction_generator=ParamMalfunctionGen(
                 MalfunctionParameters(
