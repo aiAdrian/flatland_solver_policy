@@ -5,7 +5,7 @@ from policy.policy import Policy
 from rendering.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver
 
-FlatlandRewardShaper = Callable[[List[float], List[bool], Dict], List[float]]
+FlatlandRewardShaper = Callable[[List[float], List[bool], Dict, Environment], List[float]]
 
 
 class FlatlandSolver(BaseSolver):
@@ -38,7 +38,7 @@ class FlatlandSolver(BaseSolver):
 
     def shape_reward(self, reward, terminal, info):
         if self._reward_shaper is not None:
-            return self._reward_shaper(reward, terminal, info)
+            return self._reward_shaper(reward, terminal, info, self.env)
         return reward
 
     def run_step(self, env, policy, state, eps, info, training_mode):
