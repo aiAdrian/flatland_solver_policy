@@ -3,6 +3,7 @@ from typing import Callable, Type, List
 from environment.environment import Environment
 from policy.learning_policy.a2c_policy.a2c_agent import A2CPolicy, A2C_Param
 from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQNPolicy, DDDQN_Param
+from policy.learning_policy.learning_policy import LearningPolicy
 from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy, PPO_Param
 from policy.learning_policy.td3_policy.td3_agent import TD3Policy, T3D_Param
 from policy.policy import Policy
@@ -15,7 +16,7 @@ def crate_random_policy(observation_space: int, action_space: int) -> Policy:
     return RandomPolicy(action_space)
 
 
-def create_dddqn_policy(observation_space: int, action_space: int) -> Policy:
+def create_dddqn_policy(observation_space: int, action_space: int) -> LearningPolicy:
     param = DDDQN_Param(hidden_size=256,
                         buffer_size=32_000,
                         buffer_min_size=0,
@@ -28,7 +29,7 @@ def create_dddqn_policy(observation_space: int, action_space: int) -> Policy:
     return DDDQNPolicy(observation_space, action_space, param)
 
 
-def create_ppo_policy(observation_space: int, action_space: int) -> Policy:
+def create_ppo_policy(observation_space: int, action_space: int) -> LearningPolicy:
     ppo_param = PPO_Param(hidden_size=256,
                           buffer_size=32_000,
                           buffer_min_size=0,
@@ -40,7 +41,7 @@ def create_ppo_policy(observation_space: int, action_space: int) -> Policy:
     return PPOPolicy(observation_space, action_space, ppo_param)
 
 
-def create_a2c_policy(observation_space: int, action_space: int) -> Policy:
+def create_a2c_policy(observation_space: int, action_space: int) -> LearningPolicy:
     a2c_param = A2C_Param(hidden_size=256,
                           learning_rate=0.5e-3,
                           discount=0.95,
@@ -50,7 +51,7 @@ def create_a2c_policy(observation_space: int, action_space: int) -> Policy:
     return A2CPolicy(observation_space, action_space, a2c_param)
 
 
-def create_td3_policy(observation_space: int, action_space: int) -> Policy:
+def create_td3_policy(observation_space: int, action_space: int) -> LearningPolicy:
     t3d_param = T3D_Param(hidden_size=256,
                           buffer_size=32_000,
                           buffer_min_size=0,
