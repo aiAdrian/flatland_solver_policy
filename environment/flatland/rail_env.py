@@ -1,4 +1,5 @@
 from flatland.core.env_observation_builder import ObservationBuilder
+from flatland.envs.fast_methods import fast_position_equal
 from flatland.envs.malfunction_generators import ParamMalfunctionGen, MalfunctionParameters
 from flatland.envs.rail_env import RailEnv
 from flatland.envs.rail_generators import sparse_rail_generator

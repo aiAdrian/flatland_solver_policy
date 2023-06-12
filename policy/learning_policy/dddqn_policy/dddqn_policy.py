@@ -77,16 +77,15 @@ class DDDQNPolicy(LearningPolicy):
         self.train = train
 
     def act(self, handle, state, eps=0.):
-        state = torch.tensor(state, dtype=torch.float).to(self.device)
-        self.qnetwork_local.eval()
-        with torch.no_grad():
-            action_values = self.qnetwork_local(state)
-
-        if self.train:
-            self.qnetwork_local.train()
-
         # Epsilon-greedy action selection
-        if random.random() >= eps:
+        if random.random() > eps:
+            state = torch.tensor(state, dtype=torch.float).to(self.device)
+            self.qnetwork_local.eval()
+            with torch.no_grad():
+                action_values = self.qnetwork_local(state)
+
+            if self.train:
+                self.qnetwork_local.train()
             return np.argmax(action_values.cpu().data.numpy())
         else:
             return random.choice(np.arange(self.action_size))

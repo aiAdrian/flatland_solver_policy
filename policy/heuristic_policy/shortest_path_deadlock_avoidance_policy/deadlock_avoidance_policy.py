@@ -114,17 +114,11 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
                             self.switches[pos].append(dir)
 
     def start_step(self, train):
-        self.build_agent_position_map()
-        self.shortest_distance_mapper()
-        self.extract_agent_can_move()
+        self._build_agent_position_map()
+        self._shortest_distance_mapper()
+        self._extract_agent_can_move()
 
-    def end_step(self, train):
-        pass
-
-    def get_actions(self):
-        pass
-
-    def build_agent_position_map(self):
+    def _build_agent_position_map(self):
         # build map with agent positions (only active agents)
         self.agent_positions = np.zeros((self.env.height, self.env.width), dtype=int) - 1
         for handle in range(self.env.get_num_agents()):
@@ -133,7 +127,7 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
                 if agent.position is not None:
                     self.agent_positions[agent.position] = handle
 
-    def shortest_distance_mapper(self):
+    def _shortest_distance_mapper(self):
         self.shortest_distance_walker = DeadlockAvoidanceShortestDistanceWalker(self.env,
                                                                                 self.agent_positions,
                                                                                 self.switches)
@@ -142,17 +136,17 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
             if agent.state <= TrainState.MALFUNCTION:
                 self.shortest_distance_walker.walk_to_target(handle)
 
-    def extract_agent_can_move(self):
+    def _extract_agent_can_move(self):
         self.agent_can_move = {}
         shortest_distance_agent_map, full_shortest_distance_agent_map = self.shortest_distance_walker.getData()
         for handle in range(self.env.get_num_agents()):
             agent = self.env.agents[handle]
             if agent.state < TrainState.DONE:
-                next_step_ok = self.check_agent_can_move(handle,
-                                                         shortest_distance_agent_map[handle],
-                                                         self.shortest_distance_walker.same_agent_map.get(handle, []),
-                                                         self.shortest_distance_walker.opp_agent_map.get(handle, []),
-                                                         full_shortest_distance_agent_map)
+                next_step_ok = self._check_agent_can_move(handle,
+                                                          shortest_distance_agent_map[handle],
+                                                          self.shortest_distance_walker.same_agent_map.get(handle, []),
+                                                          self.shortest_distance_walker.opp_agent_map.get(handle, []),
+                                                          full_shortest_distance_agent_map)
                 if next_step_ok:
                     next_position, next_direction, action, _ = self.shortest_distance_walker.walk_one_step(handle)
                     self.agent_can_move.update({handle: [next_position[0], next_position[1], next_direction, action]})
@@ -166,12 +160,12 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
             plt.show(block=False)
             plt.pause(0.01)
 
-    def check_agent_can_move(self,
-                             handle,
-                             my_shortest_walking_path,
-                             same_agents,
-                             opp_agents,
-                             full_shortest_distance_agent_map):
+    def _check_agent_can_move(self,
+                              handle,
+                              my_shortest_walking_path,
+                              same_agents,
+                              opp_agents,
+                              full_shortest_distance_agent_map):
         agent_positions_map = (self.agent_positions > -1).astype(int)
         delta = my_shortest_walking_path
         next_step_ok = True

@@ -151,10 +151,9 @@ class TD3Policy(LearningPolicy):
         return self.__class__.__name__
 
     def act(self, handle, state, eps=0.):
-        state = torch.FloatTensor(np.array(state).reshape(1, -1)).to(self.device)
-
         # Epsilon-greedy action selection
-        if np.random.random() >= eps:
+        if np.random.random() > eps:
+            state = torch.FloatTensor(np.array(state).reshape(1, -1)).to(self.device)
             estimated = self.actor(state)
             return np.argmax(estimated.cpu().data.numpy())
         else:
