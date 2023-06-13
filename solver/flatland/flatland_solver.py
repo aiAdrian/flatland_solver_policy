@@ -73,6 +73,7 @@ class FlatlandSolver(BaseSolver):
         for handle in self.env.get_agent_handles():
             terminal_all &= terminal[handle]
 
+        tot_terminal = 0
         for handle in self.env.get_agent_handles():
             if update_values[handle] or terminal_all:
                 policy.step(handle,
@@ -82,6 +83,8 @@ class FlatlandSolver(BaseSolver):
                             state_next[handle],
                             terminal[handle])
             tot_reward += reward[handle]
+            tot_terminal += int(terminal[handle])
+        tot_terminal /= max(1.0, len(self.env.get_agent_handles()))
 
         policy.end_step(train=training_mode)
-        return state_next, tot_reward, terminal['__all__'], info
+        return state_next, tot_reward, terminal['__all__'], tot_terminal, info
