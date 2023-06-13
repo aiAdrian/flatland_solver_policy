@@ -15,7 +15,7 @@ from policy.learning_policy.learning_policy import LearningPolicy
 from policy.learning_policy.reinforce_heuristic_policy.reinforce_heuristic_policy import ReinforceHeuristicPolicy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
-from utils.training_evaluation_pipeline import create_td3_policy, create_dddqn_policy
+from utils.training_evaluation_pipeline import create_ppo_policy
 
 
 def create_deadlock_avoidance_policy(environment: Environment,
@@ -79,12 +79,12 @@ if __name__ == "__main__":
     env.load_environments_from_path()
 
     policy = MyReinforceHeuristicPolicy(
-        learning_policy=create_dddqn_policy(env.get_observation_space(), env.get_action_space()),
+        learning_policy=create_ppo_policy(env.get_observation_space(), env.get_action_space()),
         heuristic_policy=create_deadlock_avoidance_policy(env, env.get_action_space()),
         heuristic_policy_epsilon=0.5
     )
     solver = FlatlandSolver(env,
-                            policy.heuristic_policy,
+                            policy,
                             FlatlandSimpleRenderer(env) if do_rendering else None)
     solver.set_reward_shaper(flatland_reward_shaper)
     solver.perform_training(max_episodes=2000)
