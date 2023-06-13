@@ -14,7 +14,7 @@ from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_av
 from policy.learning_policy.learning_policy import LearningPolicy
 from policy.learning_policy.reinforce_heuristic_policy.reinforce_heuristic_policy import ReinforceHeuristicPolicy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
-from solver.flatland.flatland_solver import FlatlandSolver
+from solver.flatland.flatland_solver import FlatlandSolver, RewardList, TerminalList, InfoDict
 from utils.training_evaluation_pipeline import create_ppo_policy
 
 
@@ -25,7 +25,7 @@ def create_deadlock_avoidance_policy(environment: Environment,
                                    show_debug_plot=show_debug_plot)
 
 
-def flatland_reward_shaper(reward: List[float], terminal: List[bool], info: Dict, env: Environment) -> List[float]:
+def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: InfoDict, env: Environment) -> List[float]:
     for i, agent in enumerate(env.raw_env.agents):
         reward[i] = -0.000001
         if agent.state == TrainState.DONE:
@@ -68,20 +68,19 @@ if __name__ == "__main__":
         obs_builder_object=FlatlandTreeObservation(
             search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
             observation_return_type=TreeObservationReturnType.Flatten,
-            depth_limit=5,
+            depth_limit=3,
             render_debug_tree=do_render_debug_tree and do_rendering),
         grid_width=30,
         grid_height=40,
         grid_mode=True,
         number_of_agents=10)
-
     env.generate_and_persist_environments(20)
     env.load_environments_from_path()
 
     policy = MyReinforceHeuristicPolicy(
         learning_policy=create_ppo_policy(env.get_observation_space(), env.get_action_space()),
         heuristic_policy=create_deadlock_avoidance_policy(env, env.get_action_space()),
-        heuristic_policy_epsilon=0.5
+        heuristic_policy_epsilon=1.0
     )
     solver = FlatlandSolver(env,
                             policy,
