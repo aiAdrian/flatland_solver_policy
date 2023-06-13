@@ -55,7 +55,8 @@ class RailEnvironmentPersistable(RailEnvironment):
                 if not os.path.exists(path):
                     os.makedirs(path)
                 fn = self._save_raw_env(path)
-                ProgressBar.console_print(100, 100, info='done.')
+                ProgressBar.console_print(i, generate_nbr_env, info=fn)
+            ProgressBar.console_print(100, 100, info='done.')
 
     def _load_generated(self, path):
         if not os.path.exists(path):

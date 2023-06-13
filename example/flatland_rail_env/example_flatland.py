@@ -24,7 +24,7 @@ if __name__ == "__main__":
         predictor=ShortestPathPredictorForRailEnv(max_depth=0)
     )
 
-    env = RailEnvironment(obs_builder_object=observation_builder, number_of_agents=5)
+    env = RailEnvironment(obs_builder_object=observation_builder, number_of_agents=25)
 
     print('{} : agents: {:3} actions: {:3} obs_space: {:4}'.format(env.get_name(),
                                                                    env.get_num_agents(),
