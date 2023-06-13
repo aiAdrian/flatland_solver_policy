@@ -1,4 +1,5 @@
 from flatland.core.env_observation_builder import ObservationBuilder
+from flatland.envs.step_utils.states import TrainState
 from flatland_railway_extension.FlatlandEnvironmentHelper import FlatlandEnvironmentHelper
 from flatland_railway_extension.environments.FlatlandDynamics import FlatlandDynamics
 
@@ -24,6 +25,8 @@ class FlatlandDynamicsEnvironment(Environment):
 
     def step(self, actions):
         state_next, reward, terminal, info = self.raw_env.step(actions)
+        for i, agent in enumerate(self.raw_env.agents):
+            terminal[i] = agent.state == TrainState.DONE
         return state_next, reward, terminal, info
 
     @staticmethod
