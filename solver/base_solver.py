@@ -173,7 +173,7 @@ class BaseSolver:
             terminate_window.append(tot_terminate)
 
             print(
-                '\rEpisode: {:5}\treward: {:7.3f} : {:7.3f}  \tdone: {:7.3f} : {:7.3f}'.format(
+                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f}  \tdone: {:4.3f} : {:4.3f}'.format(
                     episode,
                     tot_reward,
                     np.mean(scores_window),
@@ -215,7 +215,7 @@ class BaseSolver:
             scores_window.append(tot_reward)
             terminate_window.append(tot_terminate)
             print(
-                '\rEpisode: {:5}\treward: {:7.3f} : {:7.3f} \tdone: {:7.3f} : {:7.3f} \t eps: {:7.3f}'.format(
+                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f} \tdone: {:4.3f} : {:4.3f} \t eps: {:7.3f}'.format(
                     episode,
                     tot_reward,
                     np.mean(scores_window),
