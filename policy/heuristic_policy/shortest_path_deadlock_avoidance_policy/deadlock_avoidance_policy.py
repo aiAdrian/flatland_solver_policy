@@ -1,3 +1,5 @@
+from typing import Union
+
 import matplotlib.pyplot as plt
 import numpy as np
 from flatland.envs.fast_methods import fast_count_nonzero
@@ -11,8 +13,25 @@ from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.shortest_di
 
 
 class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
-    def __init__(self, env: RailEnv, agent_positions, switches):
+    def __init__(self, env: RailEnv):
         super().__init__(env)
+        self.shortest_distance_agent_map = None
+        self.full_shortest_distance_agent_map = None
+        self.agent_positions = None
+        self.opp_agent_map = {}
+        self.same_agent_map = {}
+        self.switches = None
+
+    def reset(self, env: RailEnv):
+        super(DeadlockAvoidanceShortestDistanceWalker, self).reset(env)
+        self.shortest_distance_agent_map = None
+        self.full_shortest_distance_agent_map = None
+        self.agent_positions = None
+        self.opp_agent_map = {}
+        self.same_agent_map = {}
+        self.switches = None
+
+    def clear(self, agent_positions, switches):
         self.shortest_distance_agent_map = np.zeros((self.env.get_num_agents(),
                                                      self.env.height,
                                                      self.env.width),
@@ -73,6 +92,7 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
         self.switches = {}
         self.show_debug_plot = show_debug_plot
         self.enable_eps = enable_eps
+        self.shortest_distance_walker: Union[DeadlockAvoidanceShortestDistanceWalker, None] = None
 
     def get_name(self):
         return self.__class__.__name__
@@ -98,6 +118,9 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
 
     def reset(self, env: Environment):
         self.env = env.get_raw_env()
+        if self.shortest_distance_walker is not None:
+            self.shortest_distance_walker.reset(self.env)
+        self.shortest_distance_walker = None
         self.agent_positions = None
         self.shortest_distance_walker = None
         self.switches = {}
@@ -128,9 +151,10 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
                     self.agent_positions[agent.position] = handle
 
     def _shortest_distance_mapper(self):
-        self.shortest_distance_walker = DeadlockAvoidanceShortestDistanceWalker(self.env,
-                                                                                self.agent_positions,
-                                                                                self.switches)
+        if self.shortest_distance_walker is None:
+            self.shortest_distance_walker = DeadlockAvoidanceShortestDistanceWalker(self.env)
+        self.shortest_distance_walker.clear(self.agent_positions,
+                                            self.switches)
         for handle in range(self.env.get_num_agents()):
             agent = self.env.agents[handle]
             if agent.state <= TrainState.MALFUNCTION:

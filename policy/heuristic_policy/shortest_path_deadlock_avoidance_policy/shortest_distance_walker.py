@@ -1,13 +1,37 @@
+from functools import lru_cache
+
 import numpy as np
 from flatland.core.grid.grid4_utils import get_new_position
 from flatland.envs.fast_methods import fast_count_nonzero, fast_argmax
 from flatland.envs.rail_env import RailEnv, RailEnvActions
+
+# activate LRU caching
+_flatland_shortest_distance_walker_lru_cache_functions = []
+
+
+def _enable_flatland_shortest_distance_walker_lru_cache(*args, **kwargs):
+    def decorator(func):
+        func = lru_cache(*args, **kwargs)(func)
+        _flatland_shortest_distance_walker_lru_cache_functions.append(func)
+        return func
+
+    return decorator
+
+
+def _send_flatland_shortest_distance_walker_data_change_signal_to_reset_lru_cache():
+    for func in _flatland_shortest_distance_walker_lru_cache_functions:
+        func.cache_clear()
 
 
 class ShortestDistanceWalker:
     def __init__(self, env: RailEnv):
         self.env = env
 
+    def reset(self, env: RailEnv):
+        _send_flatland_shortest_distance_walker_data_change_signal_to_reset_lru_cache()
+        self.env = env
+
+    @_enable_flatland_shortest_distance_walker_lru_cache(maxsize=100000)
     def walk(self, handle, position, direction):
         possible_transitions = self.env.rail.get_transitions(*position, direction)
         num_transitions = fast_count_nonzero(possible_transitions)
@@ -42,22 +66,20 @@ class ShortestDistanceWalker:
     def callback(self, handle, agent, position, direction, action, possible_transitions):
         pass
 
-    def get_agent_position_and_direction(self, handle):
-        agent = self.env.agents[handle]
-        if agent.position is not None:
-            position = agent.position
+    @_enable_flatland_shortest_distance_walker_lru_cache(maxsize=100000)
+    def get_agent_position_and_direction(self, agent_position, agent_direction, agent_initial_position):
+        if agent_position is not None:
+            position = agent_position
         else:
-            position = agent.initial_position
-        direction = agent.direction
+            position = agent_initial_position
+        direction = agent_direction
         return position, direction
 
     def walk_to_target(self, handle, position=None, direction=None, max_step=500):
-        if position is None and direction is None:
-            position, direction = self.get_agent_position_and_direction(handle)
-        elif position is None:
-            position, _ = self.get_agent_position_and_direction(handle)
-        elif direction is None:
-            _, direction = self.get_agent_position_and_direction(handle)
+        agent = self.env.agents[handle]
+        position, direction = self._get_pos_dir_wtt(position, direction,
+                                                    agent.position, agent.direction,
+                                                    agent.initial_position)
 
         agent = self.env.agents[handle]
         step = 0
@@ -67,6 +89,17 @@ class ShortestDistanceWalker:
                 break
             self.callback(handle, agent, position, direction, action, possible_transitions)
             step += 1
+
+    def _get_pos_dir_wtt(self, position, direction, agent_pos, agent_dir, agent_initial_position):
+
+        if position is None and direction is None:
+            position, direction = self.get_agent_position_and_direction(agent_pos, agent_dir, agent_initial_position)
+        elif position is None:
+            position, _ = self.get_agent_position_and_direction(agent_pos, agent_dir, agent_initial_position)
+        elif direction is None:
+            _, direction = self.get_agent_position_and_direction(agent_pos, agent_dir, agent_initial_position)
+
+        return position, direction
 
     def callback_one_step(self, handle, agent, position, direction, action, possible_transitions):
         pass

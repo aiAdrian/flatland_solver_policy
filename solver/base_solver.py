@@ -182,9 +182,9 @@ class BaseSolver:
                 end='\n' if episode % checkpoint_interval == 0 else '')
 
             if writer is not None:
-                writer.add_scalar(self.get_name() + "/evaluation_value", tot_reward, episode)
-                writer.add_scalar(self.get_name() + "/evaluation_smoothed_value", np.mean(scores_window), episode)
-                writer.add_scalar(self.get_name() + "/evaluation_done", tot_reward, episode)
+                writer.add_scalar(self.get_name() + "/evaluation_value_reward", tot_reward, episode)
+                writer.add_scalar(self.get_name() + "/evaluation_smoothed_reward", np.mean(scores_window), episode)
+                writer.add_scalar(self.get_name() + "/evaluation_value_done", tot_reward, episode)
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_done", np.mean(scores_window), episode)
                 writer.flush()
 
@@ -224,9 +224,9 @@ class BaseSolver:
                     eps),
                 end='\n' if episode % checkpoint_interval == 0 else '')
 
-            writer.add_scalar(self.get_name() + "/training_value", tot_reward, episode)
-            writer.add_scalar(self.get_name() + "/training_smoothed_value", np.mean(scores_window), episode)
-            writer.add_scalar(self.get_name() + "/training_done", tot_terminate, episode)
+            writer.add_scalar(self.get_name() + "/training_value_reward", tot_reward, episode)
+            writer.add_scalar(self.get_name() + "/training_smoothed_reward", np.mean(scores_window), episode)
+            writer.add_scalar(self.get_name() + "/training_value_done", tot_terminate, episode)
             writer.add_scalar(self.get_name() + "/training_smoothed_done", np.mean(terminate_window), episode)
             writer.flush()
 
