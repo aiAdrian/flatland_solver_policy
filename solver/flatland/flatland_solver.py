@@ -5,7 +5,10 @@ from policy.policy import Policy
 from rendering.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver
 
-FlatlandRewardShaper = Callable[[List[float], List[bool], Dict, Environment], List[float]]
+RewardList = List[float]
+TerminalList = List[float]
+InfoDict = Dict
+FlatlandRewardShaper = Callable[[RewardList, TerminalList, InfoDict, Environment], List[float]]
 
 
 class FlatlandSolver(BaseSolver):

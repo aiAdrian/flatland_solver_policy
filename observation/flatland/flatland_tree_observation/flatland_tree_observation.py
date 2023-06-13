@@ -50,6 +50,8 @@ TreeObservationData = namedtuple('TreeObservationData',
                                   'nodes', 'edges', 'search_tree',
                                   'nodes_type'])
 
+TREE_EDGE_FEATURE_SIZE = 10
+
 
 class FlatlandTreeObservation(ObservationBuilder):
     def __init__(self,
@@ -61,7 +63,7 @@ class FlatlandTreeObservation(ObservationBuilder):
         self.search_strategy: TreeObservationSearchStrategy = search_strategy
         self.observation_return_type = observation_return_type
         self.depth_limit = depth_limit
-        self.tree_feature_size = 8
+        self.tree_feature_size = TREE_EDGE_FEATURE_SIZE
         self.render_debug_tree = render_debug_tree
 
         self.switchAnalyser: Union[RailroadSwitchAnalyser, None] = None
@@ -220,6 +222,17 @@ class FlatlandTreeObservation(ObservationBuilder):
 
             # ---------------------------------------------------------------------------
             # feature extraction
+            # idx
+            #  0 : nbr of other agents in direction 0
+            #  1 : nbr of other agents in direction 1
+            #  2 : nbr of other agents in direction 2
+            #  3 : nbr of other agents in direction 3
+            #  4 : nbr of other agents
+            #  5 : delta distance (min(edge_distance) - current_distance)
+            #  6 : edge contains agent's target
+            #  7 : action to enter the edge (MOVE_LEFT)
+            #  8 : action to enter the edge (MOVE_FORWARD)
+            #  9 : action to enter the edge (MOVE_RIGHT)
             # ---------------------------------------------------------------------------
             other_agents = self._find_other_agents(handle, self.agents_grid_map, res)
             for opp_agent in other_agents:
@@ -234,7 +247,9 @@ class FlatlandTreeObservation(ObservationBuilder):
 
             feature[edge_node_idx_1][5] = dist - cur_dist
             feature[edge_node_idx_1][6] = int(agent.target in res)
-            feature[edge_node_idx_1][7] = actions[i_edge]
+            feature[edge_node_idx_1][7] = int(actions[i_edge] == RailEnvActions.MOVE_LEFT)
+            feature[edge_node_idx_1][8] = int(actions[i_edge] == RailEnvActions.MOVE_FORWARD)
+            feature[edge_node_idx_1][9] = int(actions[i_edge] == RailEnvActions.MOVE_RIGHT)
             # ---------------------------------------------------------------------------
 
             visited = visited + res
