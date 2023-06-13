@@ -70,15 +70,19 @@ class BaseSolver:
             action = policy.act(handle, state, eps)
             policy.end_act(handle, train=training_mode)
 
-            state_next, reward, terminal, info = env.step(action)
+        state_next, reward, terminal, info = env.step(action)
 
-            all_terminal = all_terminal & terminal
-            tot_reward += reward
+        tot_terminal = 0
+        for handle in self.env.get_agent_handles():
+            all_terminal = all_terminal & terminal[handle]
+            tot_terminal += terminal[handle]
+            tot_reward += reward[handle]
 
-            policy.step(handle, state, action, reward, state_next, terminal)
+            policy.step(handle, state, action, reward[handle], state_next, terminal[handle])
+        tot_terminal /= max(1.0, len(self.env.get_agent_handles()))
 
         policy.end_step(train=training_mode)
-        return state_next, tot_reward, all_terminal, info
+        return state_next, tot_reward, all_terminal, tot_terminal, info
 
     def update_state(self,
                      state_next):
@@ -98,12 +102,18 @@ class BaseSolver:
                              info: Dict,
                              training_mode: bool):
         tot_reward = 0
+        tot_terminal = 0
         step = 0
         while True and step < self.max_steps:
             if self.before_step_starts():
                 return tot_reward
 
-            state_next, reward, terminal, info = self.run_step(env, policy, state, eps, info, training_mode)
+            state_next, reward, terminal, tot_terminal, info = self.run_step(env,
+                                                                             policy,
+                                                                             state,
+                                                                             eps,
+                                                                             info,
+                                                                             training_mode)
             tot_reward += reward
             state = self.update_state(state_next)
             self.render(episode, step, terminal)
@@ -115,7 +125,8 @@ class BaseSolver:
                 break
 
             step += 1
-        return tot_reward
+
+        return tot_reward, tot_terminal
 
     def before_episode_starts(self):
         pass
@@ -132,10 +143,10 @@ class BaseSolver:
         state, info = self.reset()
         self.before_episode_starts()
         policy.start_episode(train=training_mode)
-        tot_reward = self.run_internal_episode(episode, env, policy, state, eps, info, training_mode)
+        tot_reward, tot_terminate = self.run_internal_episode(episode, env, policy, state, eps, info, training_mode)
         policy.end_episode(train=training_mode)
         self.after_episode_ends()
-        return tot_reward
+        return tot_reward, tot_terminate
 
     def perform_evaluation(self,
                            max_episodes=2000,
@@ -147,6 +158,7 @@ class BaseSolver:
         episode = 0
         checkpoint_interval = 50
         scores_window = deque(maxlen=100)
+        terminate_window = deque(maxlen=100)
 
         writer = None
         if write_summary:
@@ -155,18 +167,25 @@ class BaseSolver:
         while True:
             episode += 1
 
-            tot_reward = self.run_episode(episode, self.env, self.policy, eps, training_mode)
+            tot_reward, tot_terminate = self.run_episode(episode, self.env, self.policy, eps, training_mode)
 
             scores_window.append(tot_reward)
+            terminate_window.append(tot_terminate)
 
-            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f} '.format(episode,
-                                                                            tot_reward,
-                                                                            np.mean(scores_window)),
-                  end='\n' if episode % checkpoint_interval == 0 else '')
+            print(
+                '\rEpisode: {:5}\treward: {:7.3f} : {:7.3f}  \tdone: {:7.3f} : {:7.3f}'.format(
+                    episode,
+                    tot_reward,
+                    np.mean(scores_window),
+                    tot_terminate,
+                    np.mean(terminate_window)),
+                end='\n' if episode % checkpoint_interval == 0 else '')
 
             if writer is not None:
                 writer.add_scalar(self.get_name() + "/evaluation_value", tot_reward, episode)
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_value", np.mean(scores_window), episode)
+                writer.add_scalar(self.get_name() + "/evaluation_done", tot_reward, episode)
+                writer.add_scalar(self.get_name() + "/evaluation_smoothed_done", np.mean(scores_window), episode)
                 writer.flush()
 
             if episode >= max_episodes:
@@ -185,23 +204,30 @@ class BaseSolver:
         episode = 0
         checkpoint_interval = 50
         scores_window = deque(maxlen=100)
+        terminate_window = deque(maxlen=100)
         writer = SummaryWriter(comment="_" + self.get_name() + "_training_" + self.policy.get_name())
 
         while True:
             episode += 1
 
-            tot_reward = self.run_episode(episode, self.env, self.policy, eps, training_mode)
+            tot_reward, tot_terminate = self.run_episode(episode, self.env, self.policy, eps, training_mode)
             eps = max(min_eps, eps * eps_decay)
             scores_window.append(tot_reward)
-
-            print('\rEpisode: {:5}\treward: {:7.3f}\t avg: {:7.3f} \t eps: {:7.3f}'.format(episode,
-                                                                                           tot_reward,
-                                                                                           np.mean(scores_window),
-                                                                                           eps),
-                  end='\n' if episode % checkpoint_interval == 0 else '')
+            terminate_window.append(tot_terminate)
+            print(
+                '\rEpisode: {:5}\treward: {:7.3f} : {:7.3f} \tdone: {:7.3f} : {:7.3f} \t eps: {:7.3f}'.format(
+                    episode,
+                    tot_reward,
+                    np.mean(scores_window),
+                    tot_terminate,
+                    np.mean(terminate_window),
+                    eps),
+                end='\n' if episode % checkpoint_interval == 0 else '')
 
             writer.add_scalar(self.get_name() + "/training_value", tot_reward, episode)
             writer.add_scalar(self.get_name() + "/training_smoothed_value", np.mean(scores_window), episode)
+            writer.add_scalar(self.get_name() + "/training_done", tot_terminate, episode)
+            writer.add_scalar(self.get_name() + "/training_smoothed_done", np.mean(terminate_window), episode)
             writer.flush()
 
             if episode % checkpoint_interval == 0 or episode >= max_episodes:

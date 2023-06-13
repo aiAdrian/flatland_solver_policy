@@ -9,8 +9,8 @@ from flatland_railway_extension.environments.InfrastructureData import Infrastru
 from environment.environment import Environment
 from policy.policy import Policy
 from rendering.base_renderer import BaseRenderer
-from solver.flatland.flatland_solver import FlatlandSolver
 from rendering.flatland_railway_extension.flatland_dynamics_simple_renderer import FlatlandDynamicsSimpleRenderer
+from solver.flatland.flatland_solver import FlatlandSolver
 
 
 class FlatlandDynamicsSolver(FlatlandSolver):
@@ -75,6 +75,10 @@ class FlatlandDynamicsSolver(FlatlandSolver):
                 agent.do_debug_plot(i_agent + 1, n_agents, i_agent + 1 == n_agents, i_agent == 0)
 
     def run_episode(self, episode, env, policy, eps, training_mode):
-        total_reward = super(FlatlandDynamicsSolver, self).run_episode(episode, env, policy, eps, training_mode)
+        total_reward, tot_terminate = super(FlatlandDynamicsSolver, self).run_episode(episode,
+                                                                                      env,
+                                                                                      policy,
+                                                                                      eps,
+                                                                                      training_mode)
         self.render_flatland_dynamics_details()
-        return total_reward
+        return total_reward, tot_terminate

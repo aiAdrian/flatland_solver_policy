@@ -2,6 +2,7 @@ from flatland.core.env_observation_builder import ObservationBuilder
 from flatland.envs.malfunction_generators import ParamMalfunctionGen, MalfunctionParameters
 from flatland.envs.rail_env import RailEnv
 from flatland.envs.rail_generators import sparse_rail_generator
+from flatland.envs.step_utils.states import TrainState
 
 from environment.environment import Environment
 
@@ -46,6 +47,8 @@ class RailEnvironment(Environment):
 
     def step(self, actions):
         state_next, reward, terminal, info = self.raw_env.step(actions)
+        for i, agent in enumerate(self.raw_env.agents):
+            terminal[i] = agent.state == TrainState.DONE
         return state_next, reward, terminal, info
 
     @staticmethod
