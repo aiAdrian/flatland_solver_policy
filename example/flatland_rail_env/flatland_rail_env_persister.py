@@ -1,8 +1,10 @@
 import os
-from typing import Union
+from functools import lru_cache
+from typing import Union, Callable
 
 from flatland.core.env_observation_builder import ObservationBuilder
 from flatland.envs.persistence import RailEnvPersister
+from flatland.envs.rail_env import RailEnv
 
 from environment.flatland.rail_env import RailEnvironment
 from utils.progress_bar import ProgressBar
@@ -10,7 +12,7 @@ from utils.progress_bar import ProgressBar
 
 class RailEnvironmentPersistable(RailEnvironment):
     def __init__(self,
-                 obs_builder_object: ObservationBuilder,
+                 obs_builder_object_creator: Callable[[], ObservationBuilder],
                  max_rails_between_cities=2,
                  max_rails_in_city=4,
                  malfunction_rate=1 / 1000,
@@ -21,7 +23,7 @@ class RailEnvironmentPersistable(RailEnvironment):
                  grid_mode=True,
                  random_seed=25041978):
         super(RailEnvironmentPersistable, self).__init__(
-            obs_builder_object=obs_builder_object,
+            obs_builder_object=obs_builder_object_creator(),
             max_rails_between_cities=max_rails_between_cities,
             max_rails_in_city=max_rails_in_city,
             malfunction_rate=malfunction_rate,
@@ -35,6 +37,32 @@ class RailEnvironmentPersistable(RailEnvironment):
         self._random_seed = random_seed
         self._loaded_env = []
         self._loaded_env_itr = 0
+
+        self._obs_builder_object_creator = obs_builder_object_creator
+        self._max_rails_between_cities = max_rails_between_cities
+        self._max_rails_in_city = max_rails_in_city
+        self._malfunction_rate = malfunction_rate
+        self._n_cities = n_cities
+        self._number_of_agents = number_of_agents
+        self._grid_width = grid_width
+        self._grid_height = grid_height
+        self._grid_mode = grid_mode
+        self._random_seed = random_seed
+
+    def clone(self):
+        print('\r>> clone: ', end='')
+        cloned = RailEnvironmentPersistable(
+            obs_builder_object_creator=self._obs_builder_object_creator,
+            max_rails_between_cities=self._max_rails_between_cities,
+            max_rails_in_city=self._max_rails_in_city,
+            malfunction_rate=self._malfunction_rate,
+            n_cities=self._n_cities,
+            number_of_agents=self._number_of_agents,
+            grid_width=self._grid_width,
+            grid_height=self._grid_height,
+            grid_mode=self._grid_mode,
+            random_seed=self._random_seed)
+        return cloned
 
     def generate_and_persist_environments(self,
                                           generate_nbr_env: Union[int, None] = None,
@@ -71,15 +99,38 @@ class RailEnvironmentPersistable(RailEnvironment):
     def reset(self):
         if len(self._loaded_env) > 0:
             filename = self._loaded_env[self._loaded_env_itr]
-            RailEnvPersister.load(self.raw_env, filename)
-            state, info = self.raw_env.reset(False, False)
+            state, info, loaded_env = self._cached_reset(filename)
+            self._reset_cached_rail_env(loaded_env.raw_env)
+            self._copy_attribute_from_env(loaded_env.raw_env)
+
             self._loaded_env_itr += 1
             if self._loaded_env_itr >= len(self._loaded_env):
                 self._loaded_env_itr = 0
-            return state, info
 
+            return state, info
         state, info = self.raw_env.reset()
         return state, info
+
+    def _reset_cached_rail_env(self, raw_env: RailEnv):
+        # manual reset (loaded from cache)
+        raw_env.reset_agents()
+        raw_env._elapsed_steps = 0
+        raw_env.dones["__all__"] = False
+
+    def _copy_attribute_from_env(self, rail_env: RailEnv):
+        '''
+        Copy all class attribute and it's value from RailEnv to self.raw_env
+        :param rail_env: The original agent created in the RailEnv
+        '''
+        for attribute, value in rail_env.__dict__.items():
+            setattr(self.raw_env, attribute, value)
+
+    @lru_cache(maxsize=1000)
+    def _cached_reset(self, filename):
+        env = self.clone()
+        RailEnvPersister.load(env.raw_env, filename)
+        state, info = env.raw_env.reset(False, False)
+        return state, info, env
 
     def _save_raw_env(self, path):
         '''
