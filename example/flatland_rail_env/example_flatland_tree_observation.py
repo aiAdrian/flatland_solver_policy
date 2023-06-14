@@ -1,4 +1,4 @@
-from typing import List, Union, Dict
+from typing import List, Union
 
 from flatland.envs.agent_utils import EnvAgent
 from flatland.envs.rail_env_action import RailEnvActions
@@ -20,7 +20,7 @@ from utils.training_evaluation_pipeline import create_ppo_policy
 
 def create_deadlock_avoidance_policy(environment: Environment,
                                      action_space: int,
-                                     show_debug_plot=False) -> HeuristicPolicy:
+                                     show_debug_plot=False) -> DeadLockAvoidancePolicy:
     return DeadLockAvoidancePolicy(environment.get_raw_env(), action_space, enable_eps=False,
                                    show_debug_plot=show_debug_plot)
 
@@ -63,13 +63,16 @@ class MyReinforceHeuristicPolicy(ReinforceHeuristicPolicy):
 if __name__ == "__main__":
     do_rendering = False
     do_render_debug_tree = False
+    use_reinforced_heuristic_policy = False
 
-    env = RailEnvironmentPersistable(
-        obs_builder_object=FlatlandTreeObservation(
+    def create_obs_builder_object():
+        return FlatlandTreeObservation(
             search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
             observation_return_type=TreeObservationReturnType.Flatten,
             depth_limit=3,
-            render_debug_tree=do_render_debug_tree and do_rendering),
+            render_debug_tree=do_render_debug_tree and do_rendering)
+    env = RailEnvironmentPersistable(
+        obs_builder_object_creator=create_obs_builder_object,
         grid_width=30,
         grid_height=40,
         grid_mode=True,
@@ -77,14 +80,17 @@ if __name__ == "__main__":
     env.generate_and_persist_environments(20)
     env.load_environments_from_path()
 
-    policy = MyReinforceHeuristicPolicy(
-        learning_policy=create_ppo_policy(env.get_observation_space(), env.get_action_space()),
-        heuristic_policy=create_deadlock_avoidance_policy(env, env.get_action_space()),
-        heuristic_policy_epsilon=1.0
-    )
+    if use_reinforced_heuristic_policy:
+        policy = MyReinforceHeuristicPolicy(
+            learning_policy=create_ppo_policy(env.get_observation_space(), env.get_action_space()),
+            heuristic_policy=create_deadlock_avoidance_policy(env, env.get_action_space()),
+            heuristic_policy_epsilon=1.0
+        )
+    else:
+        policy = create_deadlock_avoidance_policy(env, env.get_action_space())
     solver = FlatlandSolver(env,
                             policy,
                             FlatlandSimpleRenderer(env) if do_rendering else None)
     solver.set_reward_shaper(flatland_reward_shaper)
-    solver.perform_training(max_episodes=2000)
-    solver.perform_evaluation(max_episodes=25)
+    solver.perform_training(max_episodes=100)
+    solver.perform_evaluation(max_episodes=100)

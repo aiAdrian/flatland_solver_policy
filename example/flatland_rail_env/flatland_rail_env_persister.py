@@ -49,8 +49,8 @@ class RailEnvironmentPersistable(RailEnvironment):
         self._grid_mode = grid_mode
         self._random_seed = random_seed
 
-    def clone(self):
-        print('\r>> clone: ', end='')
+    def _clone(self, filename):
+        print('\r>> clone and cache (', filename, '):', end='')
         cloned = RailEnvironmentPersistable(
             obs_builder_object_creator=self._obs_builder_object_creator,
             max_rails_between_cities=self._max_rails_between_cities,
@@ -127,7 +127,7 @@ class RailEnvironmentPersistable(RailEnvironment):
 
     @lru_cache(maxsize=1000)
     def _cached_reset(self, filename):
-        env = self.clone()
+        env = self._clone(filename)
         RailEnvPersister.load(env.raw_env, filename)
         state, info = env.raw_env.reset(False, False)
         return state, info, env
