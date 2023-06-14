@@ -191,7 +191,7 @@ class BaseSolver:
             if episode >= max_episodes:
                 break
 
-        print('done.')
+        print('\ndone.')
 
     def perform_training(self,
                          max_episodes=2000,
@@ -240,7 +240,7 @@ class BaseSolver:
 
         # --- end training --------------------------------------------------------------------------
         self.save_policy(None)
-        print('done.')
+        print('\ndone.')
 
     def save_policy(self,
                     filename: Union[str, None] = None):
