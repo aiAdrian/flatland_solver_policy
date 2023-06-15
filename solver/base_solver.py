@@ -159,6 +159,7 @@ class BaseSolver:
         checkpoint_interval = 50
         scores_window = deque(maxlen=100)
         terminate_window = deque(maxlen=100)
+        nbr_agents_window = deque(maxlen=100)
 
         writer = None
         if write_summary:
@@ -171,6 +172,7 @@ class BaseSolver:
 
             scores_window.append(tot_reward)
             terminate_window.append(tot_terminate)
+            nbr_agents_window.append(self.env.get_num_agents())
 
             print(
                 '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f}  \tdone: {:4.3f} : {:4.3f}'.format(
@@ -186,6 +188,9 @@ class BaseSolver:
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_reward", np.mean(scores_window), episode)
                 writer.add_scalar(self.get_name() + "/evaluation_value_done", tot_reward, episode)
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_done", np.mean(scores_window), episode)
+                writer.add_scalar(self.get_name() + "/evaluation_value_nbr_agents", self.env.get_num_agents(), episode)
+                writer.add_scalar(self.get_name() + "/evaluation_smoothed_nbr_agents", np.mean(nbr_agents_window),
+                                  episode)
                 writer.flush()
 
             if episode >= max_episodes:
@@ -205,6 +210,7 @@ class BaseSolver:
         checkpoint_interval = 50
         scores_window = deque(maxlen=100)
         terminate_window = deque(maxlen=100)
+        nbr_agents_window = deque(maxlen=100)
         writer = SummaryWriter(comment="_" + self.get_name() + "_training_" + self.policy.get_name())
 
         while True:
@@ -214,6 +220,7 @@ class BaseSolver:
             eps = max(min_eps, eps * eps_decay)
             scores_window.append(tot_reward)
             terminate_window.append(tot_terminate)
+            nbr_agents_window.append(self.env.get_num_agents())
             print(
                 '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f} \tdone: {:4.3f} : {:4.3f} \t eps: {:7.3f}'.format(
                     episode,
@@ -228,6 +235,8 @@ class BaseSolver:
             writer.add_scalar(self.get_name() + "/training_smoothed_reward", np.mean(scores_window), episode)
             writer.add_scalar(self.get_name() + "/training_value_done", tot_terminate, episode)
             writer.add_scalar(self.get_name() + "/training_smoothed_done", np.mean(terminate_window), episode)
+            writer.add_scalar(self.get_name() + "/training_value_nbr_agents", self.env.get_num_agents(), episode)
+            writer.add_scalar(self.get_name() + "/training_smoothed_nbr_agents", np.mean(nbr_agents_window), episode)
             writer.flush()
 
             if episode % checkpoint_interval == 0 or episode >= max_episodes:

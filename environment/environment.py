@@ -3,11 +3,12 @@ from typing import List
 
 class Environment:
 
-    def __init__(self, raw_env, action_space, observation_space):
+    def __init__(self, raw_env, action_space, observation_space, silent=False):
         self.raw_env = raw_env
         self._action_space: int = action_space
         self._observation_space: int = observation_space
-        print(">>", self.get_name())
+        if not silent:
+            print(">>", self.get_name())
 
     def get_name(self):
         raise NotImplementedError  # return self.__class__.__name__

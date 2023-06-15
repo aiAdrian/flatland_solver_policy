@@ -8,13 +8,15 @@ from environment.environment import Environment
 
 class MultiAgentGymEnvironment(Environment):
 
-    def __init__(self, env_to_load):
+    def __init__(self,
+                 env_to_load,
+                 silent=False):
         self.env_to_load = env_to_load
         environment = gym.make(self.env_to_load)
         obs_n = environment.reset()
         observation_space = len(obs_n[0])
         action_space = environment.action_space[0].n
-        super(MultiAgentGymEnvironment, self).__init__(environment, action_space, observation_space)
+        super(MultiAgentGymEnvironment, self).__init__(environment, action_space, observation_space, silent)
 
     def get_name(self) -> str:
         return "Environment:{}".format(self.env_to_load)

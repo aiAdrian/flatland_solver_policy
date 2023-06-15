@@ -65,19 +65,23 @@ if __name__ == "__main__":
     do_render_debug_tree = False
     use_reinforced_heuristic_policy = False
 
+
     def create_obs_builder_object():
         return FlatlandTreeObservation(
             search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
             observation_return_type=TreeObservationReturnType.Flatten,
             depth_limit=3,
             render_debug_tree=do_render_debug_tree and do_rendering)
+
+
     env = RailEnvironmentPersistable(
         obs_builder_object_creator=create_obs_builder_object,
         grid_width=30,
         grid_height=40,
         grid_mode=True,
         number_of_agents=10)
-    env.generate_and_persist_environments(20)
+    env.generate_and_persist_environments(generate_nbr_env=5,
+                                          generate_agents_per_env=[1, 2, 3, 5, 10, 20, 30, 50])
     env.load_environments_from_path()
 
     if use_reinforced_heuristic_policy:
@@ -92,5 +96,5 @@ if __name__ == "__main__":
                             policy,
                             FlatlandSimpleRenderer(env) if do_rendering else None)
     solver.set_reward_shaper(flatland_reward_shaper)
-    solver.perform_training(max_episodes=100)
-    solver.perform_evaluation(max_episodes=100)
+    solver.perform_training(max_episodes=120)
+    solver.perform_evaluation(max_episodes=120)

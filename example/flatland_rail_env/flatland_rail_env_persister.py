@@ -1,6 +1,6 @@
 import os
 from functools import lru_cache
-from typing import Union, Callable
+from typing import Union, Callable, List
 
 from flatland.core.env_observation_builder import ObservationBuilder
 from flatland.envs.persistence import RailEnvPersister
@@ -21,7 +21,8 @@ class RailEnvironmentPersistable(RailEnvironment):
                  grid_width=30,
                  grid_height=40,
                  grid_mode=True,
-                 random_seed=25041978):
+                 random_seed=25041978,
+                 silent=False):
         super(RailEnvironmentPersistable, self).__init__(
             obs_builder_object=obs_builder_object_creator(),
             max_rails_between_cities=max_rails_between_cities,
@@ -32,7 +33,8 @@ class RailEnvironmentPersistable(RailEnvironment):
             grid_width=grid_width,
             grid_height=grid_height,
             grid_mode=grid_mode,
-            random_seed=random_seed
+            random_seed=random_seed,
+            silent=silent
         )
         self._random_seed = random_seed
         self._loaded_env = []
@@ -49,41 +51,47 @@ class RailEnvironmentPersistable(RailEnvironment):
         self._grid_mode = grid_mode
         self._random_seed = random_seed
 
-    def _clone(self, filename):
-        print('\r>> clone and cache (', filename, '):', end='')
-        cloned = RailEnvironmentPersistable(
+    def _clone(self, info_str: Union[str, None], number_of_agents: Union[int, None] = None):
+        if info_str is not None:
+            print(' -> cache:', info_str, end=' ')
+        return RailEnvironmentPersistable(
             obs_builder_object_creator=self._obs_builder_object_creator,
             max_rails_between_cities=self._max_rails_between_cities,
             max_rails_in_city=self._max_rails_in_city,
             malfunction_rate=self._malfunction_rate,
             n_cities=self._n_cities,
-            number_of_agents=self._number_of_agents,
+            number_of_agents=number_of_agents if number_of_agents is not None else self._number_of_agents,
             grid_width=self._grid_width,
             grid_height=self._grid_height,
             grid_mode=self._grid_mode,
-            random_seed=self._random_seed)
-        return cloned
+            random_seed=self._random_seed,
+            silent=True)
 
     def generate_and_persist_environments(self,
                                           generate_nbr_env: Union[int, None] = None,
+                                          generate_agents_per_env: Union[List[int]] = [10],
                                           path: Union[str, None] = 'generated_envs'):
-        self._generate_environment(generate_nbr_env, path)
+        self._generate_environment(generate_nbr_env, generate_agents_per_env, path)
 
     def load_environments_from_path(self, path: Union[str, None] = 'generated_envs'):
         self._load_generated(path)
 
-    def _generate_environment(self, generate_nbr_env, path):
+    def _generate_environment(self, generate_nbr_env, generate_agents_per_env, path):
         if generate_nbr_env is not None and path is not None:
-            for i in range(generate_nbr_env):
-                self._random_seed += i
-                self.raw_env.reset(regenerate_rail=True,
-                                   regenerate_schedule=True,
-                                   random_seed=self._random_seed)
+            for i_nbr_agent, nbr_agent in enumerate(generate_agents_per_env):
+                for i in range(generate_nbr_env):
+                    env = self._clone(None, nbr_agent)
+                    env._random_seed += i
+                    env.raw_env.reset(regenerate_rail=True,
+                                      regenerate_schedule=True,
+                                      random_seed=self._random_seed)
 
-                if not os.path.exists(path):
-                    os.makedirs(path)
-                fn = self._save_raw_env(path)
-                ProgressBar.console_print(i, generate_nbr_env, info=fn)
+                    if not os.path.exists(path):
+                        os.makedirs(path)
+                    fn = env._save_raw_env(path)
+                    ProgressBar.console_print(i +
+                                              i_nbr_agent * generate_nbr_env,
+                                              generate_nbr_env * len(generate_agents_per_env), info=fn)
             ProgressBar.console_print(100, 100, info='done.')
 
     def _load_generated(self, path):

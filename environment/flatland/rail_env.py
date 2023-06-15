@@ -19,7 +19,8 @@ class RailEnvironment(Environment):
                  grid_width=30,
                  grid_height=40,
                  grid_mode=True,
-                 random_seed=25041978):
+                 random_seed=25041978,
+                 silent=False):
         environment = RailEnvironment._create_flatland_env(
             obs_builder_object=obs_builder_object,
             max_rails_between_cities=max_rails_between_cities,
@@ -36,7 +37,7 @@ class RailEnvironment(Environment):
         obs_states, _ = environment.reset()
         observation_space = len(obs_states[0])
 
-        super(RailEnvironment, self).__init__(environment, action_space, observation_space)
+        super(RailEnvironment, self).__init__(environment, action_space, observation_space, silent)
 
     def get_name(self) -> str:
         return "Environment:Flatland:RailEnv"

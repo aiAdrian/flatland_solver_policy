@@ -10,11 +10,12 @@ class FlatlandDynamicsEnvironment(Environment):
 
     def __init__(self,
                  obs_builder_object: ObservationBuilder,
-                 number_of_agents=10):
+                 number_of_agents=10,
+                 silent=False):
         environment, action_space, observation_space = FlatlandDynamicsEnvironment._make_environment_flatland_dynamics(
             obs_builder_object,
             number_of_agents)
-        super(FlatlandDynamicsEnvironment, self).__init__(environment, action_space, observation_space)
+        super(FlatlandDynamicsEnvironment, self).__init__(environment, action_space, observation_space, silent)
 
     def get_name(self) -> str:
         return "Environment:FlatlandRailwayExtension:FlatlandDynamics"
