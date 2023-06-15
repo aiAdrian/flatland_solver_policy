@@ -186,8 +186,8 @@ class BaseSolver:
             if writer is not None:
                 writer.add_scalar(self.get_name() + "/evaluation_value_reward", tot_reward, episode)
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_reward", np.mean(scores_window), episode)
-                writer.add_scalar(self.get_name() + "/evaluation_value_done", tot_reward, episode)
-                writer.add_scalar(self.get_name() + "/evaluation_smoothed_done", np.mean(scores_window), episode)
+                writer.add_scalar(self.get_name() + "/evaluation_value_done", tot_terminate, episode)
+                writer.add_scalar(self.get_name() + "/evaluation_smoothed_done", np.mean(terminate_window), episode)
                 writer.add_scalar(self.get_name() + "/evaluation_value_nbr_agents", self.env.get_num_agents(), episode)
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_nbr_agents", np.mean(nbr_agents_window),
                                   episode)

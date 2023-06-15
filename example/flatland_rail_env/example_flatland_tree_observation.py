@@ -21,7 +21,9 @@ from utils.training_evaluation_pipeline import create_ppo_policy
 def create_deadlock_avoidance_policy(environment: Environment,
                                      action_space: int,
                                      show_debug_plot=False) -> DeadLockAvoidancePolicy:
-    return DeadLockAvoidancePolicy(environment.get_raw_env(), action_space, enable_eps=False,
+    return DeadLockAvoidancePolicy(environment.get_raw_env(),
+                                   action_space,
+                                   enable_eps=False,
                                    show_debug_plot=show_debug_plot)
 
 

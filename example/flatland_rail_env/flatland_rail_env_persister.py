@@ -51,7 +51,9 @@ class RailEnvironmentPersistable(RailEnvironment):
         self._grid_mode = grid_mode
         self._random_seed = random_seed
 
-    def _clone(self, info_str: Union[str, None], number_of_agents: Union[int, None] = None):
+    def _clone(self, info_str: Union[str, None],
+               number_of_agents: Union[int, None] = None,
+               random_seed: Union[int, None] = None):
         if info_str is not None:
             print(' -> cache:', info_str, end=' ')
         return RailEnvironmentPersistable(
@@ -64,7 +66,7 @@ class RailEnvironmentPersistable(RailEnvironment):
             grid_width=self._grid_width,
             grid_height=self._grid_height,
             grid_mode=self._grid_mode,
-            random_seed=self._random_seed,
+            random_seed=random_seed if random_seed is not None else self._random_seed,
             silent=True)
 
     def generate_and_persist_environments(self,
@@ -79,17 +81,17 @@ class RailEnvironmentPersistable(RailEnvironment):
     def _generate_environment(self, generate_nbr_env, generate_agents_per_env, path):
         if generate_nbr_env is not None and path is not None:
             for i_nbr_agent, nbr_agent in enumerate(generate_agents_per_env):
-                for i in range(generate_nbr_env):
-                    env = self._clone(None, nbr_agent)
-                    env._random_seed += i
+                for itr_env in range(generate_nbr_env):
+                    env = self._clone(info_str=None,
+                                      number_of_agents=nbr_agent,
+                                      random_seed=self._random_seed + itr_env + i_nbr_agent * generate_nbr_env)
                     env.raw_env.reset(regenerate_rail=True,
                                       regenerate_schedule=True,
-                                      random_seed=self._random_seed)
-
+                                      random_seed=env._random_seed)
                     if not os.path.exists(path):
                         os.makedirs(path)
                     fn = env._save_raw_env(path)
-                    ProgressBar.console_print(i +
+                    ProgressBar.console_print(itr_env +
                                               i_nbr_agent * generate_nbr_env,
                                               generate_nbr_env * len(generate_agents_per_env), info=fn)
             ProgressBar.console_print(100, 100, info='done.')
@@ -144,9 +146,9 @@ class RailEnvironmentPersistable(RailEnvironment):
         '''
         Save the given RailEnv environment as pickle
         '''
-
-        filename = os.path.join(
-            path, f"{self.raw_env.width}x{self.raw_env.height}x{self.raw_env.get_num_agents()}_{self._random_seed}.pkl"
-        )
+        filename = os.path.join(path, '{:04d}x{:04d}x{:04d}_{:09d}.pkl'.format(self.raw_env.width,
+                                                                               self.raw_env.height,
+                                                                               self.raw_env.get_num_agents(),
+                                                                               self._random_seed))
         RailEnvPersister.save(self.raw_env, filename)
         return filename
