@@ -103,8 +103,8 @@ class BaseSolver:
                              training_mode: bool):
         tot_reward = 0
         tot_terminal = 0
-        step = 0
-        while True and step < self.max_steps:
+        tot_steps = 0
+        while True and tot_steps < self.max_steps:
             if self.before_step_starts():
                 return tot_reward
 
@@ -116,7 +116,7 @@ class BaseSolver:
                                                                              training_mode)
             tot_reward += reward
             state = self.update_state(state_next)
-            self.render(episode, step, terminal)
+            self.render(episode, tot_steps, terminal)
 
             if self.after_step_ends():
                 return tot_reward
@@ -124,9 +124,9 @@ class BaseSolver:
             if terminal:
                 break
 
-            step += 1
+            tot_steps += 1
 
-        return tot_reward, tot_terminal
+        return tot_reward, tot_terminal, tot_steps
 
     def before_episode_starts(self):
         pass
@@ -143,10 +143,16 @@ class BaseSolver:
         state, info = self.reset()
         self.before_episode_starts()
         policy.start_episode(train=training_mode)
-        tot_reward, tot_terminate = self.run_internal_episode(episode, env, policy, state, eps, info, training_mode)
+        tot_reward, tot_terminate, tot_steps = self.run_internal_episode(episode,
+                                                                         env,
+                                                                         policy,
+                                                                         state,
+                                                                         eps,
+                                                                         info,
+                                                                         training_mode)
         policy.end_episode(train=training_mode)
         self.after_episode_ends()
-        return tot_reward, tot_terminate
+        return tot_reward, tot_terminate, tot_steps
 
     def perform_evaluation(self,
                            max_episodes=2000,
@@ -160,6 +166,7 @@ class BaseSolver:
         scores_window = deque(maxlen=100)
         terminate_window = deque(maxlen=100)
         nbr_agents_window = deque(maxlen=100)
+        tot_steps_window = deque(maxlen=100)
 
         writer = None
         if write_summary:
@@ -168,11 +175,12 @@ class BaseSolver:
         while True:
             episode += 1
 
-            tot_reward, tot_terminate = self.run_episode(episode, self.env, self.policy, eps, training_mode)
+            tot_reward, tot_terminate, tot_steps = self.run_episode(episode, self.env, self.policy, eps, training_mode)
 
             scores_window.append(tot_reward)
             terminate_window.append(tot_terminate)
             nbr_agents_window.append(self.env.get_num_agents())
+            tot_steps_window.append(tot_steps)
 
             print(
                 '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f}  \tdone: {:4.3f} : {:4.3f}'.format(
@@ -191,6 +199,10 @@ class BaseSolver:
                 writer.add_scalar(self.get_name() + "/evaluation_value_nbr_agents", self.env.get_num_agents(), episode)
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_nbr_agents", np.mean(nbr_agents_window),
                                   episode)
+                writer.add_scalar(self.get_name() + "/evaluation_value_nbr_steps", tot_steps, episode)
+                writer.add_scalar(self.get_name() + "/evaluation_smoothed_nbr_steps", np.mean(tot_steps_window),
+                                  episode)
+
                 writer.flush()
 
             if episode >= max_episodes:
@@ -211,16 +223,21 @@ class BaseSolver:
         scores_window = deque(maxlen=100)
         terminate_window = deque(maxlen=100)
         nbr_agents_window = deque(maxlen=100)
+        tot_steps_window = deque(maxlen=100)
+
         writer = SummaryWriter(comment="_" + self.get_name() + "_training_" + self.policy.get_name())
 
         while True:
             episode += 1
 
-            tot_reward, tot_terminate = self.run_episode(episode, self.env, self.policy, eps, training_mode)
+            tot_reward, tot_terminate, tot_steps = self.run_episode(episode, self.env, self.policy, eps, training_mode)
             eps = max(min_eps, eps * eps_decay)
+
             scores_window.append(tot_reward)
             terminate_window.append(tot_terminate)
             nbr_agents_window.append(self.env.get_num_agents())
+            tot_steps_window.append(tot_steps)
+
             print(
                 '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f} \tdone: {:4.3f} : {:4.3f} \t eps: {:7.3f}'.format(
                     episode,
@@ -237,6 +254,8 @@ class BaseSolver:
             writer.add_scalar(self.get_name() + "/training_smoothed_done", np.mean(terminate_window), episode)
             writer.add_scalar(self.get_name() + "/training_value_nbr_agents", self.env.get_num_agents(), episode)
             writer.add_scalar(self.get_name() + "/training_smoothed_nbr_agents", np.mean(nbr_agents_window), episode)
+            writer.add_scalar(self.get_name() + "/training_value_nbr_steps", tot_steps, episode)
+            writer.add_scalar(self.get_name() + "/training_smoothed_nbr_steps", np.mean(tot_steps_window), episode)
             writer.flush()
 
             if episode % checkpoint_interval == 0 or episode >= max_episodes:

@@ -75,10 +75,10 @@ class FlatlandDynamicsSolver(FlatlandSolver):
                 agent.do_debug_plot(i_agent + 1, n_agents, i_agent + 1 == n_agents, i_agent == 0)
 
     def run_episode(self, episode, env, policy, eps, training_mode):
-        total_reward, tot_terminate = super(FlatlandDynamicsSolver, self).run_episode(episode,
-                                                                                      env,
-                                                                                      policy,
-                                                                                      eps,
-                                                                                      training_mode)
+        total_reward, tot_terminate, tot_steps = super(FlatlandDynamicsSolver, self).run_episode(episode,
+                                                                                                 env,
+                                                                                                 policy,
+                                                                                                 eps,
+                                                                                                 training_mode)
         self.render_flatland_dynamics_details()
-        return total_reward, tot_terminate
+        return total_reward, tot_terminate, tot_steps
