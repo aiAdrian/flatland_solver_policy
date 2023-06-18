@@ -12,7 +12,7 @@ from torch.distributions import Categorical
 from policy.learning_policy.learning_policy import LearningPolicy
 from policy.learning_policy.replay_buffer import ReplayBuffer
 
-
+# Proximal Policy Optimization (PPO)
 # https://lilianweng.github.io/lil-log/2018/04/08/policy-gradient-algorithms.html
 
 class EpisodeBuffers:

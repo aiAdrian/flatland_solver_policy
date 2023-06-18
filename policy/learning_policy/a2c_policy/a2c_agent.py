@@ -9,7 +9,7 @@ import torch.nn as nn
 from policy.learning_policy.learning_policy import LearningPolicy
 from policy.learning_policy.ppo_policy.ppo_agent import EpisodeBuffers
 
-
+# Advantage Actor-Critic (A2C)
 # https://lilianweng.github.io/lil-log/2018/04/08/policy-gradient-algorithms.html
 
 
