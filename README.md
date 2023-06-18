@@ -217,9 +217,9 @@ All [policy](https://github.com/aiAdrian/flatland_solver_policy/tree/main/policy
 
 #### [Learning Policy](https://github.com/aiAdrian/flatland_solver_policy/tree/main/policy/learning_policy) 
 - [Advantage Actor-Critic (A2CPolicy)](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/a2c_policy/a2c_agent.py)
-- [Twin Delayed Deep Deterministic Policy Gradients (T3DPolicy)](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/td3_policy/td3_agent.py)
-- [Proximal Policy Optimization (PPOPolicy)](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/ppo_policy/ppo_agent.py)
 - [Dueling Double DQN (DDDQNPolicy)](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/dddqn_policy/dddqn_policy.py)
+- [Proximal Policy Optimization (PPOPolicy)](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/ppo_policy/ppo_agent.py)
+- [Twin Delayed Deep Deterministic Policy Gradients (T3DPolicy)](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/td3_policy/td3_agent.py)
 
 ### Environment - Policy Support Matrix
 
@@ -227,9 +227,9 @@ All [policy](https://github.com/aiAdrian/flatland_solver_policy/tree/main/policy
 |--------------------------|---------|-------------------|----------|----------|---------|-------------|-----------|-------------------|-------------------|----------|----------|--------------------|---------------------|
 | CartpoleAnalyticalPolicy |         |                   | **yes**  |          |         |             |           |                   |                   |          |          |                    |                     |
 | RandomPolicy             | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
+| A2CPolicy                | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
 | DDDQNPolicy              | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
 | PPOPolicy                | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
-| A2CPolicy                | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
 | T3DPolicy                | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
 | DeadLockAvoidancePolicy  | **yes** | **yes**           |          |          |         |             |           |                   |                   |          |          |                    |                     |
 
