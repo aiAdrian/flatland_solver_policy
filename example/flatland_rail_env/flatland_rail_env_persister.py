@@ -72,22 +72,35 @@ class RailEnvironmentPersistable(RailEnvironment):
     def generate_and_persist_environments(self,
                                           generate_nbr_env: Union[int, None] = None,
                                           generate_agents_per_env: Union[List[int]] = [10],
-                                          path: Union[str, None] = 'generated_envs'):
-        self._generate_environment(generate_nbr_env, generate_agents_per_env, path)
+                                          path: Union[str, None] = 'generated_envs',
+                                          overwrite_existing=True):
+        self._generate_environment(generate_nbr_env, generate_agents_per_env, path, overwrite_existing)
 
     def load_environments_from_path(self, path: Union[str, None] = 'generated_envs'):
         self._load_generated(path)
 
-    def _generate_environment(self, generate_nbr_env, generate_agents_per_env, path):
+    def _generate_environment(self, generate_nbr_env: int,
+                              generate_agents_per_env: List[int],
+                              path: str,
+                              overwrite_existing: bool):
         if generate_nbr_env is not None and path is not None:
             for i_nbr_agent, nbr_agent in enumerate(generate_agents_per_env):
                 for itr_env in range(generate_nbr_env):
+                    rnd_seed = self._random_seed + itr_env + i_nbr_agent * generate_nbr_env
+                    fn = self._generate_file_name(path,
+                                                  self.raw_env.width,
+                                                  self.raw_env.height,
+                                                  nbr_agent,
+                                                  rnd_seed
+                                                  )
+                    if os.path.exists(fn) and not overwrite_existing:
+                        continue
                     env = self._clone(info_str=None,
                                       number_of_agents=nbr_agent,
-                                      random_seed=self._random_seed + itr_env + i_nbr_agent * generate_nbr_env)
+                                      random_seed=rnd_seed)
                     env.raw_env.reset(regenerate_rail=True,
                                       regenerate_schedule=True,
-                                      random_seed=env._random_seed)
+                                      random_seed=rnd_seed)
                     if not os.path.exists(path):
                         os.makedirs(path)
                     fn = env._save_raw_env(path)
@@ -142,13 +155,21 @@ class RailEnvironmentPersistable(RailEnvironment):
         state, info = env.raw_env.reset(False, False)
         return state, info, env
 
+    def _generate_file_name(self, path: str,
+                            width: int,
+                            height: int,
+                            nbr_agents: int,
+                            rnd_seed: int) -> str:
+        return os.path.join(path, '{:04d}x{:04d}x{:04d}_{:09d}.pkl'.format(width, height, nbr_agents, rnd_seed))
+
     def _save_raw_env(self, path):
         '''
         Save the given RailEnv environment as pickle
         '''
-        filename = os.path.join(path, '{:04d}x{:04d}x{:04d}_{:09d}.pkl'.format(self.raw_env.width,
-                                                                               self.raw_env.height,
-                                                                               self.raw_env.get_num_agents(),
-                                                                               self._random_seed))
-        RailEnvPersister.save(self.raw_env, filename)
+        filename = self._generate_file_name(path,
+                                            self.raw_env.width,
+                                            self.raw_env.height,
+                                            self.raw_env.get_num_agents(),
+                                            self._random_seed)
+        RailEnvPersister.save(self.raw_env, filename=filename)
         return filename

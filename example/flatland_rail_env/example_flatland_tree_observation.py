@@ -83,7 +83,8 @@ if __name__ == "__main__":
         grid_mode=True,
         number_of_agents=10)
     env.generate_and_persist_environments(generate_nbr_env=5,
-                                          generate_agents_per_env=[1, 2, 3, 5, 10, 20, 30, 50])
+                                          generate_agents_per_env=[1, 2, 3, 5, 10, 20, 30, 50],
+                                          overwrite_existing=False)
     env.load_environments_from_path()
 
     if use_reinforced_heuristic_policy:
