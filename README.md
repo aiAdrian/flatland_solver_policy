@@ -214,6 +214,7 @@ Environments which are tested:
 | DDDQNPolicy              | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
 | PPOPolicy                | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
 | A2CPolicy                | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
+| T3DPolicy                | **yes** | **yes**           | **yes**  | **yes**  | **yes** | **yes**     | **yes**   | **yes**           | **yes**           | **yes**  | **yes**  | **yes**            | **yes**             |
 | DeadLockAvoidancePolicy  | **yes** | **yes**           |          |          |         |             |           |                   |                   |          |          |                    |                     |
 
 ### Tensorboard
