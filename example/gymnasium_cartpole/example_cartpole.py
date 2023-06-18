@@ -16,8 +16,8 @@ if __name__ == "__main__":
 
     execute_policy_comparison(env, GymnasiumSolver)
 
-    solver = GymnasiumSolver(env, create_cartpole_analytical_policy())
-    solver.perform_evaluation(max_episodes=100)
+    solver_analytical = GymnasiumSolver(env, create_cartpole_analytical_policy())
+    solver_analytical.perform_evaluation(max_episodes=100)
 
-    solver = GymnasiumSolver(env, create_cartpole_analytical_policy(), GymnasiumRenderer(env))
-    solver.perform_evaluation(max_episodes=1)
+    solver_analytical_rendering = GymnasiumSolver(env, create_cartpole_analytical_policy(), GymnasiumRenderer(env))
+    solver_analytical_rendering.perform_evaluation(max_episodes=1)
