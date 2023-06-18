@@ -207,7 +207,7 @@ Environments which are tested:
     - [traffic junction 4](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_traffic_junction_4.py)
     - [traffic junction 10](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_traffic_junction_10.py)
 
-#### Learning Policy 
+#### [Learning Policy](https://github.com/aiAdrian/flatland_solver_policy/tree/main/policy/learning_policy) 
 - [Advantage Actor-Critic (A2C)](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/a2c_policy/a2c_agent.py)
 - [Twin Delayed Deep Deterministic Policy Gradients (TD3)](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/td3_policy/td3_agent.py)
 - [Proximal Policy Optimization (PPO)](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/ppo_policy/ppo_agent.py)
