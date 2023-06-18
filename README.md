@@ -213,6 +213,8 @@ Environments which are tested:
 - [Proximal Policy Optimization (PPO)](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/ppo_policy/ppo_agent.py)
 - [Dueling Double DQN (DDDQN)](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/learning_policy/dddqn_policy/dddqn_policy.py)
 
+#### Environment - Policy Support Matrix
+
 | Policy                   | RailEnv | Flatland Dynamics | cartpole | checkers | combat  | lumberjacks | pong duel | predator prey 5x5 | predator prey 7x7 | switch 2 | switch 4 | traffic junction 4 | traffic junction 10 |
 |--------------------------|---------|-------------------|----------|----------|---------|-------------|-----------|-------------------|-------------------|----------|----------|--------------------|---------------------|
 | CartpoleAnalyticalPolicy |         |                   | **yes**  |          |         |             |           |                   |                   |          |          |                    |                     |
