@@ -207,7 +207,9 @@ Environments which are tested:
     - [traffic junction 4](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_traffic_junction_4.py)
     - [traffic junction 10](https://github.com/aiAdrian/flatland_solver_policy/blob/main/example/ma_gym/example_traffic_junction_10.py)
 
-### [Policy](https://github.com/aiAdrian/flatland_solver_policy/tree/main/policy)
+### Policy
+All [policy](https://github.com/aiAdrian/flatland_solver_policy/tree/main/policy) have to implement the [policy interface](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/policy.py).
+
 - [Random](https://github.com/aiAdrian/flatland_solver_policy/blob/main/policy/random_policy.py)
 
 #### [HeuristicPolicy](https://github.com/aiAdrian/flatland_solver_policy/tree/main/policy/heuristic_policy)
