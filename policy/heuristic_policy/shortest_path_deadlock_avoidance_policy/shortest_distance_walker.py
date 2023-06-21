@@ -90,6 +90,7 @@ class ShortestDistanceWalker:
             self.callback(handle, agent, position, direction, action, possible_transitions)
             step += 1
 
+    @_enable_flatland_shortest_distance_walker_lru_cache(maxsize=100000)
     def _get_pos_dir_wtt(self, position, direction, agent_pos, agent_dir, agent_initial_position):
 
         if position is None and direction is None:

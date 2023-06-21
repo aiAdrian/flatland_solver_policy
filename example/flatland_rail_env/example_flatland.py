@@ -1,9 +1,9 @@
-from flatland.envs.predictions import ShortestPathPredictorForRailEnv
+from flatland.core.env_observation_builder import DummyObservationBuilder
 
 from environment.environment import Environment
 from environment.flatland.rail_env import RailEnvironment
-from observation.flatland.flatten_tree_observation_for_rail_env.flatten_tree_observation_for_rail_env import \
-    FlattenTreeObsForRailEnv
+from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_observation import \
+    DeadlockAvoidanceObservation
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
     DeadLockAvoidancePolicy
 from policy.policy import Policy
@@ -19,10 +19,7 @@ def create_deadlock_avoidance_policy(environment: Environment, action_space: int
 if __name__ == "__main__":
     do_rendering = True
 
-    observation_builder = FlattenTreeObsForRailEnv(
-        max_depth=4,
-        predictor=ShortestPathPredictorForRailEnv(max_depth=0)
-    )
+    observation_builder = DeadlockAvoidanceObservation()
 
     env = RailEnvironment(obs_builder_object=observation_builder, number_of_agents=25)
 
@@ -34,4 +31,4 @@ if __name__ == "__main__":
     solver_deadlock = FlatlandSolver(env,
                                      create_deadlock_avoidance_policy(env, env.get_action_space()),
                                      FlatlandSimpleRenderer(env) if do_rendering else None)
-    solver_deadlock.perform_training(max_episodes=2)
+    solver_deadlock.perform_training(max_episodes=10)

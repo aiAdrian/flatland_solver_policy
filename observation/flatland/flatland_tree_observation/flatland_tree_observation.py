@@ -76,7 +76,7 @@ class FlatlandTreeObservation(ObservationBuilder):
 
     def reset(self):
         self.switchAnalyser = RailroadSwitchAnalyser(self.env)
-        self.graph = FlatlandGraphBuilder(self.switchAnalyser, activate_simplified=True)
+        self.graph = FlatlandGraphBuilder(self.switchAnalyser, activate_simplified=False)
         self._distance_map = self.env.distance_map.get()
         _send_flatland_tree_observation_data_change_signal_to_reset_lru_cache()
 
@@ -104,7 +104,7 @@ class FlatlandTreeObservation(ObservationBuilder):
 
         options = {
             "font_size": 4,
-            "node_size": 100,
+            "node_size": 150,
             "edgecolors": "black",
             "linewidths": 2,
             "width": 2,
@@ -326,6 +326,7 @@ class FlatlandTreeObservation(ObservationBuilder):
             node_level.update({parents[0]: cur_level})
             node_ids.update({parents[0]: 0})
             pre_parsed_parent = -1
+
             for i_p, p in enumerate(parents):
                 level = node_level.get(p, cur_level)
                 child = children[i_p]
@@ -339,9 +340,23 @@ class FlatlandTreeObservation(ObservationBuilder):
                 pre_parsed_parent = p
                 node_id = (2 * (parent_node_id + 1) - 1) + level_idx
                 node_ids.update({child: node_id})
+
             for n_idx in range(len(obs.nodes)):
                 x = self.tree_feature_size * node_ids.get(n_idx)
-                flatten_obs[x:(x + self.tree_feature_size)] = obs.features[n_idx]
+                flatten_obs[x:(x + self.tree_feature_size)] = obs.features[n_idx] + n_idx / 10 + 0.001
+
+            if False:
+                print('--------------------------------------------------------')
+                print('obs.adjacency:\n', obs.adjacency)
+                print('node_level: ', node_level)
+                print('node_ids: ', node_ids)
+                print('flatten_obs: ')
+                for i in range(len(flatten_obs)):
+                    if i % (self.tree_feature_size * 2) == 0:
+                        print('')
+                    print('{:5.1f}'.format(flatten_obs[i]) if flatten_obs[i] else '  .  ', '|', end='')
+                print('')
+
         return flatten_obs
 
     @_enable_flatland_tree_observation_lru_cache(maxsize=1_000_000)

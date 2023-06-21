@@ -1,3 +1,4 @@
+from functools import lru_cache
 from typing import Union
 
 import matplotlib.pyplot as plt
@@ -10,6 +11,23 @@ from environment.environment import Environment
 from policy.heuristic_policy.heuristic_policy import HeuristicPolicy
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.shortest_distance_walker \
     import ShortestDistanceWalker
+
+# activate LRU caching
+flatland_deadlock_avoidance_policy_lru_cache_functions = []
+
+
+def _enable_flatland_deadlock_avoidance_policy_lru_cache(*args, **kwargs):
+    def decorator(func):
+        func = lru_cache(*args, **kwargs)(func)
+        flatland_deadlock_avoidance_policy_lru_cache_functions.append(func)
+        return func
+
+    return decorator
+
+
+def _send_flatland_deadlock_avoidance_policy_data_change_signal_to_reset_lru_cache():
+    for func in flatland_deadlock_avoidance_policy_lru_cache_functions:
+        func.cache_clear()
 
 
 class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
@@ -30,6 +48,7 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
         self.opp_agent_map = {}
         self.same_agent_map = {}
         self.switches = None
+        _send_flatland_deadlock_avoidance_policy_data_change_signal_to_reset_lru_cache()
 
     def clear(self, agent_positions, switches):
         self.shortest_distance_agent_map = np.zeros((self.env.get_num_agents(),
@@ -67,9 +86,13 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
                     self.same_agent_map.update({handle: d})
 
         if len(self.opp_agent_map.get(handle, [])) == 0:
-            if self.switches.get(position, None) is None:
+            if self._check_is_switch(position):
                 self.shortest_distance_agent_map[(handle, position[0], position[1])] = 1
         self.full_shortest_distance_agent_map[(handle, position[0], position[1])] = 1
+
+    @_enable_flatland_deadlock_avoidance_policy_lru_cache()
+    def _check_is_switch(self, position) -> bool:
+        return self.switches.get(position, None) is None
 
 
 # define Python user-defined exceptions
@@ -82,17 +105,22 @@ class InvalidRawEnvironmentException(Exception):
 
 
 class DeadLockAvoidancePolicy(HeuristicPolicy):
-    def __init__(self, env: RailEnv, action_size, enable_eps=False, show_debug_plot=False):
+    def __init__(self, env: RailEnv,
+                 action_size: int,
+                 min_free_cell=3,
+                 enable_eps=False,
+                 show_debug_plot=False):
         super(HeuristicPolicy, self).__init__()
         self.env: RailEnv = env
         self.loss = 0
         self.action_size = action_size
         self.agent_can_move = {}
-        self.agent_can_move_value = {}
         self.switches = {}
         self.show_debug_plot = show_debug_plot
         self.enable_eps = enable_eps
         self.shortest_distance_walker: Union[DeadlockAvoidanceShortestDistanceWalker, None] = None
+        self.min_free_cell = min_free_cell
+        self.agent_positions = None
 
     def get_name(self):
         return self.__class__.__name__
@@ -113,9 +141,6 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
             act = check[3]
         return act
 
-    def get_agent_can_move_value(self, handle):
-        return self.agent_can_move_value.get(handle, np.inf)
-
     def reset(self, env: Environment):
         self.env = env.get_raw_env()
         if self.shortest_distance_walker is not None:
@@ -123,18 +148,21 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
         self.shortest_distance_walker = None
         self.agent_positions = None
         self.shortest_distance_walker = None
+        self._reset_switches()
+
+    def _reset_switches(self):
         self.switches = {}
         for h in range(self.env.height):
             for w in range(self.env.width):
                 pos = (h, w)
-                for dir in range(4):
-                    possible_transitions = self.env.rail.get_transitions(*pos, dir)
+                for new_dir in range(4):
+                    possible_transitions = self.env.rail.get_transitions(*pos, new_dir)
                     num_transitions = fast_count_nonzero(possible_transitions)
                     if num_transitions > 1:
                         if pos not in self.switches.keys():
-                            self.switches.update({pos: [dir]})
+                            self.switches.update({pos: [new_dir]})
                         else:
-                            self.switches[pos].append(dir)
+                            self.switches[pos].append(new_dir)
 
     def start_step(self, train):
         self._build_agent_position_map()
@@ -166,12 +194,11 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
         for handle in range(self.env.get_num_agents()):
             agent = self.env.agents[handle]
             if agent.state < TrainState.DONE:
-                next_step_ok = self._check_agent_can_move(handle,
-                                                          shortest_distance_agent_map[handle],
-                                                          self.shortest_distance_walker.same_agent_map.get(handle, []),
-                                                          self.shortest_distance_walker.opp_agent_map.get(handle, []),
-                                                          full_shortest_distance_agent_map)
-                if next_step_ok:
+                if self._check_agent_can_move(handle,
+                                              shortest_distance_agent_map[handle],
+                                              self.shortest_distance_walker.same_agent_map.get(handle, []),
+                                              self.shortest_distance_walker.opp_agent_map.get(handle, []),
+                                              full_shortest_distance_agent_map):
                     next_position, next_direction, action, _ = self.shortest_distance_walker.walk_one_step(handle)
                     self.agent_can_move.update({handle: [next_position[0], next_position[1], next_direction, action]})
 
@@ -191,17 +218,14 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
                               opp_agents,
                               full_shortest_distance_agent_map):
         agent_positions_map = (self.agent_positions > -1).astype(int)
-        delta = my_shortest_walking_path
-        next_step_ok = True
+        len_opp_agents = len(opp_agents)
         for opp_a in opp_agents:
             opp = full_shortest_distance_agent_map[opp_a]
             delta = ((my_shortest_walking_path - opp - agent_positions_map) > 0).astype(int)
-            if np.sum(delta) < (3 + len(opp_agents)):
-                next_step_ok = False
-            v = self.agent_can_move_value.get(handle, np.inf)
-            v = min(v, np.sum(delta))
-            self.agent_can_move_value.update({handle: v})
-        return next_step_ok
+            sum_delta = np.sum(delta)
+            if sum_delta < (self.min_free_cell + len_opp_agents):
+                return False
+        return True
 
     def save(self, filename):
         pass
