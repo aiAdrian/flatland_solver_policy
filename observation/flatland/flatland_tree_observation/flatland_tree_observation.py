@@ -58,6 +58,7 @@ class FlatlandTreeObservation(ObservationBuilder):
                  search_strategy: TreeObservationSearchStrategy = TreeObservationSearchStrategy.BreadthFirstSearch,
                  observation_return_type: TreeObservationReturnType = TreeObservationReturnType.Tree,
                  depth_limit: int = 10,
+                 activate_simplified=True,
                  render_debug_tree=False):
         super(FlatlandTreeObservation, self).__init__()
         self.search_strategy: TreeObservationSearchStrategy = search_strategy
@@ -73,10 +74,11 @@ class FlatlandTreeObservation(ObservationBuilder):
         self.agent_directions = []
         self.agent_state = []
         self._distance_map: Union[np.ndarray, None] = None
+        self._activate_simplified = activate_simplified
 
     def reset(self):
         self.switchAnalyser = RailroadSwitchAnalyser(self.env)
-        self.graph = FlatlandGraphBuilder(self.switchAnalyser, activate_simplified=False)
+        self.graph = FlatlandGraphBuilder(self.switchAnalyser, activate_simplified=self._activate_simplified)
         self._distance_map = self.env.distance_map.get()
         _send_flatland_tree_observation_data_change_signal_to_reset_lru_cache()
 
@@ -127,6 +129,19 @@ class FlatlandTreeObservation(ObservationBuilder):
                       alpha=0.8,
                       **options
                       )
+
+        edge_labels = dict([((edge[0], edge[1]),
+                             f'{self._get_edge_action(edge)}'.replace('[<RailEnvActions.', '').replace('>]', ''))
+                            for edge in obs.search_tree.edges])
+        print(edge_labels)
+        networkx.draw_networkx_edge_labels(
+            obs.search_tree,
+            pos=pos,
+            edge_labels=edge_labels,
+            label_pos=0.5,
+            font_color='red',
+            font_size=6,
+        )
 
         plt.axis('off')
         plt.show()

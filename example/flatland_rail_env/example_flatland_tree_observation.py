@@ -92,25 +92,26 @@ def create_decision_point_ppo_policy(observation_space: int, action_space: int) 
     ppo_param = PPO_Param(hidden_size=256,
                           buffer_size=16_000,
                           buffer_min_size=0,
-                          batch_size=256,
+                          batch_size=128,
                           learning_rate=0.5e-3,
-                          discount=0.995,
+                          discount=0.95,
                           use_replay_buffer=True,
                           use_gpu=False)
     return DecisionPointPPOPolicy(observation_space, action_space, ppo_param)
 
 
 if __name__ == "__main__":
-    do_rendering = False
-    do_render_debug_tree = False
-    use_reinforced_heuristic_policy = True
+    do_rendering = True
+    do_render_debug_tree = True
+    use_reinforced_heuristic_policy = False
 
 
     def create_obs_builder_object():
         return FlatlandTreeObservation(
             search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
             observation_return_type=TreeObservationReturnType.Flatten,
-            depth_limit=5,
+            depth_limit=20,
+            activate_simplified=False,
             render_debug_tree=do_render_debug_tree and do_rendering)
 
 
