@@ -103,7 +103,8 @@ def create_decision_point_ppo_policy(observation_space: int, action_space: int) 
 if __name__ == "__main__":
     do_rendering = True
     do_render_debug_tree = True
-    use_reinforced_heuristic_policy = False
+    activate_simplified = True
+    use_reinforced_heuristic_policy = True
 
 
     def create_obs_builder_object():
@@ -111,7 +112,7 @@ if __name__ == "__main__":
             search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
             observation_return_type=TreeObservationReturnType.Flatten,
             depth_limit=20,
-            activate_simplified=False,
+            activate_simplified=activate_simplified,
             render_debug_tree=do_render_debug_tree and do_rendering)
 
 
