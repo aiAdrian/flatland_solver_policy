@@ -38,7 +38,6 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
         self.agent_positions = None
         self.opp_agent_map = {}
         self.same_agent_map = {}
-        self.switches = None
 
     def reset(self, env: RailEnv):
         super(DeadlockAvoidanceShortestDistanceWalker, self).reset(env)
@@ -47,10 +46,9 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
         self.agent_positions = None
         self.opp_agent_map = {}
         self.same_agent_map = {}
-        self.switches = None
         _send_flatland_deadlock_avoidance_policy_data_change_signal_to_reset_lru_cache()
 
-    def clear(self, agent_positions, switches):
+    def clear(self, agent_positions):
         self.shortest_distance_agent_map = np.zeros((self.env.get_num_agents(),
                                                      self.env.height,
                                                      self.env.width),
@@ -65,7 +63,6 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
 
         self.opp_agent_map = {}
         self.same_agent_map = {}
-        self.switches = switches
 
     def getData(self):
         return self.shortest_distance_agent_map, self.full_shortest_distance_agent_map
@@ -92,7 +89,12 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
 
     @_enable_flatland_deadlock_avoidance_policy_lru_cache()
     def _check_is_switch(self, position) -> bool:
-        return self.switches.get(position, None) is None
+        for new_dir in range(4):
+            possible_transitions = self.env.rail.get_transitions(*position, new_dir)
+            num_transitions = fast_count_nonzero(possible_transitions)
+            if num_transitions > 1:
+                return False
+        return True
 
 
 # define Python user-defined exceptions
@@ -115,7 +117,6 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
         self.loss = 0
         self.action_size = action_size
         self.agent_can_move = {}
-        self.switches = {}
         self.show_debug_plot = show_debug_plot
         self.enable_eps = enable_eps
         self.shortest_distance_walker: Union[DeadlockAvoidanceShortestDistanceWalker, None] = None
@@ -148,21 +149,6 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
         self.shortest_distance_walker = None
         self.agent_positions = None
         self.shortest_distance_walker = None
-        self._reset_switches()
-
-    def _reset_switches(self):
-        self.switches = {}
-        for h in range(self.env.height):
-            for w in range(self.env.width):
-                pos = (h, w)
-                for new_dir in range(4):
-                    possible_transitions = self.env.rail.get_transitions(*pos, new_dir)
-                    num_transitions = fast_count_nonzero(possible_transitions)
-                    if num_transitions > 1:
-                        if pos not in self.switches.keys():
-                            self.switches.update({pos: [new_dir]})
-                        else:
-                            self.switches[pos].append(new_dir)
 
     def start_step(self, train):
         self._build_agent_position_map()
@@ -181,8 +167,7 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
     def _shortest_distance_mapper(self):
         if self.shortest_distance_walker is None:
             self.shortest_distance_walker = DeadlockAvoidanceShortestDistanceWalker(self.env)
-        self.shortest_distance_walker.clear(self.agent_positions,
-                                            self.switches)
+        self.shortest_distance_walker.clear(self.agent_positions)
         for handle in range(self.env.get_num_agents()):
             agent = self.env.agents[handle]
             if agent.state <= TrainState.MALFUNCTION:
