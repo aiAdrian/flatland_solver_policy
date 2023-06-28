@@ -78,7 +78,10 @@ class FlatlandTreeObservation(ObservationBuilder):
 
     def reset(self):
         self.switchAnalyser = RailroadSwitchAnalyser(self.env)
-        self.graph = FlatlandGraphBuilder(self.switchAnalyser, activate_simplified=self._activate_simplified)
+        self.graph = FlatlandGraphBuilder(self.switchAnalyser,
+                                          activate_simplified=self._activate_simplified,
+                                          keep_switch_neighbors_at_simplification=True
+                                          )
         self._distance_map = self.env.distance_map.get()
         _send_flatland_tree_observation_data_change_signal_to_reset_lru_cache()
 
@@ -133,7 +136,7 @@ class FlatlandTreeObservation(ObservationBuilder):
         edge_labels = dict([((edge[0], edge[1]),
                              f'{self._get_edge_action(edge)}'.replace('[<RailEnvActions.', '').replace('>]', ''))
                             for edge in obs.search_tree.edges])
-        print(edge_labels)
+
         networkx.draw_networkx_edge_labels(
             obs.search_tree,
             pos=pos,

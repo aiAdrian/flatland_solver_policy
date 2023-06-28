@@ -109,7 +109,7 @@ class InvalidRawEnvironmentException(Exception):
 class DeadLockAvoidancePolicy(HeuristicPolicy):
     def __init__(self, env: RailEnv,
                  action_size: int,
-                 min_free_cell=3,
+                 min_free_cell=1,
                  enable_eps=False,
                  show_debug_plot=False):
         super(HeuristicPolicy, self).__init__()

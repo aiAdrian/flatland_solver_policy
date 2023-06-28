@@ -1,9 +1,6 @@
-from flatland.core.env_observation_builder import DummyObservationBuilder
-
 from environment.environment import Environment
 from environment.flatland.rail_env import RailEnvironment
-from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_observation import \
-    DeadlockAvoidanceObservation
+from observation.flatland.dummy_observation import FlatlandDummyObservation
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
     DeadLockAvoidancePolicy
 from policy.policy import Policy
@@ -19,7 +16,7 @@ def create_deadlock_avoidance_policy(environment: Environment, action_space: int
 if __name__ == "__main__":
     do_rendering = True
 
-    observation_builder = DeadlockAvoidanceObservation()
+    observation_builder = FlatlandDummyObservation()
 
     env = RailEnvironment(obs_builder_object=observation_builder, number_of_agents=25)
     solver_deadlock = FlatlandSolver(env,
