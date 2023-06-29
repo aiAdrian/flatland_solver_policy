@@ -83,12 +83,12 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
                     self.same_agent_map.update({handle: d})
 
         if len(self.opp_agent_map.get(handle, [])) == 0:
-            if self._check_not_is_switch(position):
+            if self._is_no_switch_cell(position):
                 self.shortest_distance_agent_map[(handle, position[0], position[1])] = 1
         self.full_shortest_distance_agent_map[(handle, position[0], position[1])] = 1
 
     @_enable_flatland_deadlock_avoidance_policy_lru_cache()
-    def _check_not_is_switch(self, position) -> bool:
+    def _is_no_switch_cell(self, position) -> bool:
         for new_dir in range(4):
             possible_transitions = self.env.rail.get_transitions(*position, new_dir)
             num_transitions = fast_count_nonzero(possible_transitions)
