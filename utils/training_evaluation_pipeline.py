@@ -25,7 +25,7 @@ def create_dddqn_policy(observation_space: int, action_space: int) -> LearningPo
                         discount=0.95,
                         update_every=5,
                         tau=0.5e-2,
-                        use_gpu=False)
+                        use_gpu=True)
     return DDDQNPolicy(observation_space, action_space, param)
 
 
@@ -37,7 +37,7 @@ def create_ppo_policy(observation_space: int, action_space: int) -> LearningPoli
                           learning_rate=0.5e-3,
                           discount=0.95,
                           use_replay_buffer=True,
-                          use_gpu=False)
+                          use_gpu=True)
     return PPOPolicy(observation_space, action_space, ppo_param)
 
 
@@ -46,7 +46,7 @@ def create_a2c_policy(observation_space: int, action_space: int) -> LearningPoli
                           learning_rate=0.5e-3,
                           discount=0.95,
                           clip_grad_norm=0.1,
-                          use_gpu=False)
+                          use_gpu=True)
 
     return A2CPolicy(observation_space, action_space, a2c_param)
 
@@ -62,7 +62,7 @@ def create_td3_policy(observation_space: int, action_space: int) -> LearningPoli
                           policy_freq=2,
                           policy_noise=0.2,
                           noise_clip=0.1,
-                          use_gpu=False)
+                          use_gpu=True)
 
     return TD3Policy(observation_space, action_space, t3d_param)
 

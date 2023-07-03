@@ -127,10 +127,10 @@ class TD3Policy(LearningPolicy):
         # Device
         if self.t3d_param.use_gpu and torch.cuda.is_available():
             self.device = torch.device("cuda:0")
-            # print("🐇 Using GPU")
+            print("🐇 Using GPU")
         else:
             self.device = torch.device("cpu")
-            # print("🐢 Using CPU")
+            print("🐢 Using CPU")
 
         self.actor = Actor(state_size, action_size).to(self.device)
         self.actor_target = Actor(state_size, action_size).to(self.device)
@@ -183,9 +183,9 @@ class TD3Policy(LearningPolicy):
 
         with torch.no_grad():
             # Select action according to policy and add clipped noise
-            noise = (torch.randn(states_next.shape[0], states_next.shape[1]) * self.policy_noise).clamp(
-                -self.noise_clip,
-                self.noise_clip)
+            noise = (torch.randn(states_next.shape[0], states_next.shape[1]) * self.policy_noise) \
+                .clamp(-self.noise_clip, self.noise_clip) \
+                .to(self.device)
             noisy_actions = self.actor_target(states_next + noise)
             noisy_action_greedy = torch.argmax(noisy_actions, dim=1)
             next_actions = F.one_hot(noisy_action_greedy, num_classes=self.action_size)
