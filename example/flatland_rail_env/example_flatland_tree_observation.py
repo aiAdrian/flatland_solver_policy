@@ -100,6 +100,25 @@ def create_decision_point_ppo_policy(observation_space: int, action_space: int) 
     return DecisionPointPPOPolicy(observation_space, action_space, ppo_param)
 
 
+def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: InfoDict, env: Environment) -> List[float]:
+    distance_map = env.distance_map.get()
+    for i, agent in enumerate(env.raw_env.agents):
+        reward[i] = 0.0
+        if agent.state == TrainState.DONE:
+            reward[i] = 0.0
+        if terminal[i] and agent.state == TrainState.DONE and agent.arrival_time == env.raw_env._elapsed_steps:
+            reward[i] = 1.0
+
+        if agent.position is not None:
+            r = distance_map[i, agent.position[0], agent.position[1], agent.direction]
+            r = max(1, r)
+            r = 1 / r
+            r = r / 1000
+            reward[i] += r
+
+    return reward
+
+
 if __name__ == "__main__":
     do_rendering = True
     do_render_debug_tree = True

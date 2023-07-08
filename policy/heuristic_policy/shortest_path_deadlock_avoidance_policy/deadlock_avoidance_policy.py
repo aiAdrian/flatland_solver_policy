@@ -9,7 +9,7 @@ from flatland.envs.step_utils.states import TrainState
 
 from environment.environment import Environment
 from policy.heuristic_policy.heuristic_policy import HeuristicPolicy
-from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.shortest_distance_walker \
+from utils.flatland.shortest_distance_walker \
     import ShortestDistanceWalker
 
 # activate LRU caching
@@ -67,7 +67,7 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
     def getData(self):
         return self.shortest_distance_agent_map, self.full_shortest_distance_agent_map
 
-    def callback(self, handle, agent, position, direction, action, possible_transitions):
+    def callback(self, handle, agent, position, direction, action, possible_transitions) -> bool:
         opp_a = self.agent_positions[position]
         if opp_a != -1 and opp_a != handle:
             if self.env.agents[opp_a].direction != direction:
@@ -86,6 +86,7 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
             if self._is_no_switch_cell(position):
                 self.shortest_distance_agent_map[(handle, position[0], position[1])] = 1
         self.full_shortest_distance_agent_map[(handle, position[0], position[1])] = 1
+        return True
 
     @_enable_flatland_deadlock_avoidance_policy_lru_cache()
     def _is_no_switch_cell(self, position) -> bool:

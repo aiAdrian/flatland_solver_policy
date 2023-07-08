@@ -63,8 +63,8 @@ class ShortestDistanceWalker:
     def get_action(self, handle, min_distances):
         return np.argmin(min_distances)
 
-    def callback(self, handle, agent, position, direction, action, possible_transitions):
-        pass
+    def callback(self, handle, agent, position, direction, action, possible_transitions) -> bool:
+        return True
 
     @_enable_flatland_shortest_distance_walker_lru_cache(maxsize=100000)
     def get_agent_position_and_direction(self, agent_position, agent_direction, agent_initial_position):
@@ -87,7 +87,8 @@ class ShortestDistanceWalker:
             position, direction, dist, action, possible_transitions = self.walk(handle, position, direction)
             if position is None:
                 break
-            self.callback(handle, agent, position, direction, action, possible_transitions)
+            if not self.callback(handle, agent, position, direction, action, possible_transitions):
+                break
             step += 1
 
     @_enable_flatland_shortest_distance_walker_lru_cache(maxsize=100000)
