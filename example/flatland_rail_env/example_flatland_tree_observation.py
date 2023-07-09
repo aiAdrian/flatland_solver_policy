@@ -111,11 +111,15 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
 
         if agent.position is not None:
             r = distance_map[i, agent.position[0], agent.position[1], agent.direction]
+            if np.isinf(r):
+                r = 10000000000
+            if np.isnan(r):
+                r = 10000000000
             r = max(1, r)
             r = 1 / r
-            r = r / 1000
+            r = r / 10000
             reward[i] += r
-
+        reward[i] /= env.get_num_agents()
     return reward
 
 

@@ -1,5 +1,6 @@
 from typing import List, Callable
 
+import numpy as np
 from flatland.envs.step_utils.states import TrainState
 
 from environment.environment import Environment
@@ -37,11 +38,15 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
 
         if agent.position is not None:
             r = distance_map[i, agent.position[0], agent.position[1], agent.direction]
+            if np.isinf(r):
+                r = 10000000000
+            if np.isnan(r):
+                r = 10000000000
             r = max(1, r)
             r = 1 / r
-            r = r / 1000
+            r = r / 10000
             reward[i] += r
-
+        reward[i] /= env.get_num_agents()
     return reward
 
 
@@ -63,12 +68,13 @@ if __name__ == "__main__":
                                                                create_ppo_policy,
                                                                create_dddqn_policy,
                                                                crate_random_policy]
-    for pcl in policy_creator_list:
+    for pcl in [policy_creator_list[0]]:
         solver = FlatlandSolver(environment,
                                 pcl(environment.get_observation_space(), environment.get_action_space()),
                                 FlatlandSimpleRenderer(environment) if do_rendering else None)
         solver.set_reward_shaper(flatland_reward_shaper)
-        solver.perform_training(max_episodes=1000)
+        # solver.load_policy()
+        solver.perform_training(max_episodes=5000)
 
     solver_deadlock = FlatlandSolver(environment,
                                      create_deadlock_avoidance_policy(environment, environment.get_action_space()),
