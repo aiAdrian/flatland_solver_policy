@@ -1,4 +1,4 @@
-from typing import List, Callable
+from typing import List
 
 import numpy as np
 from flatland.envs.step_utils.states import TrainState
@@ -9,11 +9,10 @@ from observation.flatland.flatland_fast_tree_observation.flatland_fast_tree_obse
     FlatlandFastTreeObservation
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
     DeadLockAvoidancePolicy
-from policy.policy import Policy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
 from solver.flatland.flatland_solver import FlatlandSolver, RewardList, TerminalList, InfoDict
-from utils.training_evaluation_pipeline import create_td3_policy, create_ppo_policy, create_a2c_policy, \
-    create_dddqn_policy, crate_random_policy
+from utils.training_evaluation_pipeline import policy_creator_list
+
 
 # Idead based on https://discourse.aicrowd.com/t/accelerate-the-learning-increase-agents-behavior-at-higher-speed/3838
 
@@ -63,12 +62,8 @@ if __name__ == "__main__":
     environment.load_environments_from_path()
 
     do_rendering = False
-    policy_creator_list: List[Callable[[int, int], Policy]] = [create_td3_policy,
-                                                               create_a2c_policy,
-                                                               create_ppo_policy,
-                                                               create_dddqn_policy,
-                                                               crate_random_policy]
-    for pcl in [policy_creator_list[0]]:
+
+    for pcl in policy_creator_list:
         solver = FlatlandSolver(environment,
                                 pcl(environment.get_observation_space(), environment.get_action_space()),
                                 FlatlandSimpleRenderer(environment) if do_rendering else None)
