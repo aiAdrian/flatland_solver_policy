@@ -76,7 +76,7 @@ class WalkToNextDecisionPoint(ShortestDistanceWalker):
         if self.final_pos is None:
             self.final_pos = position
             self.final_dir = direction
-        self.target_found = fast_position_equal(agent.target, position)
+        self.target_found = int(fast_position_equal(agent.target, position))
         if self.target_found == 1:
             return False
 
