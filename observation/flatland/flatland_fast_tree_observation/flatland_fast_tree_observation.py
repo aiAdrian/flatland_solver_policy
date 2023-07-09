@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Union
 
 import numpy as np
 from flatland.core.env_observation_builder import ObservationBuilder
@@ -21,11 +21,28 @@ class DiscovererShortestDistanceWalker(ShortestDistanceWalker):
         self.same_direction_agents = []
         self.final_pos = None
         self.final_dir = None
-        self.target_found = None
+        self.target_found = 0
+
+    def clear(self):
+        self.visited = []
+        self.switches = []
+        self.opp_direction_agents = []
+        self.same_direction_agents = []
+        self.final_pos = None
+        self.final_dir = None
+        self.target_found = 0
 
     def callback(self, handle, agent, position, direction, action, possible_transitions) -> bool:
         self.visited.append(position)
+        if self.final_pos is None:
+            self.final_pos = position
+            self.final_dir = direction
         self.target_found = fast_position_equal(agent.target, position)
+        if self.target_found == 1:
+            self.final_pos = position
+            self.final_dir = direction
+            return False
+
         if fast_count_nonzero(possible_transitions) > 1:
             self.switches.append(position)
 
@@ -41,6 +58,41 @@ class DiscovererShortestDistanceWalker(ShortestDistanceWalker):
         return True
 
 
+class WalkToNextDecisionPoint(ShortestDistanceWalker):
+    def __init__(self, env: RailEnv):
+        super(WalkToNextDecisionPoint, self).__init__(env)
+        self.visited = []
+        self.final_pos = None
+        self.final_dir = None
+        self.target_found = 0
+
+    def clear(self):
+        self.visited = []
+        self.final_pos = None
+        self.final_dir = None
+        self.target_found = 0
+
+    def callback(self, handle, agent, position, direction, action, possible_transitions) -> bool:
+        if self.final_pos is None:
+            self.final_pos = position
+            self.final_dir = direction
+        self.target_found = fast_position_equal(agent.target, position)
+        if self.target_found == 1:
+            return False
+
+        self.visited.append(position)
+        if fast_count_nonzero(possible_transitions) > 1:
+            return False
+
+        possible_transitions_opp_dir = self.env.rail.get_transitions(*position, (direction + 2 % 4))
+        if fast_count_nonzero(possible_transitions_opp_dir) > 1:
+            return False
+
+        self.final_pos = position
+        self.final_dir = direction
+        return True
+
+
 class FlatlandFastTreeObservation(ObservationBuilder):
 
     def __init__(self):
@@ -48,10 +100,14 @@ class FlatlandFastTreeObservation(ObservationBuilder):
         self.observation_dim = OBSERVATION_DIM
         self.previous_observations = {}
         self.agents_path_maps_cache = {}
+        self.walk_to_next_decision_point: Union[WalkToNextDecisionPoint, None] = None
+        self.discoverer_shortest_distance_walker: Union[DiscovererShortestDistanceWalker, None] = None
 
     def reset(self):
         self.previous_observations = {}
         self.agents_path_maps_cache = {}
+        self.walk_to_next_decision_point = None
+        self.discoverer_shortest_distance_walker = None
 
     @staticmethod
     def get_agent_position_and_direction(agent: EnvAgent):
@@ -68,11 +124,20 @@ class FlatlandFastTreeObservation(ObservationBuilder):
 
         visited = []
 
+        if self.walk_to_next_decision_point is None:
+            self.walk_to_next_decision_point = WalkToNextDecisionPoint(self.env)
+        if self.discoverer_shortest_distance_walker is None:
+            self.discoverer_shortest_distance_walker = DiscovererShortestDistanceWalker(self.env)
+
+        self.walk_to_next_decision_point.clear()
+        self.discoverer_shortest_distance_walker.clear()
+
         agent = self.env.agents[handle]
         distance_map = self.env.distance_map.get()
 
         agent_pos, agent_dir, agent_state = \
             FlatlandFastTreeObservation.get_agent_position_and_direction(agent)
+        visited.append(agent_pos)
 
         # update state / observation
         observation[0] = int(agent_state == 0)
@@ -83,35 +148,47 @@ class FlatlandFastTreeObservation(ObservationBuilder):
         observation[5] = int(agent_state == 5)
         observation[6] = int(agent_state == 6)
 
+        self.walk_to_next_decision_point.walk_to_target(handle, agent_pos, agent_dir, 50)
+        observation[7] = len(self.walk_to_next_decision_point.visited)
+        visited = visited + self.walk_to_next_decision_point.visited
+        if self.walk_to_next_decision_point.final_pos is not None:
+            agent_pos = self.walk_to_next_decision_point.final_pos
+            agent_dir = self.walk_to_next_decision_point.final_dir
+
         current_cell_dist = distance_map[handle, agent_pos[0], agent_pos[1], agent_dir]
         possible_transitions = self.env.rail.get_transitions(*agent_pos, agent_dir)
         orientation = agent_dir
         if fast_count_nonzero(possible_transitions) == 1:
             orientation = fast_argmax(possible_transitions)
 
-        visited.append(agent_pos)
+        if not self.walk_to_next_decision_point.target_found:
+            for dir_loop, branch_direction in enumerate([(orientation + dir_loop) % 4 for dir_loop in range(-1, 3)]):
 
-        for dir_loop, branch_direction in enumerate([(orientation + dir_loop) % 4 for dir_loop in range(-1, 3)]):
+                if possible_transitions[branch_direction]:
+                    new_position = get_new_position(agent_pos, branch_direction)
+                    if new_position is not None:
+                        new_cell_dist = distance_map[handle, new_position[0], new_position[1], branch_direction]
+                        if not np.isinf(new_cell_dist):
+                            observation[8 + branch_direction] = int(current_cell_dist > new_cell_dist)
+                        visited.append(new_position)
 
-            if possible_transitions[branch_direction]:
-                new_position = get_new_position(agent_pos, branch_direction)
-                if new_position is not None:
-                    new_cell_dist = distance_map[handle, new_position[0], new_position[1], branch_direction]
-                    if not np.isinf(new_cell_dist):
-                        observation[8 + branch_direction] = int(current_cell_dist > new_cell_dist)
-                    visited.append(new_position)
-                discoverer = DiscovererShortestDistanceWalker(self.env)
-                discoverer.walk_to_target(handle, new_position, branch_direction, 50)
-                if discoverer.final_pos is not None:
-                    final_cell_dist = distance_map[
-                        handle, discoverer.final_pos[0], discoverer.final_pos[1], discoverer.final_dir]
-                    if not np.isinf(final_cell_dist):
-                        observation[12 + branch_direction] = int(current_cell_dist > final_cell_dist)
-                    observation[16 + branch_direction] = len(discoverer.switches)
-                    observation[20 + branch_direction] = len(discoverer.same_direction_agents)
-                    observation[24 + branch_direction] = int(discoverer.target_found)
+                    self.discoverer_shortest_distance_walker.walk_to_target(handle, new_position, branch_direction, 50)
+                    if self.discoverer_shortest_distance_walker.final_pos is not None:
+                        final_cell_dist = distance_map[
+                            handle,
+                            self.discoverer_shortest_distance_walker.final_pos[0],
+                            self.discoverer_shortest_distance_walker.final_pos[1],
+                            self.discoverer_shortest_distance_walker.final_dir]
+                        if not np.isinf(final_cell_dist):
+                            observation[12 + branch_direction] = int(current_cell_dist > final_cell_dist)
+                        observation[16 + branch_direction] = \
+                            len(self.discoverer_shortest_distance_walker.switches)
+                        observation[20 + branch_direction] = \
+                            len(self.discoverer_shortest_distance_walker.same_direction_agents)
+                        observation[24 + branch_direction] = \
+                            int(self.discoverer_shortest_distance_walker.target_found)
 
-                visited = visited + discoverer.visited
+                    visited = visited + self.discoverer_shortest_distance_walker.visited
         self.env.dev_obs_dict.update({handle: visited})
 
         observation[np.isinf(observation)] = -1
