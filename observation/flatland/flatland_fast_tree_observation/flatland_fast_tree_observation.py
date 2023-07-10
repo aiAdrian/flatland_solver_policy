@@ -9,7 +9,7 @@ from flatland.envs.rail_env import RailEnv
 
 from utils.flatland.shortest_distance_walker import ShortestDistanceWalker
 
-OBSERVATION_DIM = 28
+OBSERVATION_DIM = 32
 
 
 class DiscovererShortestDistanceWalker(ShortestDistanceWalker):
@@ -197,6 +197,8 @@ class FlatlandFastTreeObservation(ObservationBuilder):
                             len(self.discoverer_shortest_distance_walker.same_direction_agents)
                         observation[24 + branch_direction] = \
                             int(self.discoverer_shortest_distance_walker.target_found)
+                        observation[28 + branch_direction] = \
+                            len(self.discoverer_shortest_distance_walker.opp_direction_agents)
 
                     visited = visited + self.discoverer_shortest_distance_walker.visited
         self.env.dev_obs_dict.update({handle: visited})
