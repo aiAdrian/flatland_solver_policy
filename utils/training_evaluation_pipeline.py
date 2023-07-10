@@ -101,11 +101,11 @@ def execute_single_policy_experiment(env: Environment,
         solver.perform_evaluation(max_episodes=max_evaluation_episodes)
 
 
-policy_creator_list: List[Callable[[int, int], Policy]] = [create_td3_policy,
-                                                           create_a2c_policy,
-                                                           create_ppo_policy,
-                                                           create_dddqn_policy,
-                                                           crate_random_policy]
+policy_creator_list: List[Callable[[int, int], Policy]] = [create_td3_policy,   #0
+                                                           create_a2c_policy,   #1
+                                                           create_ppo_policy,   #2
+                                                           create_dddqn_policy, #3
+                                                           crate_random_policy] #4
 
 
 def execute_policy_comparison(env: Environment,
