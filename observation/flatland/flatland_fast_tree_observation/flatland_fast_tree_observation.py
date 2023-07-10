@@ -102,6 +102,7 @@ class FlatlandFastTreeObservation(ObservationBuilder):
         self.agents_path_maps_cache = {}
         self.walk_to_next_decision_point: Union[WalkToNextDecisionPoint, None] = None
         self.discoverer_shortest_distance_walker: Union[DiscovererShortestDistanceWalker, None] = None
+        self.distance_map = None
 
     def reset(self):
         self.previous_observations = {}
@@ -117,6 +118,7 @@ class FlatlandFastTreeObservation(ObservationBuilder):
             self.discoverer_shortest_distance_walker = DiscovererShortestDistanceWalker(self.env)
         else:
             self.discoverer_shortest_distance_walker.reset(env)
+        self.distance_map = None
 
     @staticmethod
     def get_agent_position_and_direction(agent: EnvAgent):
@@ -125,6 +127,9 @@ class FlatlandFastTreeObservation(ObservationBuilder):
         return position, direction, agent.state
 
     def get_many(self, handles: Optional[List[int]] = None):
+        if self.distance_map is None:
+            self.distance_map = self.env.distance_map.get()
+
         observations = super().get_many(handles)
         return observations
 
@@ -137,7 +142,6 @@ class FlatlandFastTreeObservation(ObservationBuilder):
         self.discoverer_shortest_distance_walker.clear()
 
         agent = self.env.agents[handle]
-        distance_map = self.env.distance_map.get()
 
         agent_pos, agent_dir, agent_state = \
             FlatlandFastTreeObservation.get_agent_position_and_direction(agent)
@@ -162,7 +166,7 @@ class FlatlandFastTreeObservation(ObservationBuilder):
             agent_dir = self.walk_to_next_decision_point.final_dir
 
         if not self.walk_to_next_decision_point.target_found:
-            current_cell_dist = distance_map[handle, agent_pos[0], agent_pos[1], agent_dir]
+            current_cell_dist = self.distance_map[handle, agent_pos[0], agent_pos[1], agent_dir]
 
             orientation = agent_dir
             possible_transitions = self.env.rail.get_transitions(*agent_pos, agent_dir)
@@ -173,14 +177,14 @@ class FlatlandFastTreeObservation(ObservationBuilder):
                 if possible_transitions[branch_direction]:
                     new_position = get_new_position(agent_pos, branch_direction)
                     if new_position is not None:
-                        new_cell_dist = distance_map[handle, new_position[0], new_position[1], branch_direction]
+                        new_cell_dist = self.distance_map[handle, new_position[0], new_position[1], branch_direction]
                         if not np.isinf(new_cell_dist):
                             observation[8 + branch_direction] = int(current_cell_dist > new_cell_dist)
                         visited.append(new_position)
 
                     self.discoverer_shortest_distance_walker.walk_to_target(handle, new_position, branch_direction, 50)
                     if self.discoverer_shortest_distance_walker.final_pos is not None:
-                        final_cell_dist = distance_map[
+                        final_cell_dist = self.distance_map[
                             handle,
                             self.discoverer_shortest_distance_walker.final_pos[0],
                             self.discoverer_shortest_distance_walker.final_pos[1],

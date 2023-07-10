@@ -88,7 +88,7 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
         self.full_shortest_distance_agent_map[(handle, position[0], position[1])] = 1
         return True
 
-    @_enable_flatland_deadlock_avoidance_policy_lru_cache()
+    @_enable_flatland_deadlock_avoidance_policy_lru_cache(maxsize=100000)
     def _is_no_switch_cell(self, position) -> bool:
         for new_dir in range(4):
             possible_transitions = self.env.rail.get_transitions(*position, new_dir)
