@@ -158,10 +158,10 @@ class FlatlandFastTreeObservation(ObservationBuilder):
         observation[6] = int(agent_state == 6)
 
         self.walk_to_next_decision_point.walk_to_target(handle, agent_pos, agent_dir, 50)
-        observation[7] = len(self.walk_to_next_decision_point.visited)
 
         visited = visited + self.walk_to_next_decision_point.visited
         if self.walk_to_next_decision_point.final_pos is not None:
+            observation[7] = fast_position_equal(agent_pos, self.walk_to_next_decision_point.final_pos)
             agent_pos = self.walk_to_next_decision_point.final_pos
             agent_dir = self.walk_to_next_decision_point.final_dir
 

@@ -27,24 +27,22 @@ def create_deadlock_avoidance_policy(environment: Environment,
 
 def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: InfoDict, env: Environment) -> List[float]:
     distance_map = env.raw_env.distance_map.get()
-
     for i, agent in enumerate(env.raw_env.agents):
-        reward[i] = 0.0
-        if agent.state == TrainState.DONE:
-            reward[i] = 0.0
-        if terminal[i] and agent.state == TrainState.DONE and agent.arrival_time == env.raw_env._elapsed_steps:
-            reward[i] = 1.0
-
+        reward[i] = -1.0
         if agent.position is not None:
             r = distance_map[i, agent.position[0], agent.position[1], agent.direction]
+            r0 = distance_map[i, agent.initial_position[0], agent.initial_position[1], agent.initial_direction]
+            r = r / max(1, r0)
             if np.isinf(r):
                 r = 10000000000
             if np.isnan(r):
                 r = 10000000000
-            r = max(1, r)
-            r = 1 / r
-            r = r / 10000
-            reward[i] += r
+            r = np.log(max(1, 1 + r))
+            reward[i] *= r
+        if agent.state == TrainState.DONE:
+            reward[i] = 0.0
+        if terminal[i] and agent.state == TrainState.DONE and agent.arrival_time == env.raw_env._elapsed_steps:
+            reward[i] = 1.0
         reward[i] /= env.get_num_agents()
     return reward
 
@@ -56,15 +54,15 @@ if __name__ == "__main__":
         grid_height=40,
         grid_mode=True,
         number_of_agents=10)
-    environment.generate_and_persist_environments(generate_nbr_env=5,
-                                                  generate_agents_per_env=[5],  # [1, 2, 3, 5, 10, 20, 30, 50],
+    environment.generate_and_persist_environments(generate_nbr_env=10,
+                                                  generate_agents_per_env=[1, 2, 3, 5],  # [1, 2, 3, 5, 10, 20, 30, 50],
                                                   overwrite_existing=False)
     environment.load_environments_from_path()
 
     do_rendering = False
     do_training = True
     if do_training:
-        for pcl in policy_creator_list:
+        for pcl in [policy_creator_list[3]]:
             solver = FlatlandSolver(environment,
                                     pcl(environment.get_observation_space(), environment.get_action_space()),
                                     FlatlandSimpleRenderer(environment) if do_rendering else None)
