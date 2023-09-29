@@ -1,0 +1,6 @@
+flatland-railway-extension>=0.2.5
+torch
+tensorboard
+gym
+numpy
+ma_gym
