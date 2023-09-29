@@ -1,5 +1,5 @@
 flatland-railway-extension>=0.2.5
-torch
+torch==1.10
 tensorboard
 gym
 numpy
