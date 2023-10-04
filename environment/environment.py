@@ -42,3 +42,6 @@ class Environment:
 
     def get_num_agents(self) -> int:
         return self.raw_env.get_num_agents()
+
+    def close(self):
+        pass
