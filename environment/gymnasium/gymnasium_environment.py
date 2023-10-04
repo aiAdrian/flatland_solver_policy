@@ -17,6 +17,9 @@ class GymnasiumEnvironment(Environment):
 
         super(GymnasiumEnvironment, self).__init__(environment, action_space, observation_space, silent)
 
+    def close(self):
+        self.get_raw_env().close()
+
     def get_name(self) -> str:
         return "Environment:{}".format(self.env_to_load)
 

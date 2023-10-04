@@ -19,3 +19,5 @@ if __name__ == "__main__":
 
     solver_analytical_rendering = GymnasiumSolver(env, create_cartpole_analytical_policy(), GymnasiumRenderer(env))
     solver_analytical_rendering.perform_evaluation(max_episodes=1)
+
+    env.close()
