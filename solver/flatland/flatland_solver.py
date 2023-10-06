@@ -45,8 +45,6 @@ class FlatlandSolver(BaseSolver):
         return reward
 
     def run_step(self, env, policy, state, eps, info, training_mode):
-        tot_reward = 0
-
         policy.start_step(train=training_mode)
 
         actions = {}
@@ -71,15 +69,18 @@ class FlatlandSolver(BaseSolver):
 
         # calculate total reward, terminal_all, ..
         tot_terminal = 0
+        tot_reward = 0
         for handle in self.env.get_agent_handles():
             terminal_all &= terminal[handle]
             tot_reward += reward[handle]
             tot_terminal += int(terminal[handle])
-
-        self.run_policy_step(actions, policy, reward, state, state_next, terminal, terminal_all, update_values)
         tot_terminal /= max(1.0, len(self.env.get_agent_handles()))
 
+        # delegate a policy update (if required)
+        self.run_policy_step(actions, policy, reward, state, state_next, terminal, terminal_all, update_values)
+
         policy.end_step(train=training_mode)
+
         return state_next, tot_reward, terminal['__all__'], tot_terminal, info
 
     def run_choose_action(self, eps, handle, info, policy, state):
