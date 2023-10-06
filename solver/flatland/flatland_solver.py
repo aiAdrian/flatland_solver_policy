@@ -55,28 +55,47 @@ class FlatlandSolver(BaseSolver):
         for handle in self.env.get_agent_handles():
             policy.start_act(handle, train=training_mode)
 
-            if info['action_required'][handle]:
-                update_values[handle] = True
-                action = policy.act(handle,
-                                    state[handle],
-                                    eps)
-            else:
-                # An action is not required if the train hasn't joined the railway network,
-                # if it already reached its target, or if is currently malfunctioning.
-                update_values[handle] = False
-                action = 0
-
+            # choose action for agent (handle)
+            action, updated = self.run_choose_action(eps, handle, info, policy, state)
+            update_values[handle] = updated
             actions.update({handle: action})
+
             policy.end_act(handle, train=training_mode)
 
+        # run simulation step (env)
         raw_state_next, reward, terminal, info = env.step(actions)
+
+        # shape reward and transform observation (if required)
         reward = self.shape_reward(reward, terminal, info)
         state_next = self.transform_state(raw_state_next)
 
+        # calculate total reward, terminal_all, ..
+        tot_terminal = 0
         for handle in self.env.get_agent_handles():
             terminal_all &= terminal[handle]
+            tot_reward += reward[handle]
+            tot_terminal += int(terminal[handle])
 
-        tot_terminal = 0
+        self.run_policy_step(actions, policy, reward, state, state_next, terminal, terminal_all, update_values)
+        tot_terminal /= max(1.0, len(self.env.get_agent_handles()))
+
+        policy.end_step(train=training_mode)
+        return state_next, tot_reward, terminal['__all__'], tot_terminal, info
+
+    def run_choose_action(self, eps, handle, info, policy, state):
+        if info['action_required'][handle]:
+            updated = True
+            action = policy.act(handle,
+                                state[handle],
+                                eps)
+        else:
+            # An action is not required if the train hasn't joined the railway network,
+            # if it already reached its target, or if the train is currently malfunctioning.
+            updated = False
+            action = 0
+        return action, updated
+
+    def run_policy_step(self, actions, policy, reward, state, state_next, terminal, terminal_all, update_values):
         for handle in self.env.get_agent_handles():
             if update_values[handle] or terminal_all:
                 policy.step(handle,
@@ -85,9 +104,3 @@ class FlatlandSolver(BaseSolver):
                             reward[handle],
                             state_next[handle],
                             terminal[handle])
-            tot_reward += reward[handle]
-            tot_terminal += int(terminal[handle])
-        tot_terminal /= max(1.0, len(self.env.get_agent_handles()))
-
-        policy.end_step(train=training_mode)
-        return state_next, tot_reward, terminal['__all__'], tot_terminal, info
