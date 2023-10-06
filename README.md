@@ -42,8 +42,11 @@ classDiagram
     Environment <|-- RailEnv : package(Flatland)
     RailEnv <|-- FlatlandDynamics : package(Flatland Railway Extension)
     
-    BaseSolver <|-- FlatlandSolver
+    BaseSolver <|-- MultiAgentBaseSolver
     BaseSolver <|-- CartpoleSolver
+    
+    MultiAgentBaseSolver <|-- MultiAgentGymSolver
+    MultiAgentBaseSolver <|-- FlatlandSolver
     FlatlandSolver <|-- FlatlandDynamicsSolver
     
     Policy  <|-- HeuristicPolicy
