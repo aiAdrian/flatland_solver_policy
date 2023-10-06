@@ -72,9 +72,7 @@ classDiagram
       get_name()* str
       start_episode(train: bool)
       start_step(train: bool)
-      start_act(handle: int, train: bool)
       act(handle, state, eps=0.)*
-      end_act(handle: int, train: bool)
       step(handle, state, action, reward, next_state, done)*
       end_step(train: bool)
       end_episode(train: bool)
@@ -136,10 +134,8 @@ flowchart TD
     D2 --> |run_internal_episode| E{Step loop:\n more steps?}
     F1 --> |collect actions| G{Agent loop:\n more agents?}
     E ---> |yes : run_step| F1(policy.start_step)
-    G -->  |yes : get action for agent| G1(policy.start_act)
-    G1 --> G2(policy.act)
-    G2 --> G3(policy.end_act)
-    G3 --> G
+    G --->  |yes : get action for agent| G1(policy.act)
+    G1 --> G
     G ---> |no : all actions collected|F2(env.step)
     F2 --> F21{Agent loop:\n more agents?}
     F21 --> |yes| F3(policy.step)
@@ -156,15 +152,13 @@ flowchart TD
     style F1 fill:#ffe,stroke:#333,stroke-width:1px 
     style D4 fill:#ffe,stroke:#333,stroke-width:1px
     style G1 fill:#ffe,stroke:#333,stroke-width:1px 
-    style G2 fill:#ffe,stroke:#333,stroke-width:1px 
-    style G3 fill:#ffe,stroke:#333,stroke-width:1px 
     style F3 fill:#ffe,stroke:#333,stroke-width:1px 
     style F4 fill:#ffe,stroke:#333,stroke-width:1px 
 
     style Policy fill:#ffe,stroke:#333,stroke-width:1px 
     style D0 fill:#fcc,stroke:#333,stroke-width:1px,color:#300
     style F2 fill:#fcc,stroke:#333,stroke-width:1px,color:#300
-    style Env fill:#fcc,stroke:#333,stroke-width:1px,color:#300        
+    style Env fill:#fcc,stroke:#333,stroke-width:1px,color:#300               
 ```
 
 ### [Examples](https://github.com/aiAdrian/flatland_solver_policy/tree/main/example                                                  )

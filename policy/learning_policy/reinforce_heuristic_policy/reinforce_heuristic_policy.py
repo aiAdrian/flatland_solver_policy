@@ -36,20 +36,12 @@ class ReinforceHeuristicPolicy(LearningPolicy):
         self.learning_policy.start_step(train)
         self.heuristic_policy.start_step(train)
 
-    def start_act(self, handle: int, train: bool):
-        self.learning_policy.start_act(handle, train)
-        self.heuristic_policy.start_act(handle, train)
-
     def act(self, handle: int, state, eps=0.):
         # Epsilon-greedy action selection
         if np.random.random() >= (eps * max(0.0, min(1.0, (1.0 - self.heuristic_policy_epsilon)))):
             return self.learning_policy.act(handle, state, eps)
         else:
             return self.heuristic_policy.act(handle, state, eps)
-
-    def end_act(self, handle: int, train: bool):
-        self.learning_policy.end_act(handle, train)
-        self.heuristic_policy.end_act(handle, train)
 
     def step(self, handle: int, state, action, reward, next_state, done):
         self.learning_policy.step(handle, state, action, reward, next_state, done)

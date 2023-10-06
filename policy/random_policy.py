@@ -20,8 +20,5 @@ class RandomPolicy(Policy):
     def act(self, handle: int, state, eps=0.):
         return np.random.choice(self.action_size)
 
-    def end_act(self, handle: int, train: bool):
-        pass
-
     def step(self, handle: int, state, action, reward, next_state, done):
         pass

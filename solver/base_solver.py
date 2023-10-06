@@ -66,9 +66,7 @@ class BaseSolver:
         policy.start_step(train=training_mode)
 
         for handle in self.env.get_agent_handles():
-            policy.start_act(handle, train=training_mode)
             action = policy.act(handle, state, eps)
-            policy.end_act(handle, train=training_mode)
 
         state_next, reward, terminal, info = env.step(action)
 

@@ -21,14 +21,8 @@ class Policy:
     def start_step(self, train: bool):
         pass
 
-    def start_act(self, handle: int, train: bool):
-        pass
-
     def act(self, handle: int, state, eps=0.):
         raise NotImplementedError
-
-    def end_act(self, handle: int, train: bool):
-        pass
 
     def step(self, handle: int, state, action, reward, next_state, done):
         raise NotImplementedError

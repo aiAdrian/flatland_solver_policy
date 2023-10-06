@@ -51,14 +51,10 @@ class MultiAgentBaseSolver(BaseSolver):
         update_values = [False] * env.get_num_agents()
         terminal_all = True
         for handle in self.env.get_agent_handles():
-            policy.start_act(handle, train=training_mode)
-
             # choose action for agent (handle)
             action, updated = self.run_choose_action(eps, handle, info, policy, state)
             update_values[handle] = updated
             actions.update({handle: action})
-
-            policy.end_act(handle, train=training_mode)
 
         # run simulation step (env)
         raw_state_next, reward, terminal, info = env.step(actions)
