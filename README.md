@@ -130,19 +130,21 @@ flowchart TD
     Policy ~~~ Root
     Root((do_training))
     Root ---> |training: on| C{Episode loop:\n more episodes?}
-    C --------------> |no| End(( done ))
+    C ----------------> |no| End(( done ))
     C --> |yes : run_episode| D0(env.reset)
     D0 --> D2(policy.start_episode)
     D2 --> |run_internal_episode| E{Step loop:\n more steps?}
     F1 --> |collect actions| G{Agent loop:\n more agents?}
     E ---> |yes : run_step| F1(policy.start_step)
-    G --->  |yes : get action for agent| G1(policy.start_act)
+    G -->  |yes : get action for agent| G1(policy.start_act)
     G1 --> G2(policy.act)
     G2 --> G3(policy.end_act)
     G3 --> G
-    G --> |no : all actions collected|F2(env.step)
-    F2 --> F3(policy.step)
-    F3 --> F4(policy.end_step)
+    G ---> |no : all actions collected|F2(env.step)
+    F2 --> F21{Agent loop:\n more agents?}
+    F21 --> |yes| F3(policy.step)
+    F3 --> F21
+    F21 ----> |no| F4(policy.end_step)
     F6 --> E 
     F4 --> F6(render)
 
