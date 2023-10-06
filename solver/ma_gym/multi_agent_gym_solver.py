@@ -1,7 +1,7 @@
-from solver.flatland.flatland_solver import FlatlandSolver
+from solver.multi_agent_base_solver import MultiAgentBaseSolver
 
 
-class MultiAgentGymSolver(FlatlandSolver):
+class MultiAgentGymSolver(MultiAgentBaseSolver):
     def get_name(self) -> str:
         return 'MAGym_{}'.format(self.env.get_name().replace(':', '_'))
 

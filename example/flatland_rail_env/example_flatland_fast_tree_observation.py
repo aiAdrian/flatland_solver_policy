@@ -10,7 +10,8 @@ from observation.flatland.flatland_fast_tree_observation.flatland_fast_tree_obse
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
     DeadLockAvoidancePolicy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
-from solver.flatland.flatland_solver import FlatlandSolver, RewardList, TerminalList, InfoDict
+from solver.flatland.flatland_solver import FlatlandSolver
+from solver.multi_agent_base_solver import RewardList, TerminalList, InfoDict
 from utils.training_evaluation_pipeline import policy_creator_list
 
 

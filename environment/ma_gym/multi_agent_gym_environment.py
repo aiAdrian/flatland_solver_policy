@@ -23,7 +23,7 @@ class MultiAgentGymEnvironment(Environment):
 
     def reset(self):
         state = self.raw_env.reset()
-        info = {'action_required': np.ones(self.get_num_agents())}
+        info = {}
         return state, info
 
     def step(self, actions):
@@ -31,7 +31,7 @@ class MultiAgentGymEnvironment(Environment):
         for i in range(self.get_num_agents()):
             transformed_actions.append(actions.get(i))
         state_next, reward, dones, info = self.raw_env.step(transformed_actions)
-        info['action_required'] = np.ones(self.get_num_agents())
+
         terminal = {}
         for i in range(self.get_num_agents()):
             terminal.update({i: dones[i]})

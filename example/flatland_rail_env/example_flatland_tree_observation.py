@@ -15,7 +15,8 @@ from policy.learning_policy.learning_policy import LearningPolicy
 from policy.learning_policy.ppo_policy.ppo_agent import PPO_Param, PPOPolicy
 from policy.learning_policy.reinforce_heuristic_policy.reinforce_heuristic_policy import ReinforceHeuristicPolicy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
-from solver.flatland.flatland_solver import FlatlandSolver, RewardList, TerminalList, InfoDict
+from solver.flatland.flatland_solver import FlatlandSolver
+from solver.multi_agent_base_solver import RewardList, TerminalList, InfoDict
 
 
 def create_deadlock_avoidance_policy(environment: Environment,
