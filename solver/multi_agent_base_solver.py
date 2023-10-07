@@ -44,7 +44,14 @@ class MultiAgentBaseSolver(BaseSolver):
             return self._reward_shaper(reward, terminal, info, self.env)
         return reward
 
-    def run_step(self, env, policy, state, eps, info, training_mode):
+    def run_step(self,
+                 env: Environment,
+                 policy: Policy,
+                 state,
+                 eps: float,
+                 info: Dict,
+                 training_mode: bool):
+
         policy.start_step(train=training_mode)
 
         actions = {}
