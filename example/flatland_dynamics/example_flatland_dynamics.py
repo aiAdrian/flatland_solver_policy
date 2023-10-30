@@ -30,7 +30,7 @@ if __name__ == "__main__":
                                                                    env.get_action_space(),
                                                                    env.get_observation_space()))
 
-    execute_policy_comparison(env, FlatlandDynamicsSolver)
+    # execute_policy_comparison(env, FlatlandDynamicsSolver)
 
     solver_deadlock = FlatlandDynamicsSolver(env, create_deadlock_avoidance_policy(env, env.get_action_space(), False),
                                              FlatlandDynamicsSimpleRenderer(env, render_each_episode=1))
