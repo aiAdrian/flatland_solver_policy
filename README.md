@@ -201,6 +201,15 @@ cd flatland_solver_policy
 pip install -r requirements_dev.txt
 ```
 
+Export PYTHONPATH
+```bash
+# Linux
+export PYTHONPATH=.
+
+# Windows
+set PYTHONPATH=.
+```
+
 Run an example 
 ```bash
 python example/flatland_rail_env/example_flatland.py
