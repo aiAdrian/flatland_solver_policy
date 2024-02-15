@@ -179,6 +179,21 @@ solver.perform_training(max_episodes=1000)
 solver.perform_evaluation(max_episodes=1000)
 ```                                                                
 
+#### Getting started
+
+```bash
+conda create python=3.8 --name flatland-solver-policy
+conda activate flatland-solver-policy
+pip install flatland-rl
+pip install flatland-railway-extension
+pip install tensorboard
+
+git clone https://github.com/aiAdrian/flatland_solver_policy.git
+cd flatland_solver_policy
+python example/flatland_rail_env/example_flatland.py
+
+```
+
 ### Environments
 
 Environments which are tested:
