@@ -181,17 +181,29 @@ solver.perform_evaluation(max_episodes=1000)
 
 #### Getting started
 
+Setup a conda environment and install flatland
+
 ```bash
 conda create python=3.8 --name flatland-solver-policy
 conda activate flatland-solver-policy
-pip install flatland-rl
-pip install flatland-railway-extension
-pip install tensorboard
+```
 
+Clone the flatland_solver_policy repo 
+
+```bash
 git clone https://github.com/aiAdrian/flatland_solver_policy.git
-cd flatland_solver_policy
-python example/flatland_rail_env/example_flatland.py
+```
 
+Install all dependancies 
+```bash
+cd flatland_solver_policy
+
+pip install -r requirements_dev.txt
+```
+
+Run an example 
+```bash
+python example/flatland_rail_env/example_flatland.py
 ```
 
 ### Environments
