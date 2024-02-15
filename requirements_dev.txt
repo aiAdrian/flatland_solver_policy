@@ -1,4 +1,5 @@
 flatland-railway-extension>=0.2.5
+flatland-rl
 torch>=1.13.1
 tensorboard
 gymnasium
