@@ -174,7 +174,8 @@ class FlatlandTreeObservation(ObservationBuilder):
         '''
         agent: EnvAgent = self.env.agents[handle]
         position, direction = FlatlandTreeObservation.get_agent_position_and_direction(agent)
-        agent_attr = np.array([handle, agent.state])
+        agent_attr = self._get_shortest_walk_action(agent.handle, position, direction)
+        agent_attr.append(agent.state)
 
         self.env.dev_obs_dict[handle] = set([])
 
@@ -253,17 +254,21 @@ class FlatlandTreeObservation(ObservationBuilder):
             #  9 : action to enter the edge (MOVE_RIGHT)
             # ---------------------------------------------------------------------------
             other_agents = self._find_other_agents(handle, self.agents_grid_map, res)
+            cnt_other_agents = 0
             for opp_agent in other_agents:
-                node = self._get_mapped_vertex(opp_agent.position, opp_agent.direction)
-                _, node_dir = self._get_node_position_direction(node[0])
-                feature[edge_node_idx_1][int(node_dir)] += 1
-            feature[edge_node_idx_1][4] += len(other_agents)
+                if opp_agent.position in res:
+                    node = self._get_mapped_vertex(opp_agent.position, opp_agent.direction)
+                    _, node_dir = self._get_node_position_direction(node[0])
+                    transformed_node_dir = (node_dir + direction + 2) % 4
+                    feature[edge_node_idx_1][int(transformed_node_dir)] += 1
+                    cnt_other_agents += 1
+            feature[edge_node_idx_1][4] += cnt_other_agents
             node_pos_e1, node_dir_e1 = self._get_node_position_direction(edge[0])
             node_pos_e2, node_dir_e2 = self._get_node_position_direction(edge[1])
             dist = min(self._distance_map[handle][node_pos_e1][node_dir_e1],
                        self._distance_map[handle][node_pos_e2][node_dir_e2])
 
-            feature[edge_node_idx_1][5] = dist - cur_dist
+            feature[edge_node_idx_1][5] = (1.0 - int(agent.target in res)) * (dist - cur_dist)
             feature[edge_node_idx_1][6] = int(agent.target in res)
             feature[edge_node_idx_1][7] = int(actions[i_edge] == RailEnvActions.MOVE_LEFT)
             feature[edge_node_idx_1][8] = int(actions[i_edge] == RailEnvActions.MOVE_FORWARD)
@@ -318,18 +323,41 @@ class FlatlandTreeObservation(ObservationBuilder):
                         a[new_direction] = 1
             return fast_argmax(a)
 
+    def _get_shortest_walk_action(self, handle, position, direction):
+
+        ret = [0, 0, 0, 0]
+        possible_transitions = self.env.rail.get_transitions(*position, direction)
+        num_transitions = fast_count_nonzero(possible_transitions)
+        if num_transitions == 1:
+            ret[RailEnvActions.MOVE_FORWARD] = 1
+            return ret
+
+        distance_map = self.env.distance_map.get()
+        min_distances = []
+        for new_direction in [(direction + i) % 4 for i in range(-1, 2)]:
+            if possible_transitions[new_direction]:
+                new_position = get_new_position(position, new_direction)
+                min_distances.append(
+                    distance_map[handle, new_position[0], new_position[1], new_direction]
+                )
+            else:
+                min_distances.append(np.inf)
+
+        ret[np.argmin(min_distances)] = 1
+        return ret
+
     def _transform_observation(self, obs: TreeObservationData):
         if self.observation_return_type == TreeObservationReturnType.Tree:
             return obs
 
-        self.search_tree_flatten(obs)
+        flatten_obj = self.search_tree_flatten(obs)
 
         if self.render_debug_tree:
             if obs.search_tree is not None and obs.agent.state.is_on_map_state():
                 if len(obs.adjacency) > self.depth_limit:
                     self.render_search_tree(obs)
 
-        return obs.agent_attr
+        return np.concatenate([obs.agent_attr, flatten_obj])
 
     def search_tree_flatten(self, obs: TreeObservationData):
         flatten_obs = np.zeros((2 ** (self.depth_limit + 1)) * self.tree_feature_size)
@@ -361,7 +389,7 @@ class FlatlandTreeObservation(ObservationBuilder):
 
             for n_idx in range(len(obs.nodes)):
                 x = self.tree_feature_size * node_ids.get(n_idx)
-                flatten_obs[x:(x + self.tree_feature_size)] = obs.features[n_idx] + n_idx / 10 + 0.001
+                flatten_obs[x:(x + self.tree_feature_size)] = obs.features[n_idx]
 
             if False:
                 print('--------------------------------------------------------')

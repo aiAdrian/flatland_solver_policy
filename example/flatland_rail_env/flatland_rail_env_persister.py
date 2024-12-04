@@ -119,6 +119,9 @@ class RailEnvironmentPersistable(RailEnvironment):
             self._loaded_env_itr = 0
             print('Load environments from disk. # ', len(self._loaded_env), ' loaded.')
 
+    def get_nbr_loaded_envs(self):
+        return len(self._loaded_env)
+
     def reset(self):
         if len(self._loaded_env) > 0:
             filename = self._loaded_env[self._loaded_env_itr]

@@ -147,7 +147,7 @@ class PPOPolicy(LearningPolicy):
         self.actor_critic_model = ActorCriticModel(state_size, action_size, self.device,
                                                    hidsize1=self.hidden_size,
                                                    hidsize2=self.hidden_size)
-        self.optimizer = optim.Adam(self.actor_critic_model.parameters(), lr=self.learning_rate)
+        self.optimizer = optim.AdamW(self.actor_critic_model.parameters(), lr=self.learning_rate)
         self.loss_function = nn.MSELoss()  # nn.SmoothL1Loss()
 
     def get_name(self):

@@ -155,16 +155,16 @@ class BaseSolver:
     def perform_evaluation(self,
                            max_episodes=2000,
                            eps=0.0,
-                           write_summary=True):
+                           write_summary=True,
+                           checkpoint_interval=50):
 
         training_mode = False
 
         episode = 0
-        checkpoint_interval = 50
-        scores_window = deque(maxlen=100)
-        terminate_window = deque(maxlen=100)
-        nbr_agents_window = deque(maxlen=100)
-        tot_steps_window = deque(maxlen=100)
+        scores_window = deque(maxlen=checkpoint_interval)
+        terminate_window = deque(maxlen=checkpoint_interval)
+        nbr_agents_window = deque(maxlen=checkpoint_interval)
+        tot_steps_window = deque(maxlen=checkpoint_interval)
 
         writer = None
         if write_summary:
@@ -180,13 +180,18 @@ class BaseSolver:
             nbr_agents_window.append(self.env.get_num_agents())
             tot_steps_window.append(tot_steps)
 
+            b = int(np.round(50 * np.mean(terminate_window)))
+            done_bar = ['#'] * b + ['_'] * (50 - b)
+
             print(
-                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f}  \tdone: [{:^5.0f}/{:^5.0f}] : {:4.3f}'.format(
+                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f}  \tdone: [{:^5.0f}/{:^5.0f}] : {:4.3f}  \t [{}]'.format(
                     episode,
                     tot_reward,
                     np.mean(scores_window),
                     tot_terminate * self.env.get_num_agents(), self.env.get_num_agents(),
-                    np.mean(terminate_window)),
+                    np.mean(terminate_window),
+                    ''.join(list(done_bar)),
+                ),
                 end='\n' if episode % checkpoint_interval == 0 else '')
 
             if writer is not None:
@@ -212,16 +217,21 @@ class BaseSolver:
                          max_episodes=2000,
                          eps=1.0,
                          eps_decay=0.995,
-                         min_eps=0.001):
+                         min_eps=0.001,
+                         checkpoint_interval=100):
 
         training_mode = True
 
         episode = 0
-        checkpoint_interval = 50
-        scores_window = deque(maxlen=100)
-        terminate_window = deque(maxlen=100)
-        nbr_agents_window = deque(maxlen=100)
-        tot_steps_window = deque(maxlen=100)
+        scores_window = deque(maxlen=checkpoint_interval)
+        terminate_window = deque(maxlen=checkpoint_interval)
+        nbr_agents_window = deque(maxlen=checkpoint_interval)
+        tot_steps_window = deque(maxlen=checkpoint_interval)
+
+        scores_window.extend([0] * checkpoint_interval)
+        terminate_window.extend([0] * checkpoint_interval)
+        nbr_agents_window.extend([0] * checkpoint_interval)
+        tot_steps_window.extend([0] * checkpoint_interval)
 
         writer = SummaryWriter(comment="_" + self.get_name() + "_training_" + self.policy.get_name())
 
@@ -236,14 +246,19 @@ class BaseSolver:
             nbr_agents_window.append(self.env.get_num_agents())
             tot_steps_window.append(tot_steps)
 
+            b = int(np.round(50 * np.mean(terminate_window)))
+            done_bar = ['#'] * b + ['_'] * (50 - b)
+
             print(
-                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f} \tdone: [{:^5.0f}/{:^5.0f}] : {:4.3f} \t eps: {:7.3f}'.format(
+                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f} \tdone: [{:^5.0f}/{:^5.0f}] : {:4.3f} \t [{}] \t eps: {:7.3f} '.format(
                     episode,
                     tot_reward,
                     np.mean(scores_window),
                     tot_terminate * self.env.get_num_agents(), self.env.get_num_agents(),
                     np.mean(terminate_window),
-                    eps),
+                    ''.join(list(done_bar)),
+                    eps
+                ),
                 end='\n' if episode % checkpoint_interval == 0 else '')
 
             writer.add_scalar(self.get_name() + "/training_value_reward", tot_reward, episode)
