@@ -179,6 +179,42 @@ solver.perform_training(max_episodes=1000)
 solver.perform_evaluation(max_episodes=1000)
 ```                                                                
 
+#### Getting started
+
+Setup a conda environment and install flatland
+
+```bash
+conda create python=3.8 --name flatland-solver-policy
+conda activate flatland-solver-policy
+```
+
+Clone the flatland_solver_policy repo 
+
+```bash
+git clone https://github.com/aiAdrian/flatland_solver_policy.git
+```
+
+Install all dependancies 
+```bash
+cd flatland_solver_policy
+
+pip install -r requirements_dev.txt
+```
+
+Export PYTHONPATH
+```bash
+# Linux
+export PYTHONPATH=.
+
+# Windows
+set PYTHONPATH=.
+```
+
+Run an example 
+```bash
+python example/flatland_rail_env/example_flatland.py
+```
+
 ### Environments
 
 Environments which are tested:
