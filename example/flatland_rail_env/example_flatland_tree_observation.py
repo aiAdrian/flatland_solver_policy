@@ -1,22 +1,89 @@
 from typing import List, Union
 
+import numpy as np
 from flatland.envs.agent_utils import EnvAgent
 from flatland.envs.rail_env_action import RailEnvActions
 from flatland.envs.step_utils.states import TrainState
+from flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
 
 from environment.environment import Environment
 from example.flatland_rail_env.flatland_rail_env_persister import RailEnvironmentPersistable
 from observation.flatland.flatland_tree_observation.flatland_tree_observation import FlatlandTreeObservation, \
-    TreeObservationReturnType, TreeObservationSearchStrategy
-from policy.heuristic_policy.heuristic_policy import HeuristicPolicy
+    TreeObservationSearchStrategy, TreeObservationReturnType
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
     DeadLockAvoidancePolicy
 from policy.learning_policy.learning_policy import LearningPolicy
 from policy.learning_policy.ppo_policy.ppo_agent import PPO_Param, PPOPolicy
-from policy.learning_policy.reinforce_heuristic_policy.reinforce_heuristic_policy import ReinforceHeuristicPolicy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
 from solver.multi_agent_base_solver import RewardList, TerminalList, InfoDict
+
+
+def create_obs_builder_object():
+    return FlatlandTreeObservation(
+        search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
+        observation_return_type=TreeObservationReturnType.Flatten,
+        depth_limit=16,
+        observation_depth_limit=4,
+        observation_depth_limit_discount=0.85,
+        activate_simplified=True,
+        render_debug_tree=False)
+
+
+class DecisionPointPPOPolicy(PPOPolicy):
+    def __init__(self,
+                 state_size: int,
+                 action_size: int,
+                 in_parameters: Union[PPO_Param, None] = None):
+        super(DecisionPointPPOPolicy, self).__init__(state_size, action_size, in_parameters)
+        self._env: Union[Environment, None] = None
+        self.switchAnalyser: Union[RailroadSwitchAnalyser, None] = None
+
+    def get_name(self):
+        return self.__class__.__name__
+
+    def reset(self, e: Environment):
+        self._env = e
+        self.switchAnalyser = RailroadSwitchAnalyser(e.raw_env)
+        super(DecisionPointPPOPolicy, self).reset(e)
+
+    @staticmethod
+    def _get_agent_position_and_direction(agent: EnvAgent):
+        position = agent.position if agent.position is not None else agent.initial_position
+        direction = agent.direction if agent.direction is not None else agent.initial_direction
+        return position, direction
+
+    def act(self, handle: int, state, eps=0.):
+        agent: EnvAgent = self._env.raw_env.agents[handle]
+        position, direction = self._get_agent_position_and_direction(agent)
+        agent_at_railroad_switch, agent_near_to_railroad_switch, \
+            agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell = \
+            self.switchAnalyser.check_agent_decision(position=position, direction=direction)
+
+        # only if the agent is moving
+        if not agent.state == TrainState.MOVING:
+            # when the agent is moving and the agent is not at a decision point - best option is just move forward
+            # near to all switches are important:
+            # (1) fork
+            #
+            #                |   /  |[---][---][
+            #                |  /   |
+            #      [---][-A-]| /    |[---][---][--
+            #      ->->->->-> switch >->->->->->
+            #
+            # (2) fusion
+            #
+            #      -][---][-B-]| \    |
+            #                  |  \   |
+            #      -][---][-C-]|   \  |[---][---
+            #      ->->->->->-> switch >->->->->->
+            #
+            # A, B, C are cases where the agent should not just walk forward (due deadlock)
+            # switch as well
+            if not agent_at_railroad_switch and not agent_near_to_railroad_switch_cell:
+                return RailEnvActions.MOVE_FORWARD
+
+        return super(DecisionPointPPOPolicy, self).act(handle, state, eps)
 
 
 def create_deadlock_avoidance_policy(environment: Environment,
@@ -28,123 +95,69 @@ def create_deadlock_avoidance_policy(environment: Environment,
                                    show_debug_plot=show_debug_plot)
 
 
-def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: InfoDict, env: Environment) -> List[float]:
-    for i, agent in enumerate(env.raw_env.agents):
-        reward[i] = 0.0
-        if agent.state == TrainState.DONE:
-            reward[i] = 0.0
-        if terminal[i] and agent.state == TrainState.DONE and agent.arrival_time == env.raw_env._elapsed_steps:
-            reward[i] = 1.0
-    return reward
-
-
-class MyReinforceHeuristicPolicy(ReinforceHeuristicPolicy):
-
-    def __init__(self,
-                 learning_policy: LearningPolicy,
-                 heuristic_policy: HeuristicPolicy,
-                 heuristic_policy_epsilon=0.1):
-        super(MyReinforceHeuristicPolicy, self).__init__(learning_policy=learning_policy,
-                                                         heuristic_policy=heuristic_policy,
-                                                         heuristic_policy_epsilon=heuristic_policy_epsilon)
-        self._env: Union[Environment, None] = None
-
-    def reset(self, e: Environment):
-        self._env = e
-
-    def act(self, handle: int, state, eps=0.):
-        tree_obs: FlatlandTreeObservation = self._env.raw_env.obs_builder
-        agent: EnvAgent = self._env.raw_env.agents[handle]
-        p, d = tree_obs.get_agent_position_and_direction(agent)
-        agent_at_railroad_switch, agent_near_to_railroad_switch, _, _ = \
-            tree_obs.switchAnalyser.check_agent_decision(position=p, direction=d)
-        if not agent_at_railroad_switch and not agent_near_to_railroad_switch and agent.position is not None:
-            return RailEnvActions.MOVE_FORWARD
-        return super(MyReinforceHeuristicPolicy, self).act(handle, state, eps)
-
-
-class DecisionPointPPOPolicy(PPOPolicy):
-    def __init__(self,
-                 state_size: int,
-                 action_size: int,
-                 in_parameters: Union[PPO_Param, None] = None):
-        super(DecisionPointPPOPolicy, self).__init__(state_size, action_size, in_parameters)
-        self._env: Union[Environment, None] = None
-
-    def get_name(self):
-        return self.__class__.__name__
-
-    def reset(self, e: Environment):
-        self._env = e
-        super(DecisionPointPPOPolicy, self).reset(env)
-
-    def act(self, handle: int, state, eps=0.):
-        tree_obs: FlatlandTreeObservation = self._env.raw_env.obs_builder
-        agent: EnvAgent = self._env.raw_env.agents[handle]
-        p, d = tree_obs.get_agent_position_and_direction(agent)
-        agent_at_railroad_switch, agent_near_to_railroad_switch, _, _ = \
-            tree_obs.switchAnalyser.check_agent_decision(position=p, direction=d)
-        if not agent_at_railroad_switch and not agent_near_to_railroad_switch and agent.position is not None:
-            return RailEnvActions.MOVE_FORWARD
-        return super(DecisionPointPPOPolicy, self).act(handle, state, eps)
-
-
-def create_decision_point_ppo_policy(observation_space: int, action_space: int) -> LearningPolicy:
-    ppo_param = PPO_Param(hidden_size=256,
+def create_ppo_policy(observation_space: int, action_space: int) -> LearningPolicy:
+    ppo_param = PPO_Param(hidden_size=128,
                           buffer_size=16_000,
                           buffer_min_size=0,
-                          batch_size=128,
-                          learning_rate=0.5e-3,
+                          batch_size=256,
+                          learning_rate=0.5e-4,
                           discount=0.95,
                           use_replay_buffer=True,
-                          use_gpu=False)
+                          use_gpu=True)
     return DecisionPointPPOPolicy(observation_space, action_space, ppo_param)
 
 
+global reward_signal_updated
+reward_signal_updated = None
+
+
+def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: InfoDict, env: Environment) -> List[float]:
+    global reward_signal_updated
+    distance_map = env.raw_env.distance_map.get()
+    if env.raw_env._elapsed_steps < 5:
+        reward_signal_updated = None
+    if reward_signal_updated is None:
+        reward_signal_updated = np.zeros(len(env.raw_env.agents))
+    for i, agent in enumerate(env.raw_env.agents):
+        reward[i] = 0.0
+        if terminal[i] and \
+                reward_signal_updated[i] == 0 and \
+                agent.state == TrainState.DONE and \
+                env.raw_env._elapsed_steps < (env.raw_env._max_episode_steps - 5):
+            reward[i] = 1.0
+            reward_signal_updated[i] = 1.0
+        elif reward_signal_updated[i] == 0.0 and terminal[i]:
+            if agent.position is not None:
+                r = distance_map[i, agent.position[0], agent.position[1], agent.direction]
+                reward[i] -= r / 1000.0
+            else:
+                reward[i] -= 1.0
+
+    return reward
+
+
 if __name__ == "__main__":
-    do_rendering = True
-    do_render_debug_tree = True
-    activate_simplified = True
-    use_reinforced_heuristic_policy = True
-
-
-    def create_obs_builder_object():
-        return FlatlandTreeObservation(
-            search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
-            observation_return_type=TreeObservationReturnType.Flatten,
-            depth_limit=20,
-            activate_simplified=activate_simplified,
-            render_debug_tree=do_render_debug_tree and do_rendering)
-
-
-    env = RailEnvironmentPersistable(
+    environment = RailEnvironmentPersistable(
         obs_builder_object_creator=create_obs_builder_object,
         grid_width=30,
         grid_height=40,
         grid_mode=True,
         number_of_agents=10)
-    env.generate_and_persist_environments(generate_nbr_env=5,
-                                          generate_agents_per_env=[1, 2, 3, 5],  # [1, 2, 3, 5, 10, 20, 30, 50],
-                                          overwrite_existing=False)
-    env.load_environments_from_path()
+    environment.generate_and_persist_environments(generate_nbr_env=10,
+                                                  generate_agents_per_env=[1, 2, 3, 5],  # [1, 2, 3, 5, 10, 20, 30, 50],
+                                                  overwrite_existing=False)
+    environment.load_environments_from_path()
 
-    if use_reinforced_heuristic_policy:
-        # policy = MyReinforceHeuristicPolicy(
-        #     learning_policy=create_dddqn_policy(env.get_observation_space(), env.get_action_space()),
-        #     heuristic_policy=create_deadlock_avoidance_policy(env, env.get_action_space()),
-        #     heuristic_policy_epsilon=0.5
-        # )
-        policy = create_decision_point_ppo_policy(env.get_observation_space(), env.get_action_space())
-        max_episodes = 5000
-        max_episodes_eval = 120
-    else:
-        policy = create_deadlock_avoidance_policy(env, env.get_action_space())
-        max_episodes = 120
-        max_episodes_eval = 120
+    do_rendering = False
 
-    solver = FlatlandSolver(env,
-                            policy,
-                            FlatlandSimpleRenderer(env) if do_rendering else None)
+    solver = FlatlandSolver(environment,
+                            create_ppo_policy(environment.get_observation_space(), environment.get_action_space()),
+                            FlatlandSimpleRenderer(environment) if do_rendering else None)
+    solver.set_reward_shaper(flatland_reward_shaper)
     solver.load_policy()
-    solver.perform_training(max_episodes=max_episodes)
-    solver.perform_evaluation(max_episodes=max_episodes_eval)
+    solver.perform_training(max_episodes=5000, checkpoint_interval=environment.get_nbr_loaded_envs())
+
+    solver_deadlock = FlatlandSolver(environment,
+                                     create_deadlock_avoidance_policy(environment, environment.get_action_space()),
+                                     FlatlandSimpleRenderer(environment) if do_rendering else None)
+    solver_deadlock.perform_training(max_episodes=5000)  # ~11min

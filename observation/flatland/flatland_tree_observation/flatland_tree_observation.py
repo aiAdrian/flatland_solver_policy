@@ -58,12 +58,16 @@ class FlatlandTreeObservation(ObservationBuilder):
                  search_strategy: TreeObservationSearchStrategy = TreeObservationSearchStrategy.BreadthFirstSearch,
                  observation_return_type: TreeObservationReturnType = TreeObservationReturnType.Tree,
                  depth_limit: int = 10,
+                 observation_depth_limit: int = 10,
+                 observation_depth_limit_discount: float = 0.75,
                  activate_simplified=True,
                  render_debug_tree=False):
         super(FlatlandTreeObservation, self).__init__()
         self.search_strategy: TreeObservationSearchStrategy = search_strategy
         self.observation_return_type = observation_return_type
         self.depth_limit = depth_limit
+        self.observation_depth_limit = observation_depth_limit
+        self.observation_depth_limit_discount = observation_depth_limit_discount
         self.tree_feature_size = TREE_EDGE_FEATURE_SIZE
         self.render_debug_tree = render_debug_tree
 
@@ -145,6 +149,8 @@ class FlatlandTreeObservation(ObservationBuilder):
             font_color='red',
             font_size=6,
         )
+
+        plt.scatter(1000 * np.array([position[1]]), -1000 * np.array([position[0]]), color='orange')
 
         plt.axis('off')
         plt.show()
@@ -360,7 +366,7 @@ class FlatlandTreeObservation(ObservationBuilder):
         return np.concatenate([obs.agent_attr, flatten_obj])
 
     def search_tree_flatten(self, obs: TreeObservationData):
-        flatten_obs = np.zeros((2 ** (self.depth_limit + 1)) * self.tree_feature_size)
+        flatten_obs = np.zeros((2 ** (self.observation_depth_limit + 1)) * self.tree_feature_size)
 
         if obs.search_tree is not None:
             parents = obs.adjacency[:, 0]
@@ -387,9 +393,23 @@ class FlatlandTreeObservation(ObservationBuilder):
                 node_id = (2 * (parent_node_id + 1) - 1) + level_idx
                 node_ids.update({child: node_id})
 
+            # sum up with np.exp decay the node for all nodes depth > elf.observation_depth_limit:
+            x_node_level = sorted(node_level.items(), key=lambda item: -item[1])
+            for n_tuple in x_node_level:
+                if n_tuple[1] > self.observation_depth_limit:
+                    idx = np.where(children == n_tuple[0])
+                    obs.features[parents[idx]] += obs.features[children[idx]] * \
+                                                  np.exp(
+                                                      self.observation_depth_limit -
+                                                      self.observation_depth_limit_discount * n_tuple[1]
+                                                  )
+
             for n_idx in range(len(obs.nodes)):
-                x = self.tree_feature_size * node_ids.get(n_idx)
-                flatten_obs[x:(x + self.tree_feature_size)] = obs.features[n_idx]
+                level = node_level.get(n_idx)
+                # only use for flatten nodes with level below equal observation_depth_limit
+                if level <= self.observation_depth_limit:
+                    x = self.tree_feature_size * node_ids.get(n_idx)
+                    flatten_obs[x:(x + self.tree_feature_size)] = obs.features[n_idx]
 
             if False:
                 print('--------------------------------------------------------')

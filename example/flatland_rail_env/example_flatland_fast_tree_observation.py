@@ -63,7 +63,7 @@ if __name__ == "__main__":
     do_rendering = False
     do_training = True
     if do_training:
-        for pcl in [policy_creator_list[3]]:
+        for pcl in policy_creator_list:
             solver = FlatlandSolver(environment,
                                     pcl(environment.get_observation_space(), environment.get_action_space()),
                                     FlatlandSimpleRenderer(environment) if do_rendering else None)
