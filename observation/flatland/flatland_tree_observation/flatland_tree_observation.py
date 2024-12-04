@@ -400,8 +400,8 @@ class FlatlandTreeObservation(ObservationBuilder):
                     idx = np.where(children == n_tuple[0])
                     obs.features[parents[idx]] += obs.features[children[idx]] * \
                                                   np.exp(
-                                                      self.observation_depth_limit -
-                                                      self.observation_depth_limit_discount * n_tuple[1]
+                                                      self.observation_depth_limit
+                                                      - self.observation_depth_limit_discount * n_tuple[1]
                                                   )
 
             for n_idx in range(len(obs.nodes)):
