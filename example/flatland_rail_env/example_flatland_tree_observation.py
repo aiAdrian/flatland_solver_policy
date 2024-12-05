@@ -28,7 +28,7 @@ def create_obs_builder_object():
         observation_depth_limit=2,
         observation_depth_limit_discount=0.25,
         activate_simplified=False,
-        render_debug_tree=True)
+        render_debug_tree=False)
 
 
 class DecisionPointPPOPolicy(PPOPolicy):
