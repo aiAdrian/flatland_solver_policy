@@ -23,7 +23,7 @@ def create_obs_builder_object():
     return FlatlandTreeObservation(
         search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
         observation_return_type=TreeObservationReturnType.Flatten,
-        depth_limit=3,
+        depth_limit=15,
         observation_depth_limit=3,
         observation_depth_limit_discount=0.95,
         activate_simplified=False,
