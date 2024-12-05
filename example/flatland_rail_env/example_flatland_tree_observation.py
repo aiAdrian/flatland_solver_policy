@@ -12,6 +12,7 @@ from observation.flatland.flatland_tree_observation.flatland_tree_observation im
     TreeObservationSearchStrategy, TreeObservationReturnType
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
     DeadLockAvoidancePolicy
+from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQN_Param, DDDQNPolicy
 from policy.learning_policy.learning_policy import LearningPolicy
 from policy.learning_policy.ppo_policy.ppo_agent import PPO_Param, PPOPolicy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
@@ -23,11 +24,11 @@ def create_obs_builder_object():
     return FlatlandTreeObservation(
         search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
         observation_return_type=TreeObservationReturnType.Flatten,
-        depth_limit=15,
-        observation_depth_limit=3,
-        observation_depth_limit_discount=0.95,
+        depth_limit=50,
+        observation_depth_limit=2,
+        observation_depth_limit_discount=0.25,
         activate_simplified=False,
-        render_debug_tree=False)
+        render_debug_tree=True)
 
 
 class DecisionPointPPOPolicy(PPOPolicy):
@@ -61,7 +62,7 @@ class DecisionPointPPOPolicy(PPOPolicy):
             self.switchAnalyser.check_agent_decision(position=position, direction=direction)
 
         # only if the agent is moving
-        if not agent.state == TrainState.MOVING:
+        if agent.state == TrainState.MOVING:
             # when the agent is moving and the agent is not at a decision point - best option is just move forward
             # near to all switches are important:
             # (1) fork
@@ -110,6 +111,24 @@ def create_ppo_policy(observation_space: int, action_space: int) -> LearningPoli
     return DecisionPointPPOPolicy(observation_space, action_space, ppo_param)
 
 
+def create_dddqn_policy(observation_space: int, action_space: int) -> LearningPolicy:
+    print('>> create_dddqn_policy')
+    print('   - observation_space:', observation_space)
+    print('   - action_space:', action_space)
+    param = DDDQN_Param(hidden_size=128,
+                        buffer_size=32_000,
+                        buffer_min_size=0,
+                        batch_size=512,
+                        learning_rate=0.5e-3,
+                        discount=0.95,
+                        update_every=5,
+                        tau=0.5e-2,
+                        use_gpu=True)
+    return DDDQNPolicy(observation_space, action_space, param)
+
+
+
+
 global reward_signal_updated
 reward_signal_updated = None
 
@@ -156,7 +175,7 @@ if __name__ == "__main__":
                             create_ppo_policy(environment.get_observation_space(), environment.get_action_space()),
                             FlatlandSimpleRenderer(environment) if do_rendering else None)
     solver.set_reward_shaper(flatland_reward_shaper)
-    # solver.load_policy()
+    solver.load_policy()
     solver.perform_training(max_episodes=5000, checkpoint_interval=environment.get_nbr_loaded_envs())
 
     solver_deadlock = FlatlandSolver(environment,

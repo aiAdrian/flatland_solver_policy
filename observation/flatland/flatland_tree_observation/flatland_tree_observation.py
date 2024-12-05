@@ -65,8 +65,8 @@ class FlatlandTreeObservation(ObservationBuilder):
         super(FlatlandTreeObservation, self).__init__()
         self.search_strategy: TreeObservationSearchStrategy = search_strategy
         self.observation_return_type = observation_return_type
-        self.depth_limit = depth_limit
-        self.observation_depth_limit = observation_depth_limit
+        self.depth_limit = max(1, depth_limit)
+        self.observation_depth_limit = min(self.depth_limit, observation_depth_limit)
         self.observation_depth_limit_discount = observation_depth_limit_discount
         self.tree_feature_size = TREE_EDGE_FEATURE_SIZE
         self.render_debug_tree = render_debug_tree
