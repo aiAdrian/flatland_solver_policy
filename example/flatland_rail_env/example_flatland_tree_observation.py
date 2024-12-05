@@ -23,10 +23,10 @@ def create_obs_builder_object():
     return FlatlandTreeObservation(
         search_strategy=TreeObservationSearchStrategy.BreadthFirstSearch,
         observation_return_type=TreeObservationReturnType.Flatten,
-        depth_limit=16,
-        observation_depth_limit=4,
-        observation_depth_limit_discount=0.85,
-        activate_simplified=True,
+        depth_limit=3,
+        observation_depth_limit=3,
+        observation_depth_limit_discount=0.95,
+        activate_simplified=False,
         render_debug_tree=False)
 
 
@@ -96,10 +96,13 @@ def create_deadlock_avoidance_policy(environment: Environment,
 
 
 def create_ppo_policy(observation_space: int, action_space: int) -> LearningPolicy:
-    ppo_param = PPO_Param(hidden_size=128,
+    print('>> create_ppo_policy')
+    print('   - observation_space:', observation_space)
+    print('   - action_space:', action_space)
+    ppo_param = PPO_Param(hidden_size=64,
                           buffer_size=16_000,
                           buffer_min_size=0,
-                          batch_size=256,
+                          batch_size=512,
                           learning_rate=0.5e-4,
                           discount=0.95,
                           use_replay_buffer=True,
@@ -125,17 +128,12 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
                 agent.state == TrainState.DONE and \
                 env.raw_env._elapsed_steps < (env.raw_env._max_episode_steps - 5):
             reward[i] = 1.0
-
             reward_signal_updated[i] = 1.0
         elif reward_signal_updated[i] == 0.0 and terminal[i]:
-            reward[i] = 0.0
-
-            pass
-            if agent.position is not None:
-                r = distance_map[i, agent.position[0], agent.position[1], agent.direction]
-                reward[i] -= r / 1000.0
-            else:
-                reward[i] -= 1.0
+            reward[i] = -1.0
+            reward_signal_updated[i] = 1.0
+        else:
+            reward[i] -= 0.001
 
     return reward
 
@@ -148,7 +146,7 @@ if __name__ == "__main__":
         grid_mode=True,
         number_of_agents=10)
     environment.generate_and_persist_environments(generate_nbr_env=10,
-                                                  generate_agents_per_env=[1, 2, 3, 5],  # [1, 2, 3, 5, 10, 20, 30, 50],
+                                                  generate_agents_per_env=[1, 2],#, 3, 5],  # [1, 2, 3, 5, 10, 20, 30, 50],
                                                   overwrite_existing=False)
     environment.load_environments_from_path()
 

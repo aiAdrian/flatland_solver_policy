@@ -372,8 +372,11 @@ class FlatlandTreeObservation(ObservationBuilder):
         if obs.search_tree is not None:
             parents = obs.adjacency[:, 0]
             children = obs.adjacency[:, 1]
+
+            # get node depth
             shortest_path_to_root = networkx.shortest_path_length(obs.search_tree, obs.nodes[parents[0]])
             node_depths = [shortest_path_to_root.get(n) for i, n in enumerate(obs.nodes)]
+
             # compute for each node (child, the idx in the flatten array)
             node_idx = {}
             node_idx.update({parents[0]: 0})
@@ -384,9 +387,10 @@ class FlatlandTreeObservation(ObservationBuilder):
                 if i_p > 0:
                     edge = (obs.nodes[parent], obs.nodes[child])
                     idx_offset = max(0, min(children_pre_nodes, int(self._get_edge_action(edge)[0]) - 1))
-                calculated_idx = (2 * (parent_node_id + 1) - 1) + idx_offset
+                calculated_idx = (children_pre_nodes * (parent_node_id + 1) - 1) + idx_offset
                 node_idx.update({child: calculated_idx})
 
+            # reduce the tree
             for n_i, n in enumerate(obs.nodes):
                 if node_depths[n_i] == self.observation_depth_limit:
                     sub_tree = networkx.dfs_tree(obs.search_tree, n)
@@ -399,6 +403,7 @@ class FlatlandTreeObservation(ObservationBuilder):
                                 - self.observation_depth_limit_discount * node_depths[idx]
                             )
 
+            # burn the data into the flatten structure
             for n_idx in range(len(obs.nodes)):
                 level = node_depths[n_idx]
                 # only use for flatten nodes with level below equal observation_depth_limit
