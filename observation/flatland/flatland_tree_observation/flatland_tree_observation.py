@@ -366,7 +366,7 @@ class FlatlandTreeObservation(ObservationBuilder):
         return np.concatenate([obs.agent_attr, flatten_obj])
 
     def search_tree_flatten(self, obs: TreeObservationData):
-        children_pre_nodes = 4
+        children_pre_nodes = 3
         flatten_obs = np.zeros((children_pre_nodes ** (self.observation_depth_limit + 1)) * self.tree_feature_size)
 
         if obs.search_tree is not None:
@@ -383,7 +383,7 @@ class FlatlandTreeObservation(ObservationBuilder):
                 idx_offset = 0
                 if i_p > 0:
                     edge = (obs.nodes[parent], obs.nodes[child])
-                    idx_offset = max(0, min(3, int(self._get_edge_action(edge)[0])))
+                    idx_offset = max(0, min(children_pre_nodes, int(self._get_edge_action(edge)[0]) - 1))
                 calculated_idx = (2 * (parent_node_id + 1) - 1) + idx_offset
                 node_idx.update({child: calculated_idx})
 
