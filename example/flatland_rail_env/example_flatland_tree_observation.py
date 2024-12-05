@@ -125,8 +125,12 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
                 agent.state == TrainState.DONE and \
                 env.raw_env._elapsed_steps < (env.raw_env._max_episode_steps - 5):
             reward[i] = 1.0
+
             reward_signal_updated[i] = 1.0
         elif reward_signal_updated[i] == 0.0 and terminal[i]:
+            reward[i] = 0.0
+
+            pass
             if agent.position is not None:
                 r = distance_map[i, agent.position[0], agent.position[1], agent.direction]
                 reward[i] -= r / 1000.0
@@ -154,10 +158,10 @@ if __name__ == "__main__":
                             create_ppo_policy(environment.get_observation_space(), environment.get_action_space()),
                             FlatlandSimpleRenderer(environment) if do_rendering else None)
     solver.set_reward_shaper(flatland_reward_shaper)
-    solver.load_policy()
+    # solver.load_policy()
     solver.perform_training(max_episodes=5000, checkpoint_interval=environment.get_nbr_loaded_envs())
 
     solver_deadlock = FlatlandSolver(environment,
                                      create_deadlock_avoidance_policy(environment, environment.get_action_space()),
                                      FlatlandSimpleRenderer(environment) if do_rendering else None)
-    solver_deadlock.perform_training(max_episodes=5000)  # ~11min
+    solver_deadlock.perform_training(max_episodes=2 * environment.get_nbr_loaded_envs())  # ~11min
