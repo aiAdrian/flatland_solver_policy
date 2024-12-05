@@ -180,7 +180,7 @@ class FlatlandTreeObservation(ObservationBuilder):
         '''
         agent: EnvAgent = self.env.agents[handle]
         position, direction = FlatlandTreeObservation.get_agent_position_and_direction(agent)
-        agent_attr = self._get_shortest_walk_action(agent.handle, position, direction)
+        agent_attr = self._get_shortest_walk_action_one_hot_encoded(agent.handle, position, direction)
         agent_attr.append(agent.state)
 
         self.env.dev_obs_dict[handle] = set([])
@@ -329,9 +329,9 @@ class FlatlandTreeObservation(ObservationBuilder):
                         a[new_direction] = 1
             return fast_argmax(a)
 
-    def _get_shortest_walk_action(self, handle, position, direction):
+    def _get_shortest_walk_action_one_hot_encoded(self, handle, position, direction):
 
-        ret = [0, 0, 0, 0]
+        ret = [0, 0, 0]
         possible_transitions = self.env.rail.get_transitions(*position, direction)
         num_transitions = fast_count_nonzero(possible_transitions)
         if num_transitions == 1:
@@ -349,7 +349,7 @@ class FlatlandTreeObservation(ObservationBuilder):
             else:
                 min_distances.append(np.inf)
 
-        ret[np.argmin(min_distances)] = 1
+        ret = [1 if x == min(min_distances) else 0 for x in min_distances]
         return ret
 
     def _transform_observation(self, obs: TreeObservationData):
