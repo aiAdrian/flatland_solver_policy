@@ -8,7 +8,7 @@ from flatland.envs.rail_env import RailEnv
 
 from environment.flatland.rail_env import RailEnvironment
 from utils.progress_bar import ProgressBar
-
+from flatland.envs import malfunction_generators as mal_gen
 
 class RailEnvironmentPersistable(RailEnvironment):
     def __init__(self,
@@ -22,7 +22,8 @@ class RailEnvironmentPersistable(RailEnvironment):
                  grid_height=40,
                  grid_mode=True,
                  random_seed=25041978,
-                 silent=False):
+                 silent=False,
+                 disable_mal_functions=False):
         super(RailEnvironmentPersistable, self).__init__(
             obs_builder_object=obs_builder_object_creator(),
             max_rails_between_cities=max_rails_between_cities,
@@ -36,10 +37,11 @@ class RailEnvironmentPersistable(RailEnvironment):
             random_seed=random_seed,
             silent=silent
         )
+        self._disable_mal_functions = disable_mal_functions
         self._random_seed = random_seed
         self._loaded_env = []
         self._loaded_env_itr = 0
-
+        self._silent = silent
         self._obs_builder_object_creator = obs_builder_object_creator
         self._max_rails_between_cities = max_rails_between_cities
         self._max_rails_in_city = max_rails_in_city
@@ -54,8 +56,8 @@ class RailEnvironmentPersistable(RailEnvironment):
     def _clone(self, info_str: Union[str, None],
                number_of_agents: Union[int, None] = None,
                random_seed: Union[int, None] = None):
-        if info_str is not None:
-            print(' -> cache:', info_str, end=' ')
+        #if info_str is not None:
+        #    print(' -> cache:', info_str, end=' ')
         return RailEnvironmentPersistable(
             obs_builder_object_creator=self._obs_builder_object_creator,
             max_rails_between_cities=self._max_rails_between_cities,
@@ -113,9 +115,17 @@ class RailEnvironmentPersistable(RailEnvironment):
         if not os.path.exists(path):
             return
         if path is not None:
+            file_found = []
             for file in os.listdir(path):
                 if file.endswith(".pkl"):
-                    self._loaded_env.append(os.path.join(path, file))
+                    file_path = os.path.join(path, file)
+                    mod_time = os.path.getmtime(file_path)
+                    file_found.append((file_path, mod_time))
+            file_found.sort(key=lambda x: x[1])
+
+            for filename, mod_time in file_found:
+                self._loaded_env.append(filename)
+
             self._loaded_env_itr = 0
             print('Load environments from disk. # ', len(self._loaded_env), ' loaded.')
 
@@ -155,6 +165,13 @@ class RailEnvironmentPersistable(RailEnvironment):
     def _cached_reset(self, filename):
         env = self._clone(filename)
         RailEnvPersister.load(env.raw_env, filename)
+
+        if not self._silent:
+            print(filename)
+        if self._disable_mal_functions:
+            env.raw_env.malfunction_generator =  mal_gen.NoMalfunctionGen()
+            env.raw_env.malfunction_process_data = env.raw_env.malfunction_generator.get_process_data()
+
         state, info = env.raw_env.reset(False, False)
         return state, info, env
 
