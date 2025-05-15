@@ -12,7 +12,7 @@ class FlatlandSimpleRenderer(BaseRenderer):
         self.renderer = self._create_renderer()
         self.render_each_episode = render_each_episode
 
-    def _create_renderer(self, show_debug=False,
+    def _create_renderer(self, show_debug=True,
                          agent_render_variant=AgentRenderVariant.AGENT_SHOWS_OPTIONS_AND_BOX,
                          screen_width_scale=40, screen_height_scale=25):
         render_tool = RenderTool(self.env.get_raw_env(),
