@@ -96,7 +96,7 @@ def create_deadlock_avoidance_policy(environment: Environment,
                                    show_debug_plot=show_debug_plot)
 
 
-def create_ppo_policy(observation_space: int, action_space: int) -> LearningPolicy:
+def create_dp_ppo_policy(observation_space: int, action_space: int) -> LearningPolicy:
     print('>> create_ppo_policy')
     print('   - observation_space:', observation_space)
     print('   - action_space:', action_space)
@@ -172,7 +172,7 @@ if __name__ == "__main__":
     do_rendering = False
 
     solver = FlatlandSolver(environment,
-                            create_ppo_policy(environment.get_observation_space(), environment.get_action_space()),
+                            create_dp_ppo_policy(environment.get_observation_space(), environment.get_action_space()),
                             FlatlandSimpleRenderer(environment) if do_rendering else None)
     solver.set_reward_shaper(flatland_reward_shaper)
     solver.load_policy()
