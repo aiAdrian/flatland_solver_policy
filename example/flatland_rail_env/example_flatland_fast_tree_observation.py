@@ -23,9 +23,9 @@ from utils.training_evaluation_pipeline import policy_creator_list
 from utils.training_evaluation_pipeline import create_td3_policy, create_a2c_policy, create_ppo_policy, create_dddqn_policy, create_random_policy
 
 # Enforce disable GPU
-import torch
-torch.cuda.is_available = lambda : False
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# import torch
+# torch.cuda.is_available = lambda : False
+# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def create_deadlock_avoidance_policy(environment: Environment,
@@ -176,7 +176,7 @@ if __name__ == "__main__":
         grid_mode=True,
         number_of_agents=10)
     environment.generate_and_persist_environments(generate_nbr_env=10,
-                                                  generate_agents_per_env=[1, 2, 3, 5],  # [1, 2, 3, 5, 10, 20, 30, 50],
+                                                  generate_agents_per_env=[1, 1, 2, 2, 5],  # [1, 2, 3, 5, 10, 20, 30, 50],
                                                   overwrite_existing=False)
     environment.load_environments_from_path()
 
@@ -189,9 +189,9 @@ if __name__ == "__main__":
                                     FlatlandSimpleRenderer(environment) if do_rendering else None)
             solver.set_reward_shaper(flatland_reward_shaper)
             # solver.load_policy()
-            solver.perform_training(max_episodes=25000)
+            solver.perform_training(max_episodes=2000)
 
     solver_deadlock = FlatlandSolver(environment,
                                      create_deadlock_avoidance_policy(environment, environment.get_action_space()),
                                      FlatlandSimpleRenderer(environment) if do_rendering else None)
-    solver_deadlock.perform_training(max_episodes=50)
+    solver_deadlock.perform_training(max_episodes=200)
