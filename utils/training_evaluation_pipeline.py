@@ -12,7 +12,7 @@ from rendering.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver
 
 
-def crate_random_policy(observation_space: int, action_space: int) -> Policy:
+def create_random_policy(observation_space: int, action_space: int) -> Policy:
     return RandomPolicy(action_space)
 
 
@@ -105,7 +105,7 @@ policy_creator_list: List[Callable[[int, int], Policy]] = [create_td3_policy,   
                                                            create_a2c_policy,   #1
                                                            create_ppo_policy,   #2
                                                            create_dddqn_policy, #3
-                                                           crate_random_policy] #4
+                                                           create_random_policy] #4
 
 
 def execute_policy_comparison(env: Environment,
