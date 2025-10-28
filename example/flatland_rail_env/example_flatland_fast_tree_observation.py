@@ -1,7 +1,11 @@
-from typing import List
+from typing import Callable, Type, List, Union
 
 import numpy as np
+
+from flatland.envs.agent_utils import EnvAgent
+from flatland.envs.rail_env_action import RailEnvActions
 from flatland.envs.step_utils.states import TrainState
+from flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
 
 from environment.environment import Environment
 from example.flatland_rail_env.flatland_rail_env_persister import RailEnvironmentPersistable
@@ -9,13 +13,20 @@ from observation.flatland.flatland_fast_tree_observation.flatland_fast_tree_obse
     FlatlandFastTreeObservation
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
     DeadLockAvoidancePolicy
+from policy.learning_policy.learning_policy import LearningPolicy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
 from solver.multi_agent_base_solver import RewardList, TerminalList, InfoDict
+from policy.policy import Policy
+from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy, PPO_Param
 from utils.training_evaluation_pipeline import policy_creator_list
+from utils.training_evaluation_pipeline import create_td3_policy, create_a2c_policy, create_ppo_policy, create_dddqn_policy, create_random_policy
 
+# Enforce disable GPU
+import torch
+torch.cuda.is_available = lambda : False
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Idead based on https://discourse.aicrowd.com/t/accelerate-the-learning-increase-agents-behavior-at-higher-speed/3838
 
 def create_deadlock_avoidance_policy(environment: Environment,
                                      action_space: int,
@@ -24,6 +35,102 @@ def create_deadlock_avoidance_policy(environment: Environment,
                                    action_space,
                                    enable_eps=False,
                                    show_debug_plot=show_debug_plot)
+
+class DecisionPointPPOPolicy(PPOPolicy):
+    def __init__(self,
+                 state_size: int,
+                 action_size: int,
+                 in_parameters: Union[PPO_Param, None] = None):
+        super(DecisionPointPPOPolicy, self).__init__(state_size, action_size, in_parameters)
+        self._env: Union[Environment, None] = None
+        self.switchAnalyser: Union[RailroadSwitchAnalyser, None] = None
+        self.deadlock_avoidance_policy = None
+
+    def get_name(self):
+        return self.__class__.__name__
+
+
+    def step(self, handle, state, action, reward, next_state, done):
+        super(DecisionPointPPOPolicy, self).step(handle, state, action, reward, next_state, done)
+        if self.deadlock_avoidance_policy is not None:
+            self.deadlock_avoidance_policy.step(handle, state, action, reward, next_state, done)
+
+    def start_step(self, train):
+        super(DecisionPointPPOPolicy, self).start_step(train)
+        self.deadlock_avoidance_policy.start_step(train)
+
+    def reset(self, env: Environment):
+        self._env = env
+        self.switchAnalyser = RailroadSwitchAnalyser(env.raw_env)
+        super(DecisionPointPPOPolicy, self).reset(env)
+        if self.deadlock_avoidance_policy is None:
+            self.deadlock_avoidance_policy = create_deadlock_avoidance_policy(env, self.action_size)
+        self.deadlock_avoidance_policy.reset(env)
+
+
+    @staticmethod
+    def _get_agent_position_and_direction(agent: EnvAgent):
+        position = agent.position if agent.position is not None else agent.initial_position
+        direction = agent.direction if agent.direction is not None else agent.initial_direction
+        return position, direction
+
+    def act(self, handle: int, state, eps=0.):
+        agent: EnvAgent = self._env.raw_env.agents[handle]
+        position, direction = self._get_agent_position_and_direction(agent)
+        agent_at_railroad_switch, agent_near_to_railroad_switch, \
+            agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell = \
+            self.switchAnalyser.check_agent_decision(position=position, direction=direction)
+
+        # only if the agent is moving
+        if agent.state == TrainState.MOVING:
+            # when the agent is moving and the agent is not at a decision point - best option is just move forward
+            # near to all switches are important:
+            # (1) fork
+            #
+            #                |   /  |[---][---][
+            #                |  /   |
+            #      [---][-A-]| /    |[---][---][--
+            #      ->->->->-> switch >->->->->->
+            #
+            # (2) fusion
+            #
+            #      -][---][-B-]| \    |
+            #                  |  \   |
+            #      -][---][-C-]|   \  |[---][---
+            #      ->->->->->-> switch >->->->->->
+            #
+            # A, B, C are cases where the agent should not just walk forward (due deadlock)
+            # switch as well
+            if not agent_at_railroad_switch and not agent_near_to_railroad_switch_cell:
+                return RailEnvActions.MOVE_FORWARD
+
+        action = super(DecisionPointPPOPolicy, self).act(handle, state, eps)
+        if agent.state.is_on_map_state():
+            if action == RailEnvActions.MOVE_FORWARD:
+                dla_action = self.deadlock_avoidance_policy.act(handle, state, eps)
+                return dla_action
+                # if RailEnvActions.STOP_MOVING == dla_action:
+                #     return RailEnvActions.STOP_MOVING
+
+        return action
+
+def create_dp_ppo_policy(observation_space: int, action_space: int) -> LearningPolicy:
+    print('>> create_ppo_policy')
+    print('   - observation_space:', observation_space)
+    print('   - action_space:', action_space)
+    ppo_param = PPO_Param(hidden_size=128,
+                          buffer_size=16_000,
+                          buffer_min_size=0,
+                          batch_size=512,
+                          learning_rate=0.5e-4,
+                          discount=0.75,
+                          use_replay_buffer=True,
+                          use_gpu=True)
+    return DecisionPointPPOPolicy(observation_space, action_space, ppo_param)
+
+
+
+# Idead based on https://discourse.aicrowd.com/t/accelerate-the-learning-increase-agents-behavior-at-higher-speed/3838
 
 
 def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: InfoDict, env: Environment) -> List[float]:
@@ -35,10 +142,10 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
             r0 = distance_map[i, agent.initial_position[0], agent.initial_position[1], agent.initial_direction]
             r = r / max(1, r0)
             if np.isinf(r):
-                r = 10000000000
+                r = -1.0
             if np.isnan(r):
-                r = 10000000000
-            r = np.log(max(1, 1 + r))
+                r = -1.0
+            r = np.log(max(1.0, 1.0 + r))
             reward[i] *= r
         if agent.state == TrainState.DONE:
             reward[i] = 0.0
@@ -46,6 +153,19 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
             reward[i] = 1.0
         reward[i] /= env.get_num_agents()
     return reward
+
+
+
+policy_creator_list: List[Callable[[int, int], Policy]] = [
+                                                           # create_td3_policy,   #0
+                                                           # create_a2c_policy,   #1
+                                                           # create_ppo_policy,   #2
+                                                           # create_dddqn_policy, #3
+                                                           create_dp_ppo_policy, #4
+                                                           create_random_policy] #5
+
+
+
 
 
 if __name__ == "__main__":
@@ -69,7 +189,7 @@ if __name__ == "__main__":
                                     FlatlandSimpleRenderer(environment) if do_rendering else None)
             solver.set_reward_shaper(flatland_reward_shaper)
             # solver.load_policy()
-            solver.perform_training(max_episodes=5000)
+            solver.perform_training(max_episodes=25000)
 
     solver_deadlock = FlatlandSolver(environment,
                                      create_deadlock_avoidance_policy(environment, environment.get_action_space()),

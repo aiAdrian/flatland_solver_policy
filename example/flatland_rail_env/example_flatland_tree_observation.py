@@ -1,6 +1,7 @@
-from typing import List, Union
+from typing import Callable, Type, List, Union
 
 import numpy as np
+
 from flatland.envs.agent_utils import EnvAgent
 from flatland.envs.rail_env_action import RailEnvActions
 from flatland.envs.step_utils.states import TrainState
@@ -12,13 +13,21 @@ from observation.flatland.flatland_tree_observation.flatland_tree_observation im
     TreeObservationSearchStrategy, TreeObservationReturnType
 from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import \
     DeadLockAvoidancePolicy
-from policy.learning_policy.dddqn_policy.dddqn_policy import DDDQN_Param, DDDQNPolicy
 from policy.learning_policy.learning_policy import LearningPolicy
-from policy.learning_policy.ppo_policy.ppo_agent import PPO_Param, PPOPolicy
 from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
 from solver.flatland.flatland_solver import FlatlandSolver
 from solver.multi_agent_base_solver import RewardList, TerminalList, InfoDict
+from policy.policy import Policy
+from policy.learning_policy.ppo_policy.ppo_agent import PPOPolicy, PPO_Param
+from utils.training_evaluation_pipeline import policy_creator_list
+from utils.training_evaluation_pipeline import create_td3_policy, create_a2c_policy, create_ppo_policy, create_dddqn_policy, create_random_policy
+from utils.training_evaluation_pipeline import policy_creator_list
+from utils.training_evaluation_pipeline import create_td3_policy, create_a2c_policy, create_ppo_policy, create_dddqn_policy, create_random_policy
 
+# Enforce disable GPU
+import torch
+torch.cuda.is_available = lambda : False
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def create_obs_builder_object():
     return FlatlandTreeObservation(
@@ -30,6 +39,13 @@ def create_obs_builder_object():
         activate_simplified=False,
         render_debug_tree=False)
 
+def create_deadlock_avoidance_policy(environment: Environment,
+                                     action_space: int,
+                                     show_debug_plot=False) -> DeadLockAvoidancePolicy:
+    return DeadLockAvoidancePolicy(environment.get_raw_env(),
+                                   action_space,
+                                   enable_eps=False,
+                                   show_debug_plot=show_debug_plot)
 
 class DecisionPointPPOPolicy(PPOPolicy):
     def __init__(self,
@@ -39,14 +55,29 @@ class DecisionPointPPOPolicy(PPOPolicy):
         super(DecisionPointPPOPolicy, self).__init__(state_size, action_size, in_parameters)
         self._env: Union[Environment, None] = None
         self.switchAnalyser: Union[RailroadSwitchAnalyser, None] = None
+        self.deadlock_avoidance_policy = None
 
     def get_name(self):
         return self.__class__.__name__
 
-    def reset(self, e: Environment):
-        self._env = e
-        self.switchAnalyser = RailroadSwitchAnalyser(e.raw_env)
-        super(DecisionPointPPOPolicy, self).reset(e)
+
+    def step(self, handle, state, action, reward, next_state, done):
+        super(DecisionPointPPOPolicy, self).step(handle, state, action, reward, next_state, done)
+        if self.deadlock_avoidance_policy is not None:
+            self.deadlock_avoidance_policy.step(handle, state, action, reward, next_state, done)
+
+    def start_step(self, train):
+        super(DecisionPointPPOPolicy, self).start_step(train)
+        self.deadlock_avoidance_policy.start_step(train)
+
+    def reset(self, env: Environment):
+        self._env = env
+        self.switchAnalyser = RailroadSwitchAnalyser(env.raw_env)
+        super(DecisionPointPPOPolicy, self).reset(env)
+        if self.deadlock_avoidance_policy is None:
+            self.deadlock_avoidance_policy = create_deadlock_avoidance_policy(env, self.action_size)
+        self.deadlock_avoidance_policy.reset(env)
+
 
     @staticmethod
     def _get_agent_position_and_direction(agent: EnvAgent):
@@ -84,48 +115,29 @@ class DecisionPointPPOPolicy(PPOPolicy):
             if not agent_at_railroad_switch and not agent_near_to_railroad_switch_cell:
                 return RailEnvActions.MOVE_FORWARD
 
-        return super(DecisionPointPPOPolicy, self).act(handle, state, eps)
+        action = super(DecisionPointPPOPolicy, self).act(handle, state, eps)
+        if agent.state.is_on_map_state():
+            if action == RailEnvActions.MOVE_FORWARD:
+                dla_action = self.deadlock_avoidance_policy.act(handle, state, eps)
+                return dla_action
+                # if RailEnvActions.STOP_MOVING == dla_action:
+                #     return RailEnvActions.STOP_MOVING
 
-
-def create_deadlock_avoidance_policy(environment: Environment,
-                                     action_space: int,
-                                     show_debug_plot=False) -> DeadLockAvoidancePolicy:
-    return DeadLockAvoidancePolicy(environment.get_raw_env(),
-                                   action_space,
-                                   enable_eps=False,
-                                   show_debug_plot=show_debug_plot)
-
+        return action
 
 def create_dp_ppo_policy(observation_space: int, action_space: int) -> LearningPolicy:
     print('>> create_ppo_policy')
     print('   - observation_space:', observation_space)
     print('   - action_space:', action_space)
-    ppo_param = PPO_Param(hidden_size=64,
+    ppo_param = PPO_Param(hidden_size=128,
                           buffer_size=16_000,
                           buffer_min_size=0,
                           batch_size=512,
                           learning_rate=0.5e-4,
-                          discount=0.95,
+                          discount=0.75,
                           use_replay_buffer=True,
                           use_gpu=True)
     return DecisionPointPPOPolicy(observation_space, action_space, ppo_param)
-
-
-def create_dddqn_policy(observation_space: int, action_space: int) -> LearningPolicy:
-    print('>> create_dddqn_policy')
-    print('   - observation_space:', observation_space)
-    print('   - action_space:', action_space)
-    param = DDDQN_Param(hidden_size=128,
-                        buffer_size=32_000,
-                        buffer_min_size=0,
-                        batch_size=512,
-                        learning_rate=0.5e-3,
-                        discount=0.95,
-                        update_every=5,
-                        tau=0.5e-2,
-                        use_gpu=True)
-    return DDDQNPolicy(observation_space, action_space, param)
-
 
 
 
@@ -157,7 +169,22 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
     return reward
 
 
+
+policy_creator_list: List[Callable[[int, int], Policy]] = [
+                                                           # create_td3_policy,   #0
+                                                           # create_a2c_policy,   #1
+                                                           create_ppo_policy,   #2
+                                                           # create_dddqn_policy, #3
+                                                           create_dp_ppo_policy, #4
+                                                           create_random_policy] #5
+
+
+
+
 if __name__ == "__main__":
+    do_rendering = False
+    do_training = True
+
     environment = RailEnvironmentPersistable(
         obs_builder_object_creator=create_obs_builder_object,
         grid_width=30,
@@ -169,16 +196,19 @@ if __name__ == "__main__":
                                                   overwrite_existing=False)
     environment.load_environments_from_path()
 
-    do_rendering = False
-
-    solver = FlatlandSolver(environment,
-                            create_dp_ppo_policy(environment.get_observation_space(), environment.get_action_space()),
-                            FlatlandSimpleRenderer(environment) if do_rendering else None)
-    solver.set_reward_shaper(flatland_reward_shaper)
-    solver.load_policy()
-    solver.perform_training(max_episodes=5000, checkpoint_interval=environment.get_nbr_loaded_envs())
 
     solver_deadlock = FlatlandSolver(environment,
                                      create_deadlock_avoidance_policy(environment, environment.get_action_space()),
                                      FlatlandSimpleRenderer(environment) if do_rendering else None)
-    solver_deadlock.perform_training(max_episodes=2 * environment.get_nbr_loaded_envs())  # ~11min
+    solver_deadlock.perform_training(max_episodes=40)
+
+
+    if do_training:
+        for pcl in policy_creator_list:
+            solver = FlatlandSolver(environment,
+                                    pcl(environment.get_observation_space(), environment.get_action_space()),
+                                    FlatlandSimpleRenderer(environment) if do_rendering else None)
+            solver.set_reward_shaper(flatland_reward_shaper)
+            # solver.load_policy()
+            solver.perform_training(max_episodes=1000)
+
