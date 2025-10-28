@@ -200,7 +200,7 @@ if __name__ == "__main__":
     solver_deadlock = FlatlandSolver(environment,
                                      create_deadlock_avoidance_policy(environment, environment.get_action_space()),
                                      FlatlandSimpleRenderer(environment) if do_rendering else None)
-    solver_deadlock.perform_training(max_episodes=40)
+    solver_deadlock.perform_training(max_episodes=200)
 
 
     if do_training:
