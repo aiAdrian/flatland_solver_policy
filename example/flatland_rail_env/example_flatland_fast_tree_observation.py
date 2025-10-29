@@ -200,7 +200,7 @@ if __name__ == "__main__":
         grid_mode=True,
         number_of_agents=10)
     environment.generate_and_persist_environments(generate_nbr_env=10,
-                                                  generate_agents_per_env=[1, 1, 2, 2, 5],  # [1, 2, 3, 5, 10, 20, 30, 50],
+                                                  generate_agents_per_env=[1, 2, 3, 4, 5],  # [1, 2, 3, 5, 10, 20, 30, 50],
                                                   overwrite_existing=False)
     environment.load_environments_from_path()
 
