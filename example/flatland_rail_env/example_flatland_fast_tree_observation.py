@@ -23,9 +23,9 @@ from utils.training_evaluation_pipeline import policy_creator_list
 from utils.training_evaluation_pipeline import create_td3_policy, create_a2c_policy, create_ppo_policy, create_dddqn_policy, create_random_policy
 
 # Enforce disable GPU
-# import torch
-# torch.cuda.is_available = lambda : False
-# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+import torch
+torch.cuda.is_available = lambda : False
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def create_deadlock_avoidance_policy(environment: Environment,
@@ -40,32 +40,39 @@ class DecisionPointPPOPolicy(PPOPolicy):
     def __init__(self,
                  state_size: int,
                  action_size: int,
-                 in_parameters: Union[PPO_Param, None] = None):
+                 in_parameters: Union[PPO_Param, None] = None,
+                 use_deadlock_avoidance_policy = False):
+        self.deadlock_avoidance_policy = None
+        self.use_deadlock_avoidance_policy = use_deadlock_avoidance_policy
         super(DecisionPointPPOPolicy, self).__init__(state_size, action_size, in_parameters)
         self._env: Union[Environment, None] = None
         self.switchAnalyser: Union[RailroadSwitchAnalyser, None] = None
-        self.deadlock_avoidance_policy = None
 
     def get_name(self):
+        if self.use_deadlock_avoidance_policy:
+            return self.__class__.__name__ + "_DLA"
         return self.__class__.__name__
 
 
     def step(self, handle, state, action, reward, next_state, done):
         super(DecisionPointPPOPolicy, self).step(handle, state, action, reward, next_state, done)
-        if self.deadlock_avoidance_policy is not None:
-            self.deadlock_avoidance_policy.step(handle, state, action, reward, next_state, done)
+        if self.use_deadlock_avoidance_policy:
+            if self.deadlock_avoidance_policy is not None:
+                self.deadlock_avoidance_policy.step(handle, state, action, reward, next_state, done)
 
     def start_step(self, train):
         super(DecisionPointPPOPolicy, self).start_step(train)
-        self.deadlock_avoidance_policy.start_step(train)
+        if self.use_deadlock_avoidance_policy:
+            self.deadlock_avoidance_policy.start_step(train)
 
     def reset(self, env: Environment):
         self._env = env
         self.switchAnalyser = RailroadSwitchAnalyser(env.raw_env)
         super(DecisionPointPPOPolicy, self).reset(env)
-        if self.deadlock_avoidance_policy is None:
-            self.deadlock_avoidance_policy = create_deadlock_avoidance_policy(env, self.action_size)
-        self.deadlock_avoidance_policy.reset(env)
+        if self.use_deadlock_avoidance_policy:
+            if self.deadlock_avoidance_policy is None:
+                self.deadlock_avoidance_policy = create_deadlock_avoidance_policy(env, self.action_size)
+            self.deadlock_avoidance_policy.reset(env)
 
 
     @staticmethod
@@ -105,12 +112,13 @@ class DecisionPointPPOPolicy(PPOPolicy):
                 return RailEnvActions.MOVE_FORWARD
 
         action = super(DecisionPointPPOPolicy, self).act(handle, state, eps)
-        if agent.state.is_on_map_state():
-            if action == RailEnvActions.MOVE_FORWARD:
-                dla_action = self.deadlock_avoidance_policy.act(handle, state, eps)
-                return dla_action
-                # if RailEnvActions.STOP_MOVING == dla_action:
-                #     return RailEnvActions.STOP_MOVING
+        if self.use_deadlock_avoidance_policy:
+            if agent.state.is_on_map_state():
+                if action == RailEnvActions.MOVE_FORWARD:
+                    dla_action = self.deadlock_avoidance_policy.act(handle, state, eps)
+                    return dla_action
+                    # if RailEnvActions.STOP_MOVING == dla_action:
+                    #     return RailEnvActions.STOP_MOVING
 
         return action
 
@@ -126,47 +134,63 @@ def create_dp_ppo_policy(observation_space: int, action_space: int) -> LearningP
                           discount=0.75,
                           use_replay_buffer=True,
                           use_gpu=True)
-    return DecisionPointPPOPolicy(observation_space, action_space, ppo_param)
+    return DecisionPointPPOPolicy(observation_space, action_space, ppo_param, False)
 
 
+def create_dp_ppo_policy_dla(observation_space: int, action_space: int) -> LearningPolicy:
+    print('>> create_ppo_policy_dla')
+    print('   - observation_space:', observation_space)
+    print('   - action_space:', action_space)
+    ppo_param = PPO_Param(hidden_size=128,
+                          buffer_size=16_000,
+                          buffer_min_size=0,
+                          batch_size=512,
+                          learning_rate=0.5e-4,
+                          discount=0.75,
+                          use_replay_buffer=True,
+                          use_gpu=True)
+    return DecisionPointPPOPolicy(observation_space, action_space, ppo_param, True)
 
-# Idead based on https://discourse.aicrowd.com/t/accelerate-the-learning-increase-agents-behavior-at-higher-speed/3838
+
+global reward_signal_updated
+reward_signal_updated = None
 
 
 def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: InfoDict, env: Environment) -> List[float]:
+    global reward_signal_updated
     distance_map = env.raw_env.distance_map.get()
+    if env.raw_env._elapsed_steps < 5:
+        reward_signal_updated = None
+    if reward_signal_updated is None:
+        reward_signal_updated = np.zeros(len(env.raw_env.agents))
     for i, agent in enumerate(env.raw_env.agents):
-        reward[i] = -1.0
-        if agent.position is not None:
-            r = distance_map[i, agent.position[0], agent.position[1], agent.direction]
-            r0 = distance_map[i, agent.initial_position[0], agent.initial_position[1], agent.initial_direction]
-            r = r / max(1, r0)
-            if np.isinf(r):
-                r = -1.0
-            if np.isnan(r):
-                r = -1.0
-            r = np.log(max(1.0, 1.0 + r))
-            reward[i] *= r
-        if agent.state == TrainState.DONE:
-            reward[i] = 0.0
-        if terminal[i] and agent.state == TrainState.DONE and agent.arrival_time == env.raw_env._elapsed_steps:
+        reward[i] = 0.0
+        if terminal[i] and \
+                reward_signal_updated[i] == 0 and \
+                agent.state == TrainState.DONE and \
+                env.raw_env._elapsed_steps < (env.raw_env._max_episode_steps - 5):
             reward[i] = 1.0
-        reward[i] /= env.get_num_agents()
+            reward_signal_updated[i] = 1.0
+        elif reward_signal_updated[i] == 0.0 and terminal[i]:
+            reward[i] = -1.0
+            reward_signal_updated[i] = 1.0
+        else:
+            reward[i] -= 0.001
+
     return reward
 
 
 
+
 policy_creator_list: List[Callable[[int, int], Policy]] = [
-                                                           # create_td3_policy,   #0
-                                                           # create_a2c_policy,   #1
-                                                           # create_ppo_policy,   #2
-                                                           # create_dddqn_policy, #3
+                                                           create_td3_policy,   #0
+                                                           create_a2c_policy,   #1
+                                                           create_ppo_policy,   #2
+                                                           create_dddqn_policy, #3
                                                            create_dp_ppo_policy, #4
-                                                           create_random_policy] #5
-
-
-
-
+                                                           create_dp_ppo_policy_dla, #5
+                                                           create_random_policy #6
+                                                           ]
 
 if __name__ == "__main__":
     environment = RailEnvironmentPersistable(
