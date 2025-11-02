@@ -54,7 +54,7 @@ class ExperimentalAStarObs(ObservationBuilder):
     Nur Observation wird verändert, keine Policy/Reward.
     """
     def __init__(self,
-                 max_path_length: int = 20,
+                 max_path_length: int = 60,
                  lookahead_cost_limit: int = 40,
                  max_agent_dist: int = 10):
         super().__init__()
@@ -64,17 +64,7 @@ class ExperimentalAStarObs(ObservationBuilder):
         self.env = None
         self.agent_map = None
 
-        # Layout:
-        # 0..3 base: [dist_to_goal_clipped, rel_goal_dir (-1/0/1 mapped->-1..1), goal_visible (0/1), agents_on_path]
-        # 4..11 agent status & local cell: [active, waiting, stopped, at_goal, is_deadlock_cell, num_transitions (0..4), is_switch, is_junction]
-        # 12..15 transitions binary [up,right,down,left]
-        # 16 dist_to_next_agent (clipped)
-        # 17 dist from distance_map (sigmoid)
-        # Then lookahead: max_path_length * 7 features per cell
-        self.feature_size_per_cell = 9
-        self.feature_size_header = 17
-        self.feature_size_visited_info_len = 3 * 3 * 0
-        self._vec_len = self.feature_size_header + self.max_path_length * self.feature_size_per_cell + self.feature_size_visited_info_len
+        self._vec_len = 15
         self.observation_space = np.zeros(self._vec_len, dtype=np.float32)
 
     def reset(self):
@@ -108,101 +98,47 @@ class ExperimentalAStarObs(ObservationBuilder):
         if pos is None or target is None:
             return np.zeros(self._vec_len, dtype=np.float32)
 
-        # A* with cost limit and respecting relative moves (left, straight, right)
-        path, visited_info = self._a_star_limited(handle, pos, target, dir, self.max_path_length, self.lookahead_cost_limit)
 
         vec = []
 
         # 1) Distanz (clipped + normalized)
-        dist = len(path) if path else self.max_path_length + 1
-        dist_clipped = min(dist, self.max_path_length)
-        vec.append(dist_clipped / float(self.max_path_length))  # 0..1
         dist = distance_map[handle, pos[0], pos[1], dir]
-        current_dist_value = 1.0 / (1.0 + np.exp(-dist) if dist is not None else -1 )
+        v = distance_map[handle]
+        max_dist = np.max(v[v!=np.inf])
+        dist_clipped = min(dist, max_dist)
+        vec.append(dist_clipped / float(max_dist))  # 0..1
+
+        dist = distance_map[handle, pos[0], pos[1], dir]
+        current_dist_value = 1.0 / (1.0 + np.exp(-dist) if dist != np.inf else -1 )
         vec.append(current_dist_value)
 
+        # 2) Zielrichtung -> switch one-step ahead
+        transitions = self.env.rail.get_transitions(*pos, dir)
+        for nd in [(dir + i) % 4 for i in range(-1, 2)]:  # left, straight, right
+            if transitions[nd]:
+                npos = get_new_position(pos, nd)
+                dist = distance_map[handle, npos[0], npos[1], nd]
+                dist_clipped = min(dist, max_dist)
+                vec.append(dist_clipped / float(max_dist))  # 0..1
 
-        # 2) Zielrichtung global projected to relative: -1 left,0 straight,1 right,2 behind -> map to -1..1
-        rel = self._relative_direction(pos, dir, target)
-        vec.append(float(rel) / 2.0)  # maps {-1,0,1,2} -> approx [-0.5,0,0.5,1]
+                # A* with cost limit and respecting relative moves (left, straight, right)
+                path, visited_info = self._a_star_limited(handle, pos, target, dir, self.max_path_length, self.lookahead_cost_limit)
+                # 4) Anzahl Agenten auf Pfad (clipped & normalized)
+                agents_on_path = self._count_agents(path, handle)
+                vec.append(min(agents_on_path, len(self.env.agents)) / len(self.env.agents))
 
-        # 3) Sichtlinie
-        vec.append(1.0 if self._is_target_visible(pos, target) else 0.0)
-
-        # 4) Anzahl Agenten auf Pfad (clipped & normalized)
-        agents_on_path = self._count_agents(path, handle)
-        vec.append(min(agents_on_path, 10) / 10.0)
+                # 8) distance to next agent in forward direction (clipped & normalized)
+                vec.append(self._distance_to_next_agent(pos, dir) / float(self.max_agent_dist))
+            else:
+                vec.append(-1)
+                vec.append(-1)
+                vec.append(-1)
 
         # 5) Agentenstatus bits
         vec.append(1.0 if agent.state == TrainState.MOVING else 0.0)
         vec.append(1.0 if agent.state == TrainState.WAITING else 0.0)
         vec.append(1.0 if agent.state == TrainState.DONE or agent.state == TrainState.WAITING else 0.0)
         vec.append(1.0 if pos == target else 0.0)
-
-        # 6) Local cell properties (deadlock possibility, num transitions normalized, is_switch,is_junction)
-        transitions = self.env.rail.get_transitions(*pos, dir)
-        num_trans = sum(transitions)
-        vec.append(1.0 if num_trans == 0 else 0.0)  # dead-end (danger)
-        vec.append(min(num_trans / 4.0, 1.0))       # 0..1
-        vec.append(1.0 if 1 < num_trans <= 2 else 0.0)
-        vec.append(1.0 if num_trans > 2 else 0.0)
-
-        # 7) Transitions one-hot
-        vec.extend([1.0 if t else 0.0 for t in transitions])
-
-        # 8) distance to next agent in forward direction (clipped & normalized)
-        vec.append(self._distance_to_next_agent(pos, dir) / float(self.max_agent_dist))
-
-        # 9) Lookahead path cells: for each cell encode 7 features:
-        #    [rel_pos_dir_to_agent (left/straight/right/behind -> mapped -1..1),
-        #     occupied (0/1),
-        #     occupant_dir_norm (-1..1 or -1 if none),
-        #     cell_num_trans_norm (0..1),
-        #     is_junction (0/1),
-        #     is_switch (0/1),
-        #     collision_risk (0..1 predicted)]
-        per_cell = 9
-        for i in range(self.max_path_length):
-            if i < len(path):
-                cpos = path[i]
-                # predicted relative direction from current agent heading to that cell
-                rel_dir = self._relative_direction_to_cell(pos, dir, cpos)
-                rel_norm = float(rel_dir) / 2.0
-                occ_id = self.agent_map[cpos] if (0 <= cpos[0] < self.env.height and 0 <= cpos[1] < self.env.width) else -1
-                occupied = 1.0 if occ_id >= 0 else 0.0
-                occ_dir = -1.0
-                if occ_id >= 0:
-                    occ_agent = self.env.agents[occ_id]
-                    if occ_agent.direction is not None:
-                        occ_dir = float(occ_agent.direction) / 3.0 * 2.0 - 1.0  # map 0..3 -> -1..1
-                t = (self.env.rail.get_transitions(*cpos, 0) +
-                     self.env.rail.get_transitions(*cpos, 1) +
-                     self.env.rail.get_transitions(*cpos, 2) +
-                     self.env.rail.get_transitions(*cpos, 3))
-                num_t = sum(t)
-                num_t_norm = min(num_t / 4.0, 1.0)
-                is_junction = 1.0 if num_t > 2 else 0.0
-                is_switch = 1.0 if 1 < num_t <= 2 else 0.0
-                # simple collision risk: if cell occupied and occupant not moving away relative to agent
-                collision_risk = 0.0
-                if occ_id >= 0 and occ_agent.direction is not None:
-                    # if occupant heading toward the cell ahead of agent soon (naive)
-                    collision_risk = 1.0 if occ_agent.direction == dir else 0.5
-
-                dist = distance_map[handle, pos[0], pos[1], dir]
-                dist_value = 1.0 / (1.0 + np.exp(-dist) if dist is not None else -1 )
-                delta_dist = current_dist_value - dist_value if current_dist_value > 0 else -1
-                vec.extend([rel_norm, occupied, occ_dir, num_t_norm, is_junction, is_switch, collision_risk, dist_value, delta_dist])
-            else:
-                # padding
-                vec.extend([0.0] * per_cell)
-
-        if self.feature_size_visited_info_len > 0:
-            f_info = [-1]*self.feature_size_visited_info_len
-            visited_obs = visited_info + f_info
-            visited_obs = visited_obs[:self.feature_size_visited_info_len]
-
-            vec = vec + visited_obs
 
         # return fixed-size numpy vector
         arr = np.array(vec, dtype=np.float32)
@@ -315,63 +251,6 @@ class ExperimentalAStarObs(ObservationBuilder):
             if p is not None and p in s:
                 cnt += 1
         return cnt
-
-    def _relative_direction(self, pos: Tuple[int, int], dir: int, target: Tuple[int, int]) -> int:
-        # return -1 left, 0 straight, 1 right, 2 behind
-        dx = target[0] - pos[0]
-        dy = target[1] - pos[1]
-        if dx == 0 and dy == 0:
-            return 0
-        # map absolute vector to relative in agent frame
-        # agent frame: 0=up,1=right,2=down,3=left
-        # compute the primary direction to target
-        if abs(dx) >= abs(dy):
-            primary = 2 if dx > 0 else 0
-        else:
-            primary = 1 if dy > 0 else 3
-        rel = (primary - dir) % 4
-        if rel == 3:
-            return -1
-        if rel == 0:
-            return 0
-        if rel == 1:
-            return 1
-        return 2
-
-    def _relative_direction_to_cell(self, pos: Tuple[int, int], dir: int, cell: Tuple[int, int]) -> int:
-        dx = cell[0] - pos[0]
-        dy = cell[1] - pos[1]
-        if dx == 0 and dy == 0:
-            return 0
-        if abs(dx) >= abs(dy):
-            primary = 2 if dx > 0 else 0
-        else:
-            primary = 1 if dy > 0 else 3
-        rel = (primary - dir) % 4
-        if rel == 3:
-            return -1
-        if rel == 0:
-            return 0
-        if rel == 1:
-            return 1
-        return 2
-
-    def _is_target_visible(self, pos: Tuple[int, int], target: Tuple[int, int]) -> bool:
-        # straight line visibility along grid (only if aligned)
-        if pos[0] == target[0]:
-            y0, y1 = sorted([pos[1], target[1]])
-            for y in range(y0 + 1, y1):
-                # use rail.grid presence (0 means no track)
-                if self.env.rail.grid[pos[0], y] == 0:
-                    return False
-            return True
-        if pos[1] == target[1]:
-            x0, x1 = sorted([pos[0], target[0]])
-            for x in range(x0 + 1, x1):
-                if self.env.rail.grid[x, pos[1]] == 0:
-                    return False
-            return True
-        return False
 
     def _distance_to_next_agent(self, pos: Tuple[int, int], dir: int) -> float:
         # walk forward until find agent or hit bounds; clip at max_agent_dist
@@ -579,10 +458,7 @@ policy_creator_list: List[Callable[[int, int], Policy]] = [
                                                            ]
 
 
-# policy_creator_list = [policy_creator_list[4]]
-# policy_creator_list = [policy_creator_list[2]]
-# policy_creator_list = [policy_creator_list[6]]
-policy_creator_list = [policy_creator_list[5]]
+policy_creator_list = [policy_creator_list[2]]
 
 if __name__ == "__main__":
     do_rendering = False
@@ -613,5 +489,5 @@ if __name__ == "__main__":
                                     FlatlandSimpleRenderer(environment) if do_rendering else None)
             solver.set_reward_shaper(flatland_reward_shaper)
             # solver.load_policy()
-            solver.perform_training(max_episodes=6738)
+            solver.perform_training(max_episodes=1000)
 
