@@ -447,18 +447,18 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
 
 
 policy_creator_list: List[Callable[[int, int], Policy]] = [
-                                                           create_td3_policy,   #0
-                                                           create_a2c_policy,   #1
-                                                           create_ppo_policy,   #2
-                                                           create_dddqn_policy, #3
-                                                           create_dp_ppo_policy, #4
-                                                           create_dp_ppo_policy_dla, #5
-                                                           create_ppo_policy_dla, #6
-                                                           create_random_policy #7
+                                                           create_random_policy,     #0
+                                                           create_td3_policy,        #1
+                                                           create_a2c_policy,        #2
+                                                           create_ppo_policy,        #3
+                                                           create_dddqn_policy,      #4
+                                                           create_dp_ppo_policy,     #5
+                                                           create_dp_ppo_policy_dla, #6
+                                                           create_ppo_policy_dla     #7
                                                            ]
 
 
-policy_creator_list = [policy_creator_list[2]]
+test_with_deadlock_avoidance_policy = True
 
 if __name__ == "__main__":
     do_rendering = False
@@ -475,19 +475,19 @@ if __name__ == "__main__":
                                                   overwrite_existing=False)
     environment.load_environments_from_path()
 
-    if False:
+    if test_with_deadlock_avoidance_policy:
         solver_deadlock = FlatlandSolver(environment,
                                          create_deadlock_avoidance_policy(environment, environment.get_action_space()),
                                          FlatlandSimpleRenderer(environment) if do_rendering else None)
-        solver_deadlock.perform_training(max_episodes=200)
+        solver_deadlock.perform_training(max_episodes=1000)
 
-
-    if do_training:
-        for pcl in policy_creator_list:
-            solver = FlatlandSolver(environment,
-                                    pcl(environment.get_observation_space(), environment.get_action_space()),
-                                    FlatlandSimpleRenderer(environment) if do_rendering else None)
-            solver.set_reward_shaper(flatland_reward_shaper)
-            # solver.load_policy()
-            solver.perform_training(max_episodes=1000)
+    else:
+        if do_training:
+            for pcl in policy_creator_list:
+                solver = FlatlandSolver(environment,
+                                        pcl(environment.get_observation_space(), environment.get_action_space()),
+                                        FlatlandSimpleRenderer(environment) if do_rendering else None)
+                solver.set_reward_shaper(flatland_reward_shaper)
+                # solver.load_policy()
+                solver.perform_training(max_episodes=1000)
 
