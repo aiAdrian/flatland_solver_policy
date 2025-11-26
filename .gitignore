@@ -1,0 +1,24 @@
+# Python
+**/*.pyc
+**/__pycache__/
+.mypy_cache/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.xml
+
+# Training outputs
+**/runs/
+**/generated_envs*/
+**/training_output/
+
+# OS
+.DS_Store
+Thumbs.db
