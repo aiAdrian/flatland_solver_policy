@@ -139,6 +139,7 @@ class RailEnvironmentPersistable(RailEnvironment):
             self._reset_cached_rail_env(loaded_env.raw_env)
             self._copy_attribute_from_env(loaded_env.raw_env)
  
+            # reset obs builder -> send signal to set env / reset
             loaded_env.raw_env.obs_builder.set_env(self.raw_env)
             loaded_env.raw_env.obs_builder.reset()
 
@@ -147,7 +148,6 @@ class RailEnvironmentPersistable(RailEnvironment):
                 self._loaded_env_itr = 0
 
             return state, info
-        
         state, info = self.raw_env.reset()
         return state, info
 
