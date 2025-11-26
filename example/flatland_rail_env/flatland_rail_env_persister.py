@@ -57,7 +57,7 @@ class RailEnvironmentPersistable(RailEnvironment):
                number_of_agents: Union[int, None] = None,
                random_seed: Union[int, None] = None):
         #if info_str is not None:
-        #    print(' -> cache:', info_str, end=' ')
+        #    print(' -> cache:', info_str, end=' ') 
         return RailEnvironmentPersistable(
             obs_builder_object_creator=self._obs_builder_object_creator,
             max_rails_between_cities=self._max_rails_between_cities,
@@ -138,12 +138,16 @@ class RailEnvironmentPersistable(RailEnvironment):
             state, info, loaded_env = self._cached_reset(filename)
             self._reset_cached_rail_env(loaded_env.raw_env)
             self._copy_attribute_from_env(loaded_env.raw_env)
+ 
+            loaded_env.raw_env.obs_builder.set_env(self.raw_env)
+            loaded_env.raw_env.obs_builder.reset()
 
             self._loaded_env_itr += 1
             if self._loaded_env_itr >= len(self._loaded_env):
                 self._loaded_env_itr = 0
 
             return state, info
+        
         state, info = self.raw_env.reset()
         return state, info
 
