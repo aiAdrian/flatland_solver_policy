@@ -134,6 +134,7 @@ class RailEnvironmentPersistable(RailEnvironment):
 
     def reset(self):
         if len(self._loaded_env) > 0:
+            print("")
             filename = self._loaded_env[self._loaded_env_itr]
             state, info, loaded_env = self._cached_reset(filename)
             self._reset_cached_rail_env(loaded_env.raw_env)
