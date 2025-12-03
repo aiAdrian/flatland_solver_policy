@@ -133,7 +133,7 @@ class ExperimentalObservation(ObservationBuilder):
     @staticmethod
     def getObservationSize() -> int:
         # 7 agent_state + 4 switch + 18 transition (3×6) + 1 target = 30
-        return 37 + ExperimentalObservation.getObservationOthersExtraSize()
+        return 41 + ExperimentalObservation.getObservationOthersExtraSize()
 
     def reset(self):
         # Initialize analyzers
@@ -261,6 +261,7 @@ class ExperimentalObservation(ObservationBuilder):
         vec.append(int(new_position != target) * 2.0 - 1.0)
 
 
+        min_distances = [0, 0, 0, 0]
         dir = new_direction
         pos = new_position
         # Direction Analysis [11-28]: LEFT, FORWARD, RIGHT
@@ -268,9 +269,10 @@ class ExperimentalObservation(ObservationBuilder):
             new_direction = (dir + action_i) % 4
             if transitions[new_direction]:
                 npos = get_new_position(pos, new_direction)
+                min_distances[new_direction] = distance_map[handle, npos[0], npos[1], new_direction]   
 
                 self.walker.clear(self.agent_map)
-                self.walker.walk_to_target(handle, npos, new_direction, max_step=50)
+                self.walker.walk_to_target(handle, npos, new_direction, max_step=25)
 
                 for d in self.walker.path:
                     visited.append(d)
@@ -326,8 +328,13 @@ class ExperimentalObservation(ObservationBuilder):
                 vec.append(-1.0)
                 vec.append(-1.0)
 
-        # Target Status [29]
-        vec.append(1.0 if pos == target else -1.0)
+
+        idx = np.argmin(min_distances)
+        for i in range(4):  
+            if i == idx:
+                vec.append(1.0)
+            else:
+                vec.append(-1.0)        
 
         arr = np.array(vec, dtype=np.float32)
         vec_len = (ExperimentalObservation.getObservationSize() -
@@ -616,22 +623,25 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 # ENVIRONMENT & TRAINING SETUP
 # =============================================================================
 
+temporal_window = 1  # MUST MATCH create_temporal_obs_builder_object()
+
 def create_temporal_obs_builder_object():
     """Factory for TemporalMultiAgentObservation"""
-    return TemporalMultiAgentObservation(temporal_window=3)
+    return TemporalMultiAgentObservation(temporal_window=temporal_window)
 
 
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     hidden_size=128,
-    batch_size=512,  # ⚡ Increased for stable convergence to 100%
-    learning_rate=2e-4,  # ⚡ Reduced for fine-tuning to perfection
-    discount=0.995,
+    batch_size=256,  # ⚡ Kleinere Batches = weniger Overfitting, stabileres Lernen
+    learning_rate=2e-4,  # ⚡ Erhöht: Schnelleres Lernen, aber stabil mit clipping
+    discount=0.98,
+    gae_lambda=0.98,
     use_gpu=True,
-    max_episodes_in_training_memory=40,  # ⚡ Store more episodes for full coverage
+    max_episodes_in_training_memory=120,  # ⚡ Store more episodes for full coverage
+    k_epochs=3,  # ⚡ Mehr Epochs = bessere Konvergenz ohne Overfitting
     batch_fraction=0.1,
-    k_epochs=3,  # ⚡ More epochs = better memorization
-    max_batches_per_training=15,
-    temporal_window=3  # NEW: Temporal dimension
+    max_batches_per_training=None,
+    temporal_window=temporal_window # ⚡ MUST MATCH create_temporal_obs_builder_object()!
 )
 
 def create_ma_ppo_agent(observation_space: int, action_space: int) -> LearningPolicy:
@@ -643,7 +653,7 @@ def create_ma_ppo_agent(observation_space: int, action_space: int) -> LearningPo
     print('>> MARL_ATTENTION_TEMPORAL_PPOPolicy (Temporal Transformer)')
     print('   - observation_space:', observation_space)
     print('   - action_space:', action_space)
-    print('   - temporal_window: 3 timesteps')
+    print('   - temporal_window:', temporal_window)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
         
     return MARL_ATTENTION_TEMPORAL_PPOPolicy(
@@ -664,7 +674,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int) -> Learnin
     print('>> MARL_ATT_DecisionPointPolicy (Temporal Transformer)')
     print('   - observation_space:', observation_space)
     print('   - action_space:', action_space)
-    print('   - temporal_window: 3 timesteps')
+    print('   - temporal_window:', temporal_window)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
         
     return MARL_ATT_DecisionPointPolicy(
@@ -687,7 +697,7 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int) -> Lea
     print('>> MARL_ATT_DecisionPointPolicy with Deadlockavoidance (Temporal Transformer)')
     print('   - observation_space:', observation_space)
     print('   - action_space:', action_space)
-    print('   - temporal_window: 3 timesteps')
+    print('   - temporal_window:', temporal_window)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
     
     return MARL_ATT_DecisionPointPolicy(
@@ -709,49 +719,49 @@ def create_deadlock_avoidance_policy(environment: Environment,
                                    show_debug_plot=show_debug_plot)
 
 
-
-global reward_signal_updated
-reward_signal_updated = None
-
-
 def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: InfoDict, env: Environment) -> List[float]:
-    global reward_signal_updated
     distance_map = env.raw_env.distance_map.get()
-    if env.raw_env._elapsed_steps < 5:
-        reward_signal_updated = None
-    if reward_signal_updated is None:
-        reward_signal_updated = np.zeros(len(env.raw_env.agents))
+    
     for i, agent in enumerate(env.raw_env.agents):
-
         pos, dir = ExperimentalObservation.get_pos_dir(agent)
         dist = distance_map[i, pos[0], pos[1], dir]
         max_dist = np.max(distance_map[i][distance_map[i] != np.inf]) + 1
+        
         if max_dist == np.inf:
             max_dist = 1.0
             dist = 1.0
         if dist == np.inf:
             dist = max_dist
-        reward[i] = -dist / max_dist
-        if terminal[i] and \
-                reward_signal_updated[i] == 0 and \
-                agent.state == TrainState.DONE and \
-                env.raw_env._elapsed_steps < (env.raw_env._max_episode_steps - 5):
-            reward[i] = 1.0
-            reward_signal_updated[i] = 1.0
-        elif reward_signal_updated[i] == 0.0 and terminal[i]:
-            reward[i] = 0.01
-            reward_signal_updated[i] = 1.0
-        else:
-            reward[i] -= 0.001
+        
+        # Progress-based reward: closer to goal = higher reward (-1.0 to +1.0)
+        progress = (max_dist - dist) / max_dist
+        reward[i] = (progress * 2.0) - 1.0  # Range: -1.0 (far) to +1.0 (close)
+        
+        # Strong success bonus for DONE
+        if agent.state == TrainState.DONE:
+            reward[i] = 10.0  # Big positive reward!       
+            if env.raw_env._elapsed_steps < (env.raw_env._max_episode_steps - 5):
+                collaborative_bonus = 0.0
+                for j, opp_agent in enumerate(env.raw_env.agents):
+                    if agent.state == TrainState.DONE and i != j:
+                        collaborative_bonus += 0.5
+                reward[i] += 1.0 * collaborative_bonus / len(env.raw_env.agents)
+
+        if agent.state == TrainState.WAITING:
+            reward[i] = 0.0
+        if agent.state == TrainState.MALFUNCTION_OFF_MAP:
+            reward[i] = 0.0
+        if agent.state == TrainState.MALFUNCTION:
+            reward[i] = 0.0
+
 
     return reward
 
 
-
 policy_creator_list: List[Callable[[int, int], Policy]] = [
     # create_random_policy, 
-    create_ma_ppo_agent,
-    # create_ma_ppo_agent_dp,
+    # create_ma_ppo_agent,
+    create_ma_ppo_agent_dp,
     # create_ma_ppo_agent_dp_DLA
 ]
 
@@ -780,7 +790,7 @@ if __name__ == "__main__":
     
     environment.generate_and_persist_environments(
         generate_nbr_env=10,
-        generate_agents_per_env=[1, 2, 5, 10], 
+        generate_agents_per_env=[1, 2, 3],#[1, 2, 5, 10], 
         overwrite_existing=False
     )
     environment.load_environments_from_path()
@@ -792,7 +802,7 @@ if __name__ == "__main__":
             FlatlandSimpleRenderer(environment) if do_rendering else None
         )
         if do_training:
-            solver_deadlock.perform_training(max_episodes=1000)
+            solver_deadlock.perform_training(max_episodes=5000)
         else:
             solver_deadlock.perform_evaluation(max_episodes=1000)
     else:
@@ -814,7 +824,7 @@ if __name__ == "__main__":
             solver.set_reward_shaper(flatland_reward_shaper)
             if do_training:
                 solver.load_policy()  # Uncomment to continue training
-                solver.perform_training(max_episodes=1000)
+                solver.perform_training(max_episodes=5000)
             else:
                 solver.load_policy()   
                 solver.perform_evaluation(max_episodes=1000)

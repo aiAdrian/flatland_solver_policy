@@ -32,11 +32,13 @@ class EpisodeBuffers:
     def push_transition(self, handle, transition):
         transitions = self.get_transitions(handle)
 
-        if len(transitions) > 0:
-            el = transitions[len(transitions)-1]
-            (_,_,_,_, done) = el
-            if done:
-                return
+        # -------- not yet working -------
+        #    if len(transitions) > 0:
+        #        el = transitions[len(transitions)-1]
+        #        (_,_,_,_, done) = el
+        #        if done:
+        #            return
+        # -------------------------------
 
         transitions.append(transition)
         self.memory.update({handle: transitions})
@@ -85,7 +87,7 @@ class TemporalTransformerEncoder(nn.Module):
         
         # ========================================================================
         # LEVEL 2: Temporal Self-Attention
-        # Processes sequence [obs_t-2, obs_t-1, obs_t] → temporal_context
+        # Processes sequence [obs_t-T+1, ..., obs_t-1, obs_t] → temporal_context
         # ========================================================================
         self.temporal_attention = nn.MultiheadAttention(
             embed_dim=hidden_dim,
@@ -179,18 +181,18 @@ class TemporalTransformerEncoder(nn.Module):
         # STEP 2: TEMPORAL ATTENTION - Learn movement patterns
         # ========================================================================
         
-        # Add positional encoding (differentiates t-2, t-1, t)
-        self_seq_with_pe = self_seq_tensor + self.temporal_pe  # (3, 128)
+        # Add positional encoding (differentiates timesteps)
+        self_seq_with_pe = self_seq_tensor + self.temporal_pe  # (temporal_window, 128)
         
         # Self-Attention over time
-        self_seq_batched = self_seq_with_pe.unsqueeze(0)  # (1, 3, 128)
+        self_seq_batched = self_seq_with_pe.unsqueeze(0)  # (1, temporal_window, 128)
         
         temporal_output, _ = self.temporal_attention(
             query=self_seq_batched,
             key=self_seq_batched,
             value=self_seq_batched
         )
-        # temporal_output: (1, 3, 128) - Each timestep now has temporal context!
+        # temporal_output: (1, temporal_window, 128) - Each timestep now has temporal context!
         
         # Take only t (current timestep) as representation
         self_temporal_context = temporal_output[0, -1, :]  # (128,)
@@ -267,7 +269,7 @@ class TemporalTransformerEncoder(nn.Module):
         batch_size = len(temporal_sequences)
         
         # Extract all self observations and stack for parallel processing
-        all_self_obs = []  # (batch_size, 3, 33)
+        all_self_obs = []  # (batch_size, temporal_window, 33)
         all_opponents = []  # List of opponent lists per agent
         
         for temp_seq in temporal_sequences:
@@ -276,20 +278,21 @@ class TemporalTransformerEncoder(nn.Module):
             _, current_opps = temp_seq[-1]
             all_opponents.append(current_opps)
         
-        # Stack: (batch_size, 3, 33)
+        # Stack: (batch_size, temporal_window, 33)
         all_self_obs_tensor = torch.stack(all_self_obs, dim=0)
         
-        # Reshape for parallel encoding: (batch_size * 3, 33)
+        # Reshape for parallel encoding: (batch_size * temporal_window, 33)
         flat_obs = all_self_obs_tensor.view(-1, self.obs_dim)
         
-        # Encode all at once: (batch_size * 3, hidden_dim)
+        # Encode all at once: (batch_size * temporal_window, hidden_dim)
         flat_embeddings = self.obs_encoder(flat_obs)
         
-        # Reshape back: (batch_size, 3, hidden_dim)
-        self_embeddings = flat_embeddings.view(batch_size, 3, self.hidden_dim)
+        # Reshape back: (batch_size, temporal_window, hidden_dim)
+        self_embeddings = flat_embeddings.view(batch_size, self.temporal_window, self.hidden_dim)
         
-        # Add positional encoding: (batch_size, 3, hidden_dim)
-        self_with_pe = self_embeddings + self.temporal_pe.unsqueeze(0)
+        # Add positional encoding: (batch_size, temporal_window, hidden_dim)
+        # Use only the first temporal_window positional encodings
+        self_with_pe = self_embeddings + self.temporal_pe[:self.temporal_window].unsqueeze(0)
         
         # Temporal attention (batch_first=True supports batching!)
         temporal_output, _ = self.temporal_attention(
@@ -413,7 +416,7 @@ class ActorCriticModel(nn.Module):
 
 MARL_ATTENTION_TEMPORAL_MAPPO_Param = namedtuple('MARL_ATTENTION_TEMPORAL_MAPPO_Param',
                             ['hidden_size', 'batch_size', 'learning_rate',
-                             'discount', 'use_gpu',
+                             'discount', 'gae_lambda', 'use_gpu',
                              'max_episodes_in_training_memory', 'batch_fraction', 'k_epochs',
                              'max_batches_per_training', 'temporal_window'])
 
@@ -439,6 +442,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                  train_frequency = 1):
         super(MARL_ATTENTION_TEMPORAL_PPOPolicy, self).__init__()
 
+        self.show_debug_msg = False
         self.show_pre_train_debug_msg = show_pre_train_debug_msg
         self.show_progress_bar = show_progress_bar
         self.train_frequency = train_frequency
@@ -481,7 +485,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.weight_loss = 0.5  # ⚡ Increased for better value fitting
         self.weight_entropy = 0.01  # ⚡ Small entropy bonus for continued exploration
         self.weight_policy = 1.0
-        self.gae_lambda = self.ppo_parameters.discount 
+        self.gae_lambda = self.ppo_parameters.gae_lambda if self.ppo_parameters else 0.95 
 
         # Memory
         self.current_episode_memory = EpisodeBuffers()
@@ -660,9 +664,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 with torch.no_grad():
                     states_critic = self.encoder_critic.forward_batch(state_tuples)
                     values = torch.squeeze(self.actor_critic_model.critic(states_critic), dim=-1)
+                    values = torch.clamp(values, -10, 10)  # ⚡ Clip values!
                     
                     next_states_critic = self.encoder_critic.forward_batch(state_next_tuples)
                     next_values = torch.squeeze(self.actor_critic_model.critic(next_states_critic), dim=-1)
+                    next_values = torch.clamp(next_values, -10, 10)  # ⚡ Clip values!
                     
                     traj_gae_advantages, traj_gae_returns = self._compute_gae(
                         rewards, values, dones, next_values
@@ -759,6 +765,31 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             print(f"📦 Using {samples_to_use}/{total_samples} samples ({samples_to_use/total_samples*100:.1f}%)")
             print(f"📦 Batch Config: {num_batches} batches (batch_size={self.batch_size}) over {int(self.K_epoch)} epochs")
         
+        # 🎯 KRITISCH: Berechne old_logprobs VOR dem Training
+        # Dies ist die EINZIGE korrekte Methode für PPO!
+        batch_size_encoding = 256  # ⚡ WICHTIG: Außerhalb definieren!
+        
+        if self.show_pre_train_debug_msg:
+            print(f"\n🔍 Computing initial old_logprobs for {len(all_state_tuples)} samples...")
+        
+        with torch.no_grad():
+            # Encode states in batches to avoid OOM
+            all_old_logprobs = []
+            
+            for i in range(0, len(all_state_tuples), batch_size_encoding):
+                batch_states = all_state_tuples[i:i+batch_size_encoding]
+                batch_acts = all_actions[i:i+batch_size_encoding]
+                
+                states_enc = self.encoder_actor.forward_batch(batch_states)
+                logits = self.actor_critic_model.actor(states_enc)
+                old_lp = Categorical(logits=logits).log_prob(batch_acts)
+                all_old_logprobs.append(old_lp)
+            
+            all_old_logprobs = torch.cat(all_old_logprobs, dim=0)
+        
+        if self.show_pre_train_debug_msg:
+            print(f"✅ Initial old_logprobs computed (mean={all_old_logprobs.mean().item():.4f})")
+        
         total_iterations = int(self.K_epoch) * num_batches
         current_iteration = 0
         
@@ -767,19 +798,34 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         
         # Training epochs
         for k_loop in range(int(self.K_epoch)):
+            # 🎯 STANDARD PPO: Update old_logprobs nach jedem Epoch (außer dem ersten)
+            if k_loop > 0:
+                if self.show_pre_train_debug_msg:
+                    print(f"\n🔄 Re-computing old_logprobs for Epoch {k_loop+1}...")
+                
+                with torch.no_grad():
+                    all_old_logprobs = []
+                    for i in range(0, len(all_state_tuples), batch_size_encoding):
+                        batch_states = all_state_tuples[i:i+batch_size_encoding]
+                        batch_acts = all_actions[i:i+batch_size_encoding]
+                        
+                        states_enc = self.encoder_actor.forward_batch(batch_states)
+                        logits = self.actor_critic_model.actor(states_enc)
+                        old_lp = Categorical(logits=logits).log_prob(batch_acts)
+                        all_old_logprobs.append(old_lp)
+                    
+                    all_old_logprobs = torch.cat(all_old_logprobs, dim=0)
+                
+                if self.show_pre_train_debug_msg:
+                    print(f"✅ Updated (mean={all_old_logprobs.mean().item():.4f})")
+            
             # Shuffle data each epoch for better training
             indices = torch.randperm(samples_to_use)
             
             for batch_idx in range(num_batches):
                 current_iteration += 1
                 
-                if self.show_progress_bar:
-                    progress = current_iteration / total_iterations
-                    bar_length = 50
-                    filled = int(bar_length * progress)
-                    bar = '█' * filled + '░' * (bar_length - filled)
-                    print(f"\r  [{bar}] Epoch {k_loop+1}/{int(self.K_epoch)}, Batch {batch_idx+1}/{num_batches} ({progress*100:.1f}%)", end='', flush=True)
-                
+               
                 start_idx = batch_idx * self.batch_size
                 end_idx = min(start_idx + self.batch_size, samples_to_use)
                 batch_indices = indices[start_idx:end_idx]
@@ -788,6 +834,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 batch_actions = all_actions[batch_indices]
                 batch_gae_advantages = all_gae_advantages[batch_indices]
                 batch_gae_returns = all_gae_returns[batch_indices]
+                batch_old_logprobs = all_old_logprobs[batch_indices]  # 🎯 Pre-computed!
 
                 # Encode states
                 states_actor = self.encoder_actor.forward_batch(batch_state_tuples)
@@ -803,35 +850,40 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     print("   Skipping this batch to prevent crash...")
                     continue
 
-                # Compute old_logprobs (frozen policy baseline)
-                with torch.no_grad():
-                    logits_old = self.actor_critic_model.actor(states_actor.detach())
-                    
-                    # Check for NaN before creating distribution
-                    if torch.isnan(logits_old).any():
-                        print(f"\n⚠️ WARNING: NaN detected in logits_old at epoch {k_loop}, batch {batch_idx}")
-                        print("   Skipping this batch to prevent crash...")
-                        continue
-                    
-                    dist_old = Categorical(logits=logits_old)
-                    batch_old_logprobs = dist_old.log_prob(batch_actions).detach()
-
-                # Evaluate actions
+                # Evaluate actions (NEW policy - WITH gradients!)
                 logits = self.actor_critic_model.actor(states_actor)
                 dist = Categorical(logits=logits)
                 logprobs = dist.log_prob(batch_actions)
+                
+                # ⚡ CRITICAL: Clip logprobs to prevent extreme ratios
+                logprobs = torch.clamp(logprobs, -10, 0)  # Log-probs are always negative
+                batch_old_logprobs = torch.clamp(batch_old_logprobs, -10, 0)
+                
                 dist_entropy = dist.entropy()
+                
+                # 🔍 DEBUG: Verify old_logprobs are different from new ones (NUR Epoch 1)
+                if self.show_debug_msg:
+                    if k_loop == 0 and batch_idx < 3:  # Erste Epoch, erste 3 Batches
+                        diff_mean = (logprobs - batch_old_logprobs).abs().mean().item()
+                        ratio_raw = torch.exp(logprobs - batch_old_logprobs).mean().item()
+                        print(f"🔍 E1 B{batch_idx}: Diff={diff_mean:.6f} Ratio_raw={ratio_raw:.4f}", flush=True)
                 
                 state_values = torch.squeeze(self.actor_critic_model.critic(states_critic), dim=-1)
                 
-                # PPO ratios
+                # PPO ratios with AGGRESSIVE clipping to prevent explosion
                 ratios = torch.exp(logprobs - batch_old_logprobs)
+                ratios = torch.clamp(ratios, 0.5, 2.0)  # ⚡ Limit ratio range BEFORE advantage multiplication
                 
                 # Normalize advantages
                 advantages = batch_gae_advantages
                 eps = 1e-8
+                
+                # 📊 Speichere RAW advantage stats BEFORE normalization
+                raw_adv_mean = advantages.mean().item()
+                raw_adv_std = advantages.std().item()
+                
                 advantages_normalized = (advantages - advantages.mean()) / (advantages.std() + eps)
-                advantage_scale_factor = 5.0  # Back to working baseline (was 3.0)
+                advantage_scale_factor = 1.0  # ⚡ Erhöht: Stärkere Policy Updates für stabiles Lernen
                 advantages = advantages_normalized * advantage_scale_factor
 
                 # PPO loss
@@ -862,18 +914,20 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 
                 loss.backward()
                 
-                # Gradient clipping - MORE AGGRESSIVE to prevent NaN
-                torch.nn.utils.clip_grad_norm_(
+                # Gradient clipping - ausbalanciert für Stabilität und Lernen
+                grad_norm_actor = torch.nn.utils.clip_grad_norm_(
                     list(self.encoder_actor.parameters()) + 
                     list(self.actor_critic_model.actor.parameters()),
-                    max_norm=0.5  # ⚡ Much more aggressive clipping
+                    max_norm=0.5  # ⚡ Erhöht: Erlaubt größere Updates ohne Explosion
                 )
                 
-                torch.nn.utils.clip_grad_norm_(
+                grad_norm_critic = torch.nn.utils.clip_grad_norm_(
                     list(self.encoder_critic.parameters()) + 
                     list(self.actor_critic_model.critic.parameters()),
-                    max_norm=0.5  # ⚡ Much more aggressive clipping
+                    max_norm=0.5  # ⚡ Erhöht: Erlaubt größere Updates ohne Explosion
                 )
+                
+                grad_norm = max(grad_norm_actor.item(), grad_norm_critic.item())
                 
                 # Check for NaN in gradients after clipping
                 has_nan_grad = False
@@ -894,6 +948,27 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 self.optimizer_critic_head.step()
                 
                 self.loss = loss.detach().cpu().numpy()
+                
+                # 📊 Log metrics for this iteration
+                ratio_mean = ratios.mean().item()
+                adv_mean = raw_adv_mean  # ⚡ RAW advantage mean (BEFORE normalization)
+                adv_std = raw_adv_std    # ⚡ RAW advantage std (BEFORE normalization)
+                
+                if self.show_progress_bar:
+                    progress = current_iteration / total_iterations
+                    bar_length = 50
+                    filled = int(bar_length * progress)
+                    bar = '█' * filled + '░' * (bar_length - filled)
+                    print(f"\r  [{bar}] Epoch {k_loop+1}/{int(self.K_epoch)}, Batch {batch_idx+1}/{num_batches} ({progress*100:3.1f}%)", end='')
+                    print(f"\t", end='')
+                    print(f"| Loss: {loss.item():.4f}", end='')
+                    print(f"| P_Loss: {policy_loss_component.item():.4f}", end='')
+                    print(f"| V_Loss: {value_loss_component.item():.4f}", end='')
+                    print(f"| E_Loss: {entropy_loss_component.item():.4f}", end='')
+                    print(f"| Adv: {adv_mean:.2f}±{adv_std:.2f}", end='')  # ⚡ RAW advantage (mean±std BEFORE norm)
+                    print(f"| Ratio: {ratio_mean:.4f}", end='')
+                    print(f"| Grad_Norm: {grad_norm:.4f}", end='')
+                    print("", end='', flush=True)
 
         if self.show_progress_bar:
             print()  # New line after progress bar
