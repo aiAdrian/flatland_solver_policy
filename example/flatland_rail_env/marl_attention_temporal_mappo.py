@@ -883,7 +883,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 raw_adv_std = advantages.std().item()
                 
                 advantages_normalized = (advantages - advantages.mean()) / (advantages.std() + eps)
-                advantage_scale_factor = 1.0  # ⚡ Erhöht: Stärkere Policy Updates für stabiles Lernen
+                advantage_scale_factor = 0.3  # ⚡ REDUZIERT: Sanftere Updates → verhindert Catastrophic Forgetting!
                 advantages = advantages_normalized * advantage_scale_factor
 
                 # PPO loss
