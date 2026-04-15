@@ -168,7 +168,7 @@ class RailEnvironmentPersistable(RailEnvironment):
     @lru_cache(maxsize=1000)
     def _cached_reset(self, filename):
         env = self._clone(filename)
-        RailEnvPersister.load(env.raw_env, filename)
+        RailEnvPersister.load(env.raw_env, filename, obs_builder=self._obs_builder_object_creator())
 
         if not self._silent:
             print(filename)
