@@ -481,9 +481,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         else:
             self.K_epoch = 3  # Back to baseline
             
-        self.surrogate_eps_clip = 0.1  # ⚡ Conservative updates (preserve good policy)
-        self.weight_loss = 0.5  # ⚡ Increased for better value fitting
-        self.weight_entropy = 0.01  # ⚡ Small entropy bonus for continued exploration
+        self.surrogate_eps_clip = 0.15  # Etwas mehr Flexibilität für Policy-Updates
+        self.weight_loss = 0.4  # Weniger Fokus auf Value Loss
+        self.weight_entropy = 0.02  # Mehr Exploration
         self.weight_policy = 1.0
         self.gae_lambda = self.ppo_parameters.gae_lambda if self.ppo_parameters else 0.95 
 

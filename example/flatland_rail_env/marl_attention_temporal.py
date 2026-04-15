@@ -636,15 +636,15 @@ def create_temporal_obs_builder_object():
 
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     hidden_size=128,
-    batch_size=256,  # ⚡ Kleinere Batches = weniger Overfitting
-    learning_rate=5e-5,  # ⚡ SEHR NIEDRIG: Verhindert Catastrophic Forgetting!
-    discount=0.98,
-    gae_lambda=0.98,
+    batch_size=512,  # Größere Batches für stabileres Training
+    learning_rate=2e-4,  # Höhere Lernrate für schnellere Konvergenz
+    discount=0.99,  # Längere Belohnungsketten
+    gae_lambda=0.97,  # Weniger Bias
     use_gpu=True,
-    max_episodes_in_training_memory=30,  # ⚡ MEHR MEMORY: Mehr Diversity → weniger Forgetting
-    k_epochs=2,  # ⚡ REDUZIERT: Weniger Overfitting auf neue Batches
-    batch_fraction=0.3,  # ⚡ ERHÖHT: Nutzt mehr von der Memory → bessere Generalisierung
-    max_batches_per_training=10,
+    max_episodes_in_training_memory=50,  # Mehr Diversität
+    k_epochs=3,  # Stabilere Updates
+    batch_fraction=0.4,  # Mehr Daten pro Training
+    max_batches_per_training=12,
     temporal_window=temporal_window # ⚡ MUST MATCH create_temporal_obs_builder_object()!
 )
 
@@ -739,7 +739,7 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
         
         # Progress-based reward: closer to goal = higher reward (-1.0 to +1.0)
         progress = (max_dist - dist) / max_dist
-        reward[i] = progress - 1.0  # Range: -1.0 (far) to +1.0 (close)
+        reward[i] = 0.5*progress - 1.0  # Range: -1.0 (far) to +0.0 (close)
         
         # Strong success bonus for DONE
         if agent.state == TrainState.DONE:
@@ -752,11 +752,11 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
                 reward[i] += 1.0 * collaborative_bonus / len(env.raw_env.agents)
 
         if agent.state == TrainState.WAITING:
-            reward[i] = 0.0
+            reward[i] = -0.01
         if agent.state == TrainState.MALFUNCTION_OFF_MAP:
-            reward[i] = 0.0
+            reward[i] = -0.01
         if agent.state == TrainState.MALFUNCTION:
-            reward[i] = 0.0
+            reward[i] = -0.01
 
 
     return reward
@@ -794,7 +794,7 @@ if __name__ == "__main__":
     
     environment.generate_and_persist_environments(
         generate_nbr_env=10,
-        generate_agents_per_env=[1, 2, 3],#[1, 2, 5, 10], 
+        generate_agents_per_env=[1, 2, 3, 4, 5],#[1, 2, 5, 10], 
         overwrite_existing=False
     )
     environment.load_environments_from_path()
