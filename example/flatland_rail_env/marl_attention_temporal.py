@@ -41,6 +41,8 @@ class WalkToNextDecisionPoint(ShortestDistanceWalker):
         super(WalkToNextDecisionPoint, self).__init__(env)
         self.clear(None)
         self.switchAnalyser: RailroadSwitchAnalyser  = RailroadSwitchAnalyser(env) 
+        self.nbr_join_switch_visited = 0
+        self.stop_after_max_join_switch = np.inf
 
     def clear(self, agent_map):
         self.agent_map = agent_map
@@ -55,6 +57,10 @@ class WalkToNextDecisionPoint(ShortestDistanceWalker):
         self.final_pos = None
         self.final_dir = None
         self.target_found = 0
+        self.nbr_join_switch_visited = 0
+        
+    def set_max_join_switch(self, max_value: int):
+        self.stop_after_max_join_switch = max_value
 
 
     def callback(self, handle, agent, position, direction, action, possible_transitions) -> bool:
@@ -69,6 +75,11 @@ class WalkToNextDecisionPoint(ShortestDistanceWalker):
             agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell = \
             self.switchAnalyser.check_agent_decision(position=position, direction=direction)
 
+        # stop when on a merging swtich 
+        if not agent_at_railroad_switch and agent_at_railroad_switch_cell:
+            self.nbr_join_switch_visited += 1
+            if self.nbr_join_switch_visited >= self.stop_after_max_join_switch:
+                return False
 
         self.visited.append((position, direction))
         self.path.append(position)
@@ -89,6 +100,8 @@ class WalkToNextDecisionPoint(ShortestDistanceWalker):
 
         self.final_pos = position
         self.final_dir = direction
+
+
         return True
 
 
@@ -132,8 +145,8 @@ class ExperimentalObservation(ObservationBuilder):
 
     @staticmethod
     def getObservationSize() -> int:
-        # 7 agent_state + 4 switch + 18 transition (3×6) + 1 target = 30
-        return 41 + ExperimentalObservation.getObservationOthersExtraSize()
+        # 7 agent_state + 4 switch + 19 transition (3×6) + 1 target = 30
+        return 5 + 3 * 39 + ExperimentalObservation.getObservationOthersExtraSize()
 
     def reset(self):
         # Initialize analyzers
@@ -198,81 +211,43 @@ class ExperimentalObservation(ObservationBuilder):
             states.append(state)
 
         return states
-
-    def get(self, handle: int = 0):
-
-        distance_map = self.env.distance_map.get()
-        v = distance_map[handle]
-        max_dist = np.max(v[v != np.inf])
-
-        agent = self.env.agents[handle]
-        pos, dir = self.get_pos_dir(agent)
-        target = agent.target
-
-        if pos is None or target is None:
-            vec_len = (ExperimentalObservation.getObservationSize() -
-                      ExperimentalObservation.getObservationOthersExtraSize())
-            return (np.zeros(vec_len, dtype=np.float32)-1, [])
-
-        vec = []
-        opp_agents = set()
- 
-        agent_at_railroad_switch, agent_near_to_railroad_switch, \
-            agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell = \
-            self.switchAnalyser.check_agent_decision(position=pos, direction=dir)
-
-        dist = distance_map[handle, pos[0], pos[1], dir]
-
-        # Agent State Features [0-6]
-        vec.append(1.0 if agent.state == TrainState.WAITING else -1.0)
-        vec.append(1.0 if agent.state == TrainState.READY_TO_DEPART else -1.0)
-        vec.append(1.0 if agent.state == TrainState.MALFUNCTION_OFF_MAP else -1.0)
-        vec.append(1.0 if agent.state == TrainState.MOVING else -1.0)
-        vec.append(1.0 if agent.state == TrainState.STOPPED else -1.0)
-        vec.append(1.0 if agent.state == TrainState.MALFUNCTION else -1.0)
-        vec.append(1.0 if agent.state == TrainState.DONE else -1.0)
-
-        # Railroad Switch Features [7-10]
-        vec.append(agent_at_railroad_switch * 2.0 - 1.0)
-        vec.append(agent_near_to_railroad_switch * 2.0 - 1.0)
-        vec.append(agent_at_railroad_switch_cell * 2.0 - 1.0)
-        vec.append(agent_near_to_railroad_switch_cell * 2.0 - 1.0)
-
-        # Walk forward to next switch - if there is a an agent (opposite/other) in this segment
-        # dead lock avoidance is too late 
-        new_position = pos
-        new_direction = dir
-        visited = [pos]
-        transitions = self.env.rail.get_transitions(*new_position, new_direction)
-        has_other_agent_in_segment = False
-        has_other_agent_in_segment_with_opposite_dir = False    
-        while fast_count_nonzero(transitions) == 1 and new_position != target:
-            new_position, new_direction, _1, _2, _3 = \
-                self.walker.walk(handle, new_position, new_direction)
-            if self.agent_map[new_position] != -1 and self.agent_map[new_position] != handle:
-                has_other_agent_in_segment = True   
-                if self.env.agents[self.agent_map[new_position]].direction != new_direction:
-                    has_other_agent_in_segment_with_opposite_dir = True
-            transitions = self.env.rail.get_transitions(*new_position, new_direction)
-            visited.append(new_position)
+    
+    def _analyze_direction_branches(self, handle: int, pos: tuple, direction: int, 
+                                   transitions: np.ndarray, distance_map: np.ndarray,
+                                   target: tuple, visited: list, opp_agents: set,
+                                   walk_to_target_max_switch = np.inf,
+                                   max_step = 25) -> tuple:
+        """
+        Analyze all possible direction branches (LEFT, FORWARD, RIGHT) from current position.
         
-        vec.append(int(has_other_agent_in_segment) * 2.0 - 1.0)
-        vec.append(int(has_other_agent_in_segment_with_opposite_dir) * 2.0 - 1.0)
-        vec.append(int(new_position != target) * 2.0 - 1.0)
-
-
+        For each of the 3 directions, computes 13 features:
+        - Switch analysis (7 features): switch counts and densities
+        - Agent interactions (2 features): same/opposite direction agents
+        - Target detection (1 feature): target in path
+        - Path optimality (3 features): branch optimality, distance progress, optimal path
+        
+        Returns:
+            Tuple[list, list]: (features, min_distances)
+            - features: 39 float values (3 directions × 13 features)
+            - min_distances: 4 distances for each direction [N, E, S, W]
+        """
+        vec = []
         min_distances = [0, 0, 0, 0]
-        dir = new_direction
-        pos = new_position
-        # Direction Analysis [11-28]: LEFT, FORWARD, RIGHT
-        for action_i in range(-1, 2):  # -1=left, 0=forward, 1=right
-            new_direction = (dir + action_i) % 4
+        dist = distance_map[handle, pos[0], pos[1], direction]
+
+        # Analyze each direction: LEFT (-1), FORWARD (0), RIGHT (+1)
+        for action_i in range(-1, 2):
+            new_direction = (direction + action_i) % 4
+            
             if transitions[new_direction]:
                 npos = get_new_position(pos, new_direction)
-                min_distances[new_direction] = distance_map[handle, npos[0], npos[1], new_direction]   
-
+                                
+                branch_dist = distance_map[handle, npos[0], npos[1], new_direction]   
+                min_distances[new_direction] = branch_dist 
                 self.walker.clear(self.agent_map)
-                self.walker.walk_to_target(handle, npos, new_direction, max_step=25)
+                self.walker.set_max_join_switch(walk_to_target_max_switch)
+                self.walker.walk_to_target(handle, npos, new_direction, max_step=max_step)
+            
 
                 for d in self.walker.path:
                     visited.append(d)
@@ -298,36 +273,133 @@ class ExperimentalObservation(ObservationBuilder):
                 if len_path == 0:
                     len_path = 1
 
-                # 6 features per direction 
+                # 13 features per direction:
+                # [0] Switch difference
                 vec.append(len(self.walker.switch) - len(self.walker.dir_switch))
+                # [1] Near-switch difference  
                 vec.append(len(self.walker.near_to_switch) - len(self.walker.near_to_switch))
-                vec.append(1.0 - len(self.walker.switch) / len_path)
-                vec.append(1.0 - len(self.walker.dir_switch) / len_path)
-                vec.append(1.0 - len(self.walker.near_to_switch) / len_path)
-                vec.append(1.0 - len(self.walker.near_to_dir_switch) / len_path)
-                vec.append(1.0 - len(self.walker.switch) / len_path)
+                # [2-6] Switch densities
+                vec.append(len(self.walker.switch) / len_path)
+                vec.append(len(self.walker.dir_switch) / len_path)
+                vec.append(len(self.walker.near_to_switch) / len_path)
+                vec.append(len(self.walker.near_to_dir_switch) / len_path)
+                vec.append(len(self.walker.switch) / len_path)
+                # [7-8] Agent interactions
                 same_dir_agents = len(self.walker.other_agent_handles) - other_agents_cnt_opp_dir
-                vec.append(1.0 - same_dir_agents / len_path)
-                vec.append(1.0 - other_agents_cnt_opp_dir / len_path)
+                vec.append(same_dir_agents / len_path)
+                vec.append(other_agents_cnt_opp_dir / len_path)
+                # [9] Target detection
                 vec.append(1.0 if target in self.walker.path else -1.0)
 
+                # [10-12] Path optimality metrics
                 new_dist = distance_map[handle, npos[0], npos[1], new_direction]
-                if new_dist == np.inf or dist == np.inf:
+                if new_dist == np.inf or dist == np.inf or branch_dist == np.inf:
+                    vec.append(-1.0)
                     vec.append(-1.0)
                     vec.append(-1.0)
                 else:
+                    on_opt_branch_path = 1.0 if branch_dist < dist else 0.0
+                    vec.append(on_opt_branch_path)
+                    vec.append(1.0 - new_dist / (1.0 + dist))
                     on_optimal_path = 1.0 if new_dist < dist else 0.0
                     vec.append(on_optimal_path)
-                    vec.append(1.0 - new_dist / (1.0 + dist))
 
             else:
-                vec.append(-1.0)
-                vec.append(-1.0)
-                vec.append(-1.0)
-                vec.append(-1.0)
-                vec.append(-1.0)
-                vec.append(-1.0)
+                # Invalid direction: fill with -1.0 (13 features)
+                for _ in range(13):
+                    vec.append(-1.0)
+        
+        return vec, min_distances, opp_agents
 
+    def get(self, handle: int = 0):
+
+        distance_map = self.env.distance_map.get()
+        v = distance_map[handle]
+        max_dist = np.max(v[v != np.inf])
+
+        agent = self.env.agents[handle]
+        pos, dir = self.get_pos_dir(agent)
+        target = agent.target
+
+        if pos is None or target is None:
+            vec_len = (ExperimentalObservation.getObservationSize() -
+                      ExperimentalObservation.getObservationOthersExtraSize())
+            return (np.zeros(vec_len, dtype=np.float32)-1, [])
+
+        vec = []
+        opp_agents = set()
+ 
+        agent_at_railroad_switch, agent_near_to_railroad_switch, \
+            agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell = \
+            self.switchAnalyser.check_agent_decision(position=pos, direction=dir)
+
+        # Agent State Features [0-6]
+        vec.append(1.0 if agent.state == TrainState.WAITING else -1.0)
+        vec.append(1.0 if agent.state == TrainState.READY_TO_DEPART else -1.0)
+        vec.append(1.0 if agent.state == TrainState.MALFUNCTION_OFF_MAP else -1.0)
+        vec.append(1.0 if agent.state == TrainState.MOVING else -1.0)
+        vec.append(1.0 if agent.state == TrainState.STOPPED else -1.0)
+        vec.append(1.0 if agent.state == TrainState.MALFUNCTION else -1.0)
+        vec.append(1.0 if agent.state == TrainState.DONE else -1.0)
+
+        # Railroad Switch Features [7-10]
+        vec.append(agent_at_railroad_switch * 2.0 - 1.0)
+        vec.append(agent_near_to_railroad_switch * 2.0 - 1.0)
+        vec.append(agent_at_railroad_switch_cell * 2.0 - 1.0)
+        vec.append(agent_near_to_railroad_switch_cell * 2.0 - 1.0)
+
+
+        # Walk forward to next switch - if there is a an agent (opposite/other) in this segment
+        # dead lock avoidance is too late 
+        new_position = pos
+        new_direction = dir
+        visited = [pos]
+        has_other_agent_in_segment = False
+        has_other_agent_in_segment_with_opposite_dir = False   
+
+        transitions = self.env.rail.get_transitions(*new_position, new_direction)
+        while fast_count_nonzero(transitions) == 1 and new_position != target:
+            # walk one step forward 
+            new_position, new_direction, _1, _2, _3 = \
+                self.walker.walk(handle, new_position, new_direction)
+            
+            # collect other agents
+            if self.agent_map[new_position] != -1 and self.agent_map[new_position] != handle:
+                has_other_agent_in_segment = True   
+                if self.env.agents[self.agent_map[new_position]].direction != new_direction:
+                    has_other_agent_in_segment_with_opposite_dir = True
+            
+            # upate transitions of new position
+            transitions = self.env.rail.get_transitions(*new_position, new_direction)
+
+            # append just to visualise / debug rendering
+            visited.append(new_position)
+        
+        vec.append(int(has_other_agent_in_segment) * 2.0 - 1.0)
+        vec.append(int(has_other_agent_in_segment_with_opposite_dir) * 2.0 - 1.0)
+        vec.append(int(new_position != target) * 2.0 - 1.0)
+
+
+        # Direction Analysis [14-52]: LEFT, FORWARD, RIGHT (3 directions × 13 features = 39 values)
+        direction_features, min_distances, opp_agents = self._analyze_direction_branches(
+            handle, new_position, new_direction, transitions, distance_map, 
+            target, visited, opp_agents, 1
+        )
+        vec.extend(direction_features)
+
+        direction_features, _, opp_agents = self._analyze_direction_branches(
+            handle, new_position, new_direction, transitions, distance_map, 
+            target, visited, opp_agents, 2
+        )
+        vec.extend(direction_features)
+
+        direction_features, _, opp_agents = self._analyze_direction_branches(
+            handle, new_position, new_direction, transitions, distance_map, 
+            target, visited, opp_agents, np.inf
+        )
+        vec.extend(direction_features)
+
+        # Best direction indicator [53-56]: One-hot encoding of optimal direction (4 values)
 
         idx = np.argmin(min_distances)
         for i in range(4):  
@@ -378,13 +450,9 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         # Temporal history per agent: {handle: deque([obs_t-2, obs_t-1, obs_t])}
         self.temporal_history: Dict[int, deque] = {}
         
-        # Last positions for velocity computation: {handle: (pos, dir)}
-        self.last_positions: Dict[int, Tuple] = {}
-        
     @staticmethod
-    def getObservationSize() -> int:
-        # Base 30D + Velocity 3D = 33D per timestep
-        return 30 + 3
+    def getObservationSize() -> int: 
+        return 30  
     
     def set_env(self, env):
         """Set environment reference and propagate to base_obs"""
@@ -396,7 +464,6 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         """Reset temporal buffers at episode start"""
         self.base_obs.reset()
         self.temporal_history = {}
-        self.last_positions = {}
         self.base_obs.reset()
     
     def get_many(self, handles: Optional[List[int]] = None):
@@ -418,15 +485,7 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         # Enrich with velocity features
         enriched_obs = []
         for handle_idx, (obs_self, obs_others) in enumerate(current_obs):
-            agent = self.env.agents[handle_idx]
-            
-            # Compute velocity from position delta
-            velocity_features = self._compute_velocity(handle_idx, agent)
-            
-            # Combine: [base_obs (30D) | velocity (3D)] = 33D
-            # obs_self is already 37D (30 base + 7 padding), take only first 30D
-            obs_base = obs_self[:30]
-            obs_enriched = np.concatenate([obs_base, velocity_features])
+            obs_fixed_size = obs_self[:TemporalMultiAgentObservation.getObservationSize()]
             
             # Also enrich opponent observations
             obs_others_enriched = []
@@ -438,7 +497,7 @@ class TemporalMultiAgentObservation(ObservationBuilder):
                 opp_enriched = np.concatenate([opp_base, opp_vel])
                 obs_others_enriched.append(opp_enriched)
             
-            enriched_obs.append((obs_enriched, obs_others_enriched))
+            enriched_obs.append((obs_fixed_size, obs_others_enriched))
         
         # Build temporal sequences
         temporal_sequences = []
@@ -466,61 +525,6 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         
         return temporal_sequences
     
-    def _compute_velocity(self, handle: int, agent) -> np.ndarray:
-        """
-        Compute velocity from position/direction deltas - OPTIMIZED
-        
-        Returns:
-            [move_forward_dist_based, at_station_entry, delta_trans] (3D)
-        """
-        # ⚡ OPTIMIZATION: Pre-allocate result
-        velocity = np.zeros(3, dtype=np.float32)
-        
-        current_pos, current_dir = self.base_obs.get_pos_dir(agent)
-        
-        if handle not in self.last_positions or current_pos is None:
-            # First observation or agent not on map
-            velocity[0] = -1.0
-            velocity[1] = -1.0
-            self.last_positions[handle] = (current_pos, current_dir)
-            return velocity
-        
-        last_pos, last_dir = self.last_positions[handle]
-
-        # Position delta (normalized to grid size)
-        if last_pos is not None and current_pos is not None:
-            # ⚡ OPTIMIZATION: Cache distance_map lookup
-            distance_map = self.env.distance_map.get()
-            cur_dist = distance_map[handle, current_pos[0], current_pos[1], current_dir]
-            last_dist = distance_map[handle, last_pos[0], last_pos[1], last_dir]
-
-            # ⚡ OPTIMIZATION: Avoid repeated rail.get_transitions calls
-            cur_transitions = self.env.rail.get_transitions(*current_pos, current_dir)
-            last_transitions = self.env.rail.get_transitions(*last_pos, last_dir)
-            cur_options = fast_count_nonzero(cur_transitions)  
-            last_options = fast_count_nonzero(last_transitions)  
-            
-            velocity[1] = float(cur_options + last_options)  # at_station_entry
-            velocity[2] = float(cur_options - last_options)  # delta_trans
-
-            if cur_dist == np.inf or last_dist == np.inf:
-                velocity[0] = -1.0
-            else:
-                delta_dist = (cur_dist - last_dist) / (1 + cur_dist)
-                velocity[0] = delta_dist
-        else:
-            velocity[0] = -1.0
-            velocity[1] = -1.0
-            # velocity[2] = 0.0  # already initialized
-        
-        # Update history
-        self.last_positions[handle] = (current_pos, current_dir)
-        
-        return velocity
-
-
-
-
 
 class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
     def __init__(self,
@@ -585,7 +589,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
             self.switchAnalyser.check_agent_decision(position=position, direction=direction)
 
         # only if the agent is moving
-        if agent.state == TrainState.MOVING:
+        if agent.state.is_on_map_state():
             # when the agent is moving and the agent is not at a decision point - best option is just move forward
             # near to all switches are important:
             # (1) fork
@@ -609,7 +613,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 
         action = super(MARL_ATT_DecisionPointPolicy, self).act(handle, state, eps)
         if self.use_deadlock_avoidance_policy:
-            if agent.state.is_on_map_state():
+            if agent.state.is_on_map_state() or agent.state == TrainState.READY_TO_DEPART:
                 if action == RailEnvActions.DO_NOTHING:
                     dla_action = self.deadlock_avoidance_policy.act(handle, state, eps)
                     return dla_action
@@ -623,7 +627,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 # ENVIRONMENT & TRAINING SETUP
 # =============================================================================
 
-temporal_window = 1  # MUST MATCH create_temporal_obs_builder_object()
+temporal_window = 1 # MUST MATCH create_temporal_obs_builder_object()
 
 def create_temporal_obs_builder_object():
     """Factory for TemporalMultiAgentObservation"""
@@ -760,9 +764,9 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
 
 policy_creator_list: List[Callable[[int, int], Policy]] = [
     # create_random_policy, 
-    # create_ma_ppo_agent,
+    create_ma_ppo_agent,
     # create_ma_ppo_agent_dp,
-    create_ma_ppo_agent_dp_DLA
+    # create_ma_ppo_agent_dp_DLA
 ]
 
 
@@ -824,7 +828,7 @@ if __name__ == "__main__":
             solver.set_reward_shaper(flatland_reward_shaper)
             if do_training:
                 # solver.load_policy()  # Uncomment to continue training
-                solver.perform_training(max_episodes=5000)
+                solver.perform_training(max_episodes=2000)
             else:
                 solver.load_policy()   
                 solver.perform_evaluation(max_episodes=1000)

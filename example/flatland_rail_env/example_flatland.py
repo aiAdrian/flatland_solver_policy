@@ -16,7 +16,7 @@ def create_deadlock_avoidance_policy(environment: Environment, action_space: int
 
 
 if __name__ == "__main__":
-    do_rendering = False
+    do_rendering = not False
 
     # observation_builder = FlatlandDummyObservation()
     # environment = RailEnvironment(obs_builder_object=observation_builder, number_of_agents=25)

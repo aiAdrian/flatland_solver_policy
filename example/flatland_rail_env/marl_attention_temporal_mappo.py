@@ -971,7 +971,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     print("", end='', flush=True)
 
         if self.show_progress_bar:
-            print()  # New line after progress bar
+            print("\n")  # New line after progress bar
         
         if not hasattr(self, 'training_step'):
             self.training_step = 0
