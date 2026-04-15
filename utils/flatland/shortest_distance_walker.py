@@ -38,7 +38,7 @@ class ShortestDistanceWalker:
         if self.distance_map is None:
             self.distance_map = self.env.distance_map.get()
 
-        possible_transitions = self.env.rail.get_transitions(*position, direction)
+        possible_transitions = self.env.rail.get_transitions((position, direction))
         num_transitions = fast_count_nonzero(possible_transitions)
         if num_transitions == 1:
             new_direction = fast_argmax(possible_transitions)

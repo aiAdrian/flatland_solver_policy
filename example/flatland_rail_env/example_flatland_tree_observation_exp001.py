@@ -113,7 +113,7 @@ class ExperimentalAStarObs(ObservationBuilder):
         vec.append(current_dist_value)
 
         # 2) Zielrichtung -> switch one-step ahead
-        transitions = self.env.rail.get_transitions(*pos, dir)
+        transitions = self.env.rail.get_transitions((pos, dir))
         for nd in [(dir + i) % 4 for i in range(-1, 2)]:  # left, straight, right
             if transitions[nd]:
                 npos = get_new_position(pos, nd)
@@ -185,7 +185,7 @@ class ExperimentalAStarObs(ObservationBuilder):
             if (pos, dir) in visited and cost >= visited[(pos, dir)]:
                 continue
             visited[(pos, dir)] = cost
-            transitions = self.env.rail.get_transitions(*pos, dir)
+            transitions = self.env.rail.get_transitions((pos, dir))
             for nd in [(dir + i) % 4 for i in range(-1, 2)]:  # left, straight, right
                 if transitions[nd]:
                     npos = get_new_position(pos, nd)
