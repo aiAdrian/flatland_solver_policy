@@ -408,9 +408,50 @@ class ExperimentalObservation(ObservationBuilder):
             else:
                 vec.append(-1.0)        
 
+        # --- Erweiterte Features ---
+        # 1. Restdistanz zum Ziel (normiert)
+        if pos is not None and target is not None:
+            rest_dist = np.linalg.norm(np.array(pos) - np.array(target))
+            max_dim = max(self.env.height, self.env.width)
+            rest_dist_norm = rest_dist / max_dim
+        else:
+            rest_dist_norm = -1.0
+        vec.append(rest_dist_norm)
+
+        # 2. Zielrichtung relativ zur aktuellen Richtung (cos/sin)
+        if pos is not None and target is not None:
+            delta = np.array(target) - np.array(pos)
+            angle = np.arctan2(delta[1], delta[0])
+            dir_angle = dir * (np.pi/2)
+            rel_angle = angle - dir_angle
+            vec.append(np.cos(rel_angle))
+            vec.append(np.sin(rel_angle))
+        else:
+            vec.append(0.0)
+            vec.append(0.0)
+
+        # 3. Deadlock-Indikator (keine erlaubte Aktion außer STOP)
+        legal_moves = [self.env.rail.get_transitions(*pos, (dir + a) % 4) for a in [-1, 0, 1]] if pos is not None else []
+        deadlock = 1.0 if pos is not None and sum([fast_count_nonzero(m) for m in legal_moves]) == 0 else 0.0
+        vec.append(deadlock)
+
+        # 4. Agentendichte im Umkreis (Radius 3 Felder)
+        if pos is not None:
+            r = 3
+            y, x = pos
+            h, w = self.env.height, self.env.width
+            y_min, y_max = max(0, y - r), min(h, y + r + 1)
+            x_min, x_max = max(0, x - r), min(w, x + r + 1)
+            crowd = np.sum(self.agent_map[y_min:y_max, x_min:x_max] != -1) - 1  # ohne sich selbst
+            crowd_norm = crowd / ((2*r+1)**2 - 1)
+        else:
+            crowd_norm = 0.0
+        vec.append(crowd_norm)
+
         arr = np.array(vec, dtype=np.float32)
+        # Padding wie gehabt
         vec_len = (ExperimentalObservation.getObservationSize() -
-                  ExperimentalObservation.getObservationOthersExtraSize())
+                  ExperimentalObservation.getObservationOthersExtraSize()) + 6
         if arr.shape[0] != vec_len:
             if arr.shape[0] < vec_len:
                 pad = np.zeros(vec_len - arr.shape[0], dtype=np.float32)
