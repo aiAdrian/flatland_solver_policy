@@ -956,7 +956,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 
                 if self.show_progress_bar:
                     progress = current_iteration / total_iterations
-                    bar_length = 50
+                    bar_length = 40
                     filled = int(bar_length * progress)
                     bar = '█' * filled + '░' * (bar_length - filled)
                     print(f"\r  [{bar}] Epoch {k_loop+1}/{int(self.K_epoch)}, Batch {batch_idx+1}/{num_batches} ({progress*100:3.1f}%)", end='')

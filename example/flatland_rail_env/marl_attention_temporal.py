@@ -312,7 +312,7 @@ class ExperimentalObservation(ObservationBuilder):
         return vec, min_distances, opp_agents
 
     def get(self, handle: int = 0):
-
+        # ...existing code...
         distance_map = self.env.distance_map.get()
         v = distance_map[handle]
         max_dist = np.max(v[v != np.inf])
@@ -328,7 +328,7 @@ class ExperimentalObservation(ObservationBuilder):
 
         vec = []
         opp_agents = set()
- 
+
         agent_at_railroad_switch, agent_near_to_railroad_switch, \
             agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell = \
             self.switchAnalyser.check_agent_decision(position=pos, direction=dir)
@@ -348,7 +348,6 @@ class ExperimentalObservation(ObservationBuilder):
         vec.append(agent_at_railroad_switch_cell * 2.0 - 1.0)
         vec.append(agent_near_to_railroad_switch_cell * 2.0 - 1.0)
 
-
         # Walk forward to next switch - if there is a an agent (opposite/other) in this segment
         # dead lock avoidance is too late 
         new_position = pos
@@ -362,23 +361,18 @@ class ExperimentalObservation(ObservationBuilder):
             # walk one step forward 
             new_position, new_direction, _1, _2, _3 = \
                 self.walker.walk(handle, new_position, new_direction)
-            
             # collect other agents
             if self.agent_map[new_position] != -1 and self.agent_map[new_position] != handle:
                 has_other_agent_in_segment = True   
                 if self.env.agents[self.agent_map[new_position]].direction != new_direction:
                     has_other_agent_in_segment_with_opposite_dir = True
-            
             # upate transitions of new position
             transitions = self.env.rail.get_transitions(*new_position, new_direction)
-
             # append just to visualise / debug rendering
             visited.append(new_position)
-        
         vec.append(int(has_other_agent_in_segment) * 2.0 - 1.0)
         vec.append(int(has_other_agent_in_segment_with_opposite_dir) * 2.0 - 1.0)
         vec.append(int(new_position != target) * 2.0 - 1.0)
-
 
         # Direction Analysis [14-52]: LEFT, FORWARD, RIGHT (3 directions × 13 features = 39 values)
         direction_features, min_distances, opp_agents = self._analyze_direction_branches(
@@ -386,13 +380,11 @@ class ExperimentalObservation(ObservationBuilder):
             target, visited, opp_agents, 1
         )
         vec.extend(direction_features)
-
         direction_features, _, opp_agents = self._analyze_direction_branches(
             handle, new_position, new_direction, transitions, distance_map, 
             target, visited, opp_agents, 2
         )
         vec.extend(direction_features)
-
         direction_features, _, opp_agents = self._analyze_direction_branches(
             handle, new_position, new_direction, transitions, distance_map, 
             target, visited, opp_agents, np.inf
@@ -400,7 +392,6 @@ class ExperimentalObservation(ObservationBuilder):
         vec.extend(direction_features)
 
         # Best direction indicator [53-56]: One-hot encoding of optimal direction (4 values)
-
         idx = np.argmin(min_distances)
         for i in range(4):  
             if i == idx:
@@ -448,10 +439,155 @@ class ExperimentalObservation(ObservationBuilder):
             crowd_norm = 0.0
         vec.append(crowd_norm)
 
+        # --- NEU: Pfadbasierte und Kontext-Features (inspiriert von TreeLSTMObservation) ---
+        # 5. Anzahl Weichen auf optimalem Pfad
+        optimal_path_switches = 0
+        optimal_path_deadlocks = 0
+        optimal_path_agent_density = 0
+        optimal_path_length = 0
+        max_path_steps = 20
+        if pos is not None and target is not None:
+            # Berechne optimalen Pfad (greedy, keine Baumstruktur)
+            path_pos = pos
+            path_dir = dir
+            for _ in range(max_path_steps):
+                if path_pos == target:
+                    break
+                transitions = self.env.rail.get_transitions(*path_pos, path_dir)
+                best_dir = None
+                min_dist = np.inf
+                for d in range(4):
+                    if transitions[d]:
+                        npos = get_new_position(path_pos, d)
+                        dist = distance_map[handle, npos[0], npos[1], d]
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_dir = d
+                if best_dir is None:
+                    break
+                npos = get_new_position(path_pos, best_dir)
+                # Feature: Weiche auf Pfad?
+                at_switch, _, at_switch_cell, _ = self.switchAnalyser.check_agent_decision(position=npos, direction=best_dir)
+                if at_switch or at_switch_cell:
+                    optimal_path_switches += 1
+                # Feature: Deadlock auf Pfad?
+                legal_moves = [self.env.rail.get_transitions(*npos, (best_dir + a) % 4) for a in [-1, 0, 1]]
+                is_deadlock = sum([fast_count_nonzero(m) for m in legal_moves]) == 0
+                if is_deadlock:
+                    optimal_path_deadlocks += 1
+                # Feature: Agentendichte auf Pfad
+                y, x = npos
+                h, w = self.env.height, self.env.width
+                r = 2
+                y_min, y_max = max(0, y - r), min(h, y + r + 1)
+                x_min, x_max = max(0, x - r), min(w, x + r + 1)
+                crowd = np.sum(self.agent_map[y_min:y_max, x_min:x_max] != -1) - 1
+                crowd_norm = crowd / ((2*r+1)**2 - 1)
+                optimal_path_agent_density += crowd_norm
+                # Schritt weiter
+                path_pos = npos
+                path_dir = best_dir
+                optimal_path_length += 1
+        # Normierung
+        if optimal_path_length > 0:
+            optimal_path_agent_density /= optimal_path_length
+        vec.append(optimal_path_switches)
+        vec.append(optimal_path_deadlocks)
+        vec.append(optimal_path_agent_density)
+        vec.append(optimal_path_length)
+
+        # 6. Gibt es eine Weiche in den nächsten 3 Schritten?
+        next_switch_in_3 = 0
+        if pos is not None:
+            path_pos = pos
+            path_dir = dir
+            for _ in range(3):
+                transitions = self.env.rail.get_transitions(*path_pos, path_dir)
+                found = False
+                for d in range(4):
+                    if transitions[d]:
+                        npos = get_new_position(path_pos, d)
+                        at_switch, _, at_switch_cell, _ = self.switchAnalyser.check_agent_decision(position=npos, direction=d)
+                        if at_switch or at_switch_cell:
+                            next_switch_in_3 = 1
+                            found = True
+                            break
+                if found:
+                    break
+                # Gehe weiter entlang optimalem Pfad
+                best_dir = None
+                min_dist = np.inf
+                for d in range(4):
+                    if transitions[d]:
+                        npos = get_new_position(path_pos, d)
+                        dist = distance_map[handle, npos[0], npos[1], d]
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_dir = d
+                if best_dir is None:
+                    break
+                path_pos = get_new_position(path_pos, best_dir)
+                path_dir = best_dir
+        vec.append(next_switch_in_3)
+
+        # 7. Gibt es einen Deadlock in den nächsten 3 Schritten?
+        next_deadlock_in_3 = 0
+        if pos is not None:
+            path_pos = pos
+            path_dir = dir
+            for _ in range(3):
+                transitions = self.env.rail.get_transitions(*path_pos, path_dir)
+                legal_moves = [self.env.rail.get_transitions(*path_pos, (path_dir + a) % 4) for a in [-1, 0, 1]]
+                is_deadlock = sum([fast_count_nonzero(m) for m in legal_moves]) == 0
+                if is_deadlock:
+                    next_deadlock_in_3 = 1
+                    break
+                # Gehe weiter entlang optimalem Pfad
+                best_dir = None
+                min_dist = np.inf
+                for d in range(4):
+                    if transitions[d]:
+                        npos = get_new_position(path_pos, d)
+                        dist = distance_map[handle, npos[0], npos[1], d]
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_dir = d
+                if best_dir is None:
+                    break
+                path_pos = get_new_position(path_pos, best_dir)
+                path_dir = best_dir
+        vec.append(next_deadlock_in_3)
+
+        # 8. Anzahl Alternativrouten in den nächsten 5 Schritten
+        alternative_routes = 0
+        if pos is not None:
+            path_pos = pos
+            path_dir = dir
+            for _ in range(5):
+                transitions = self.env.rail.get_transitions(*path_pos, path_dir)
+                num_options = sum(transitions)
+                if num_options > 1:
+                    alternative_routes += 1
+                # Gehe weiter entlang optimalem Pfad
+                best_dir = None
+                min_dist = np.inf
+                for d in range(4):
+                    if transitions[d]:
+                        npos = get_new_position(path_pos, d)
+                        dist = distance_map[handle, npos[0], npos[1], d]
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_dir = d
+                if best_dir is None:
+                    break
+                path_pos = get_new_position(path_pos, best_dir)
+                path_dir = best_dir
+        vec.append(alternative_routes)
+
         arr = np.array(vec, dtype=np.float32)
         # Padding wie gehabt
         vec_len = (ExperimentalObservation.getObservationSize() -
-                  ExperimentalObservation.getObservationOthersExtraSize()) + 6
+                  ExperimentalObservation.getObservationOthersExtraSize()) + 6 + 8
         if arr.shape[0] != vec_len:
             if arr.shape[0] < vec_len:
                 pad = np.zeros(vec_len - arr.shape[0], dtype=np.float32)
@@ -668,11 +804,12 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 # ENVIRONMENT & TRAINING SETUP
 # =============================================================================
 
-temporal_window = 1 # MUST MATCH create_temporal_obs_builder_object()
+# Globale Variable für die temporale Fenstergröße
+TEMPORAL_WINDOW = 1  # Einfach anpassen für Experimente
 
 def create_temporal_obs_builder_object():
     """Factory for TemporalMultiAgentObservation"""
-    return TemporalMultiAgentObservation(temporal_window=temporal_window)
+    return TemporalMultiAgentObservation(temporal_window=TEMPORAL_WINDOW)
 
 
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
@@ -686,7 +823,7 @@ ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     k_epochs=3,  # Stabilere Updates
     batch_fraction=0.4,  # Mehr Daten pro Training
     max_batches_per_training=12,
-    temporal_window=temporal_window # ⚡ MUST MATCH create_temporal_obs_builder_object()!
+    temporal_window=TEMPORAL_WINDOW # ⚡ MUST MATCH create_temporal_obs_builder_object()!
 )
 
 def create_ma_ppo_agent(observation_space: int, action_space: int) -> LearningPolicy:
@@ -698,7 +835,7 @@ def create_ma_ppo_agent(observation_space: int, action_space: int) -> LearningPo
     print('>> MARL_ATTENTION_TEMPORAL_PPOPolicy (Temporal Transformer)')
     print('   - observation_space:', observation_space)
     print('   - action_space:', action_space)
-    print('   - temporal_window:', temporal_window)
+    print('   - temporal_window:', TEMPORAL_WINDOW)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
         
     return MARL_ATTENTION_TEMPORAL_PPOPolicy(
@@ -719,7 +856,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int) -> Learnin
     print('>> MARL_ATT_DecisionPointPolicy (Temporal Transformer)')
     print('   - observation_space:', observation_space)
     print('   - action_space:', action_space)
-    print('   - temporal_window:', temporal_window)
+    print('   - temporal_window:', TEMPORAL_WINDOW)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
         
     return MARL_ATT_DecisionPointPolicy(
@@ -742,7 +879,7 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int) -> Lea
     print('>> MARL_ATT_DecisionPointPolicy with Deadlockavoidance (Temporal Transformer)')
     print('   - observation_space:', observation_space)
     print('   - action_space:', action_space)
-    print('   - temporal_window:', temporal_window)
+    print('   - temporal_window:', TEMPORAL_WINDOW)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
     
     return MARL_ATT_DecisionPointPolicy(
@@ -765,41 +902,18 @@ def create_deadlock_avoidance_policy(environment: Environment,
 
 
 def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: InfoDict, env: Environment) -> List[float]:
-    distance_map = env.raw_env.distance_map.get()
-    
     for i, agent in enumerate(env.raw_env.agents):
-        pos, dir = ExperimentalObservation.get_pos_dir(agent)
-        dist = distance_map[i, pos[0], pos[1], dir]
-        max_dist = np.max(distance_map[i][distance_map[i] != np.inf]) + 1
-        
-        if max_dist == np.inf:
-            max_dist = 1.0
-            dist = 1.0
-        if dist == np.inf:
-            dist = max_dist
-        
-        # Progress-based reward: closer to goal = higher reward (-1.0 to +1.0)
-        progress = (max_dist - dist) / max_dist
-        reward[i] = 0.5*progress - 1.0  # Range: -1.0 (far) to +0.0 (close)
-        
-        # Strong success bonus for DONE
+        # Standard: -1 pro Schritt
+        reward[i] = -1.0
+        # Ziel erreicht: +100
         if agent.state == TrainState.DONE:
-            reward[i] = 10.0  # Big positive reward!       
-            if env.raw_env._elapsed_steps < (env.raw_env._max_episode_steps - 5):
-                collaborative_bonus = 0.0
-                for j, opp_agent in enumerate(env.raw_env.agents):
-                    if agent.state == TrainState.DONE and i != j:
-                        collaborative_bonus += 0.5
-                reward[i] += 1.0 * collaborative_bonus / len(env.raw_env.agents)
-
-        if agent.state == TrainState.WAITING:
-            reward[i] = -0.01
-        if agent.state == TrainState.MALFUNCTION_OFF_MAP:
-            reward[i] = -0.01
-        if agent.state == TrainState.MALFUNCTION:
-            reward[i] = -0.01
-
-
+            reward[i] += 1.0
+        # Deadlock/Malfunction: -5
+        if agent.state in [TrainState.WAITING, TrainState.MALFUNCTION_OFF_MAP, TrainState.MALFUNCTION]:
+            reward[i] += 0.0
+        if hasattr(info, '__getitem__') and i in info and info[i] is not None:
+            if isinstance(info[i], dict) and info[i].get('deadlock', False):
+                reward[i] += -1.0
     return reward
 
 
