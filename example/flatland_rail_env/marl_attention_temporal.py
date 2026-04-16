@@ -621,7 +621,320 @@ class TemporalMultiAgentObservation(ObservationBuilder):
     def __init__(self, temporal_window: int = 3):
         super().__init__()
         self.temporal_window = temporal_window
-        self.base_obs = ExperimentalObservation()
+        self.base_obs = SimplifiedPathThreeTierObservation()
+        self.env = None  # Will be set by set_env()
+        
+        # Temporal history per agent: {handle: deque([obs_t-2, obs_t-1, obs_t])}
+        self.temporal_history: Dict[int, deque] = {}
+        
+    @staticmethod
+    def getObservationSize() -> int: 
+        return 30  
+    
+    def set_env(self, env):
+        """Set environment reference and propagate to base_obs"""
+        super().set_env(env)
+        self.env = env
+        self.base_obs.set_env(env)
+    
+    def reset(self):
+        """Reset temporal buffers at episode start"""
+        self.base_obs.reset()
+        self.temporal_history = {}
+        self.base_obs.reset()
+    
+    def get_many(self, handles: Optional[List[int]] = None):
+
+
+        """
+        Returns temporal sequences for all agents
+        
+        Output format: List of temporal_sequences
+        temporal_sequence = [(obs_t-2, opp_t-2), (obs_t-1, opp_t-1), (obs_t, opp_t)]
+        obs_t = 33D numpy array (30 base + 3 velocity)
+        opp_t = list of 33D arrays
+        """
+        if handles is None:
+            handles = list(range(len(self.env.agents)))
+        # Get current observations from base builder
+        current_obs = self.base_obs.get_many(handles)
+        
+        # Enrich with velocity features
+        enriched_obs = []
+        for handle_idx, (obs_self, obs_others) in enumerate(current_obs):
+            obs_fixed_size = obs_self[:TemporalMultiAgentObservation.getObservationSize()]
+            
+            # Also enrich opponent observations
+            obs_others_enriched = []
+            for opp_obs in obs_others:
+                # opp_obs is 37D, take first 30D and add velocity
+                opp_base = opp_obs[:30]
+                # For opponents, we don't have velocity history, so use zeros
+                opp_vel = np.zeros(3, dtype=np.float32)
+                opp_enriched = np.concatenate([opp_base, opp_vel])
+                obs_others_enriched.append(opp_enriched)
+            
+            enriched_obs.append((obs_fixed_size, obs_others_enriched))
+        
+        # Build temporal sequences
+        temporal_sequences = []
+        for handle_idx, (obs_self, obs_others) in enumerate(enriched_obs):
+            # Initialize buffer if needed
+            if handle_idx not in self.temporal_history:
+                self.temporal_history[handle_idx] = deque(maxlen=self.temporal_window)
+            
+            # Add current observation
+            self.temporal_history[handle_idx].append((obs_self, obs_others))
+            
+            # Get sequence with padding
+            seq = list(self.temporal_history[handle_idx])
+            
+            # Padding: Duplicate first observation if not enough history
+            while len(seq) < self.temporal_window:
+                if len(seq) > 0:
+                    seq.insert(0, seq[0])
+                else:
+                    # Very first observation - create zero observation
+                    zero_obs = np.zeros(33, dtype=np.float32)
+                    seq.insert(0, (zero_obs, []))
+            
+            temporal_sequences.append(seq)
+        
+        return temporal_sequences
+    
+
+class SimplifiedPathThreeTierObservation(ObservationBuilder):
+    """
+    Observation mit drei Pfad-Teilen (KORRIGIERT):
+    - A: Links (nur aktiv bei Switch und wenn Pfad nach links existiert, sonst Nullvektor)
+    - B: Forward (immer aktiv, enthält Features für geradeaus)
+    - C: Rechts (nur aktiv bei Switch und wenn Pfad nach rechts existiert, sonst Nullvektor)
+    Alle Teile haben identische Feature-Länge. Header enthält State-Infos.
+    """
+    def __init__(self):
+        super().__init__()
+        self.env = None
+        self.switchAnalyser = None
+        self.walker = None
+        self.feature_len = 16  # Beispiel: 16 Features pro Pfad (anpassbar)
+        self.header_len = 8    # z.B. State, Richtung, etc.
+
+    def set_env(self, env):
+        self.env = env
+        self.switchAnalyser = None
+        self.walker = None
+
+    def reset(self):
+        self.switchAnalyser = None
+        self.walker = None
+
+    @staticmethod
+    def getObservationSize() -> int:
+        # Header + 3 Pfade je feature_len
+        return 8 + 3 * 16
+
+    def get(self, handle: int = 0):
+        agent = self.env.agents[handle]
+        pos, dir = ExperimentalObservation.get_pos_dir(agent)
+        target = agent.target
+        if pos is None or target is None:
+            return (np.zeros(self.getObservationSize(), dtype=np.float32)-1, [])
+
+        # Initialisiere Analyser erst beim ersten Zugriff
+        if self.switchAnalyser is None:
+            self.switchAnalyser = RailroadSwitchAnalyser(self.env)
+        if self.walker is None:
+            self.walker = WalkToNextDecisionPoint(self.env)
+
+        header = [float(agent.state.value), float(dir), float(agent.handle), float(pos[0]), float(pos[1]), float(target[0]), float(target[1]), 0.0]
+
+        def path_features(start_pos, start_dir, max_steps=64, toleranz_max_dist_step_diff=5):
+            f = np.zeros(self.feature_len, dtype=np.float32)
+            if start_pos is None or target is None:
+                return f
+            transitions = self.env.rail.get_transitions(*start_pos, start_dir)
+            dist = np.linalg.norm(np.array(start_pos) - np.array(target))
+            f[0] = dist
+            f[1] = float(np.sum(transitions) > 2)  # Switch-Flag
+
+            pos = start_pos
+            direction = start_dir
+            # Erster Schritt: gehe auf das nächste Feld in die Richtung, falls möglich
+            if transitions[direction]:
+                pos = get_new_position(pos, direction)
+            else:
+                found = False
+                for d in range(4):
+                    if transitions[d]:
+                        pos = get_new_position(pos, d)
+                        direction = d
+                        found = True
+                        break
+                if not found:
+                    return f
+
+            agent_count = 0
+            opp_agent_count = 0
+            deadlock_found = 0
+            switch_found = 0
+            deadlock_in_path = 0
+            target_found = 0
+            crowd = 0
+            path_len = 0
+            block_flag = 0.0
+            near_switch = 0.0
+            near_switch_cell = 0.0
+            steps = 0
+            greedy_mode = False
+            while steps < max_steps:
+                if pos == target:
+                    target_found = 1
+                    break
+                transitions = self.env.rail.get_transitions(*pos, direction)
+                if np.sum(transitions) == 0:
+                    break
+                # Agenten auf Feld?
+                agent_idx = self.env.agent_map[pos] if hasattr(self.env, 'agent_map') and self.env.agent_map is not None else -1
+                if agent_idx != -1 and agent_idx != handle:
+                    agent_count += 1
+                    other_dir = self.env.agents[agent_idx].direction
+                    if (other_dir + 2) % 4 == direction:
+                        opp_agent_count += 1
+                # Deadlock?
+                legal_moves = [self.env.rail.get_transitions(*pos, (direction + a) % 4) for a in [-1, 0, 1]]
+                if sum([fast_count_nonzero(m) for m in legal_moves]) == 0:
+                    deadlock_found = 1
+                # Switch?
+                at_switch, near_switch_flag, at_switch_cell, near_switch_cell_flag = self.switchAnalyser.check_agent_decision(position=pos, direction=direction)
+                if at_switch or at_switch_cell:
+                    switch_found = 1
+                    # Ab jetzt greedy shortest path zum Ziel
+                    greedy_mode = True
+                if near_switch_flag:
+                    near_switch = 1.0
+                if near_switch_cell_flag:
+                    near_switch_cell = 1.0
+                # Crowd
+                y, x = pos
+                h, w = self.env.height, self.env.width
+                r = 2
+                y_min, y_max = max(0, y - r), min(h, y + r + 1)
+                x_min, x_max = max(0, x - r), min(w, x + r + 1)
+                crowd += np.sum(self.env.agent_map[y_min:y_max, x_min:x_max] != -1) - 1 if hasattr(self.env, 'agent_map') and self.env.agent_map is not None else 0
+                # Blockiert?
+                if agent_idx != -1 and agent_idx != handle and self.env.agents[agent_idx].state == TrainState.STOPPED:
+                    block_flag = 1.0
+
+                # Weiterlaufen
+                if greedy_mode:
+                    # Greedy: Wähle Richtung mit minimaler Distanz zum Ziel, forward bevorzugen bei "fast gleich lang"
+                    min_dist = np.inf
+                    best_dirs = []
+                    dists = {}
+                    for d in range(4):
+                        if transitions[d]:
+                            npos = get_new_position(pos, d)
+                            d_dist = np.linalg.norm(np.array(npos) - np.array(target))
+                            dists[d] = d_dist
+                            if d_dist < min_dist:
+                                min_dist = d_dist
+                    # Sammle alle Richtungen, die innerhalb der Toleranz zum Minimum liegen
+                    for d, d_dist in dists.items():
+                        if d_dist - min_dist <= toleranz_max_dist_step_diff:
+                            best_dirs.append(d)
+                    # Bevorzuge forward, falls enthalten
+                    if direction in best_dirs:
+                        chosen_dir = direction
+                    else:
+                        chosen_dir = best_dirs[0] if best_dirs else None
+                    if chosen_dir is not None:
+                        pos = get_new_position(pos, chosen_dir)
+                        direction = chosen_dir
+                    else:
+                        break
+                else:
+                    if transitions[direction]:
+                        pos = get_new_position(pos, direction)
+                    else:
+                        found = False
+                        for d in range(4):
+                            if transitions[d]:
+                                pos = get_new_position(pos, d)
+                                direction = d
+                                found = True
+                                break
+                        if not found:
+                            break
+                path_len += 1
+                steps += 1
+            f[2] = agent_count
+            f[3] = opp_agent_count
+            f[4] = deadlock_found
+            f[5] = switch_found
+            f[6] = deadlock_in_path
+            f[7] = near_switch
+            f[8] = near_switch_cell
+            f[9] = crowd / max(1, path_len)
+            f[10] = path_len
+            f[11] = target_found
+            f[12] = block_flag
+            # f[13], f[14], f[15] = 0.0 (Padding)
+            return f
+
+        # KORRIGIERT: A=links, B=forward, C=rechts
+        a = np.zeros(self.feature_len, dtype=np.float32)  # links
+        b = np.zeros(self.feature_len, dtype=np.float32)  # forward
+        c = np.zeros(self.feature_len, dtype=np.float32)  # rechts
+
+        transitions = self.env.rail.get_transitions(*pos, dir)
+        is_switch = np.sum(transitions) > 2
+        # Links
+        left_dir = (dir - 1) % 4
+        if is_switch and transitions[left_dir]:
+            a = path_features(pos, left_dir)
+        # Forward immer gesetzt, wenn möglich
+        if transitions[dir]:
+            b = path_features(pos, dir)
+        # Rechts
+        right_dir = (dir + 1) % 4
+        if is_switch and transitions[right_dir]:
+            c = path_features(pos, right_dir)
+
+        obs = np.concatenate([header, a, b, c])
+        return (obs, [])
+    
+    def get_many(self, handles: Optional[List[int]] = None):
+        if handles is None:
+            handles = list(range(len(self.env.agents)))
+        result = []
+        for handle in handles:
+            obs_self, obs_others = self.get(handle)
+            # obs_others ist immer leer, aber für Kompatibilität mit TemporalMultiAgentObservation
+            result.append((obs_self, obs_others))
+        return result
+
+# =============================================================================
+# NEW: TemporalMultiAgentObservation - Adds Temporal Dimension!
+# =============================================================================
+
+class TemporalMultiAgentObservation(ObservationBuilder):
+    """
+    🚀 INNOVATION: Temporal Observation Builder
+    
+    Extends ExperimentalObservation with:
+    1. Temporal Buffer: Stores last T timesteps (default T=3)
+    2. Velocity Features: Computed from position/direction deltas
+    3. Sequential Format: Returns [(obs_t-2, opp_t-2), (obs_t-1, opp_t-1), (obs_t, opp_t)]
+    
+    Observation Size: 33D per timestep
+    - 30D: Base features (from ExperimentalObservation)
+    - 3D:  Velocity (velocity_x, velocity_y, angular_velocity)
+    """
+    
+    def __init__(self, temporal_window: int = 3):
+        super().__init__()
+        self.temporal_window = temporal_window
+        self.base_obs = SimplifiedPathThreeTierObservation()
         self.env = None  # Will be set by set_env()
         
         # Temporal history per agent: {handle: deque([obs_t-2, obs_t-1, obs_t])}
