@@ -1,6 +1,7 @@
 from typing import Union, Callable, List, Dict
 
 from environment.environment import Environment
+from flatland.envs.rail_env_action import RailEnvActions
 from policy.policy import Policy
 from rendering.base_renderer import BaseRenderer
 from solver.base_solver import BaseSolver
@@ -99,7 +100,7 @@ class MultiAgentBaseSolver(BaseSolver):
             if update_values[handle] or terminal_all:
                 policy.step(handle,
                             state[handle],
-                            int(actions[handle]),
+                            RailEnvActions.from_value(actions[handle]).value,
                             reward[handle],
                             state_next[handle],
                             terminal[handle])
