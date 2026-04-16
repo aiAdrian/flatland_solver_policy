@@ -99,7 +99,7 @@ class MultiAgentBaseSolver(BaseSolver):
             if update_values[handle] or terminal_all:
                 policy.step(handle,
                             state[handle],
-                            actions[handle],
+                            int(actions[handle]),
                             reward[handle],
                             state_next[handle],
                             terminal[handle])
