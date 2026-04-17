@@ -1395,7 +1395,7 @@ if __name__ == "__main__":
                 policy,
                 FlatlandSimpleRenderer(environment) if do_rendering else None
             )
-            # solver.load_policy()  # Load pre-trained weights if available
+            
             solver.set_reward_shaper(flatland_reward_shaper)
             if do_training:
                 # solver.load_policy()  # Uncomment to continue training
