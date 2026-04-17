@@ -400,11 +400,15 @@ class ExperimentalObservation(ObservationBuilder):
                 vec.append(-1.0)        
 
         # --- Erweiterte Features ---
-        # 1. Restdistanz zum Ziel (normiert)
+        # 1. Restdistanz zum Ziel (normiert, als Pfaddistanz)
         if pos is not None and target is not None:
-            rest_dist = np.linalg.norm(np.array(pos) - np.array(target))
-            max_dim = max(self.env.height, self.env.width)
-            rest_dist_norm = rest_dist / max_dim
+            distance_map = self.env.distance_map.get()
+            rest_dist = distance_map[handle, pos[0], pos[1], dir]
+            max_dist = np.max(distance_map[handle][distance_map[handle] != np.inf])
+            if max_dist > 0 and rest_dist != np.inf:
+                rest_dist_norm = rest_dist / max_dist
+            else:
+                rest_dist_norm = -1.0
         else:
             rest_dist_norm = -1.0
         vec.append(rest_dist_norm)
@@ -722,7 +726,7 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
         self.switchAnalyser = None
         self.walker = None
         self.feature_len = 16  # Beispiel: 16 Features pro Pfad (anpassbar)
-        self.header_len = 8    # z.B. State, Richtung, etc.
+        self.header_len = 9    # z.B. State, Richtung, etc. + nbr_agents
 
     def set_env(self, env):
         self.env = env
@@ -736,7 +740,7 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
     @staticmethod
     def getObservationSize() -> int:
         # Header + 3 Pfade je feature_len
-        return 8 + 3 * 16
+        return 9 + 3 * 16
 
     def get(self, handle: int = 0):
         agent = self.env.agents[handle]
@@ -768,7 +772,8 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
                         best_idx = idx
             if best_idx != -1:
                 best_hint[best_idx] = 1.0
-        header = [float(agent.state.value), float(dir), float(agent.handle), float(pos[0]), float(pos[1]), float(target[0]), float(target[1])] + best_hint
+        nbr_agents = float(len(self.env.agents)) if hasattr(self.env, 'agents') else -1.0
+        header = [float(agent.state.value), float(dir), float(agent.handle), float(pos[0]), float(pos[1]), float(target[0]), float(target[1]), nbr_agents] + best_hint
 
         def path_features(start_pos, start_dir, max_steps=64, toleranz_max_dist_step_diff=5):
             f = np.zeros(self.feature_len, dtype=np.float32)
@@ -951,7 +956,7 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
         """
         Berechnet die Features für Path D (Rückfluss).
         - Zählt Agenten, die entlang des Rückflusses kommen.
-        - Schätzt die verbleibende Zeit der Agenten bis zu ihrem Ziel.
+        - Schätzt die verbleibende Pfaddistanz der Agenten bis zu ihrem Ziel (statt Luftlinie).
         Die Richtung wird korrekt um 180° gedreht (Rückweg).
         Fügt Grenzprüfung für das Grid ein.
         """
@@ -964,7 +969,8 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
         direction = (start_dir + 2) % 4  # 180° gedreht
         steps = 0
         agent_count = 0
-        total_time_to_target = 0.0
+        total_path_dist_to_target = 0.0
+        distance_map = self.env.distance_map.get()
 
         def in_bounds(p):
             return 0 <= p[0] < h and 0 <= p[1] < w
@@ -981,8 +987,11 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
             if agent_idx != -1:
                 agent_count += 1
                 agent = self.env.agents[agent_idx]
-                time_to_target = np.linalg.norm(np.array(agent.target) - np.array(pos))
-                total_time_to_target += time_to_target
+                # Nutze Pfaddistanz statt Luftlinie
+                agent_dir = agent.direction if agent.direction is not None else agent.initial_direction
+                path_dist = distance_map[agent_idx, pos[0], pos[1], agent_dir]
+                if path_dist != np.inf:
+                    total_path_dist_to_target += path_dist
 
             # Weiter entlang des Rückflusses gehen: immer in die Richtung (direction) weiterlaufen
             next_pos = get_new_position(pos, direction)
@@ -993,7 +1002,7 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
             steps += 1
 
         f[0] = agent_count
-        f[1] = total_time_to_target / max(1, agent_count)  # Durchschnittliche Zeit zum Ziel
+        f[1] = total_path_dist_to_target / max(1, agent_count)  # Durchschnittliche Pfaddistanz zum Ziel
         # Padding für restliche Features
         return f
 
@@ -1378,7 +1387,7 @@ if __name__ == "__main__":
                 TemporalMultiAgentObservation.getObservationSize(),
                 environment.get_action_space()
             )
-            
+            policy.load_policy()  # Load pre-trained weights if available
             if hasattr(policy, 'get_training_summary'):
                 policy.get_training_summary()
             
