@@ -25,18 +25,14 @@ class ExperimentalObservation(ObservationBuilder):
         self.switchAnalyser: RailroadSwitchAnalyser  = None
         self.walker = None
         self.observation_space = np.zeros(
-            ExperimentalObservation.getObservationSize() - ExperimentalObservation.getObservationOthersExtraSize(),
+            ExperimentalObservation.getObservationSize(),
             dtype=np.float32
         )
         print(">> ExperimentalObservation loaded.")
 
     @staticmethod
-    def getObservationOthersExtraSize() -> int:
-        return 7
-
-    @staticmethod
     def getObservationSize() -> int:
-        return 5 + 3 * 39 + ExperimentalObservation.getObservationOthersExtraSize()
+        return 30
 
     def reset(self):
         self.switchAnalyser = RailroadSwitchAnalyser(self.env)
@@ -54,7 +50,7 @@ class ExperimentalObservation(ObservationBuilder):
         pos, direction = self.get_pos_dir(agent)
         if pos is None or direction is None or not agent.state.is_on_map_state():
             # Agent ist nicht auf der Map
-            return np.zeros(self.observation_space.shape, dtype=np.float32), []
+            return np.zeros(ExperimentalObservation.getObservationSize(), dtype=np.float32), []
 
         # Analyse der Entscheidungsstellen und Pfade
         decision_obs, opp_agents = DecisionPointObservation.get_decision_point_observation(
@@ -78,25 +74,7 @@ class ExperimentalObservation(ObservationBuilder):
         all_obs = [self.get(handle) for handle in handles]
         states = []
         for obs_agent_handle in range(len(all_obs)):
-            obs_self, opp_agents = all_obs[obs_agent_handle]
-            obs_self = obs_self.copy()
-            for d in range(7):
-                obs_self = np.append(obs_self, 0)
-            other_list = []
-            for my_opp_agent in opp_agents:
-                if my_opp_agent.handle != obs_agent_handle:
-                    obs_other, _ = all_obs[my_opp_agent.handle]
-                    obs_other = obs_other.copy()
-                    obs_other = np.append(obs_other, my_opp_agent.same_direction)
-                    self_is_also_in_opp_agents = [0, 0, 0]
-                    self_is_also_in_opp_agents_dir = [0, 0, 0]
-                    self_is_also_in_opp_agents[my_opp_agent.detected_branch_action] = 1
-                    self_is_also_in_opp_agents_dir[my_opp_agent.detected_branch_action] = my_opp_agent.opp_direction
-                    for d in self_is_also_in_opp_agents:
-                        obs_other = np.append(obs_other, d)
-                    for d in self_is_also_in_opp_agents_dir:
-                        obs_other = np.append(obs_other, d)
-                    other_list.append(obs_other)
-            state = (obs_self, other_list)
-            states.append(state)
+            obs_self, _ = all_obs[obs_agent_handle]
+            # Keine Multi-Agent-Features, keine Padding-Nullen
+            states.append(obs_self)
         return states

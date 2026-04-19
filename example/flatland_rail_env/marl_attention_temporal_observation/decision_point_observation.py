@@ -20,7 +20,7 @@ class DecisionPointObservation(ObservationBuilder):
         super().__init__()
         self.env = None
         self.switchAnalyser = None
-        self.feature_len = 15
+        self.feature_len = 30
         print(">> DecisionPointObservation loaded.")
 
     def set_env(self, env):
@@ -32,7 +32,7 @@ class DecisionPointObservation(ObservationBuilder):
 
     @staticmethod
     def getObservationSize() -> int:
-        return 15
+        return 30
 
     def get(self, handle: int = 0):
         agent = self.env.agents[handle]
@@ -114,6 +114,7 @@ class DecisionPointObservation(ObservationBuilder):
         features[12] = wait_flag
         features[13] = deadlock_flag
         features[14] = merge_type
+        # Rest bleibt 0
         return (features, [])
 
     def get_many(self, handles: list = None):
@@ -132,16 +133,18 @@ class DecisionPointObservation(ObservationBuilder):
         direction = agent.direction if agent.direction is not None else agent.initial_direction
         if pos is None or direction is None or not agent.state.is_on_map_state():
             # Agent ist nicht auf der Map
-            return np.zeros(ExperimentalObservation.getObservationSize() - ExperimentalObservation.getObservationOthersExtraSize(), dtype=np.float32), []
+            return np.zeros(30, dtype=np.float32), []
 
         # Beispielhafte Feature-Berechnung (hier kannst du deine Logik anpassen)
         from .experimental_observation import ExperimentalObservation
-        features = np.zeros(ExperimentalObservation.getObservationSize() - ExperimentalObservation.getObservationOthersExtraSize(), dtype=np.float32)
+        # Korrigiere: Features-Länge auf 30 (wie erwartet)
+        features = np.zeros(30, dtype=np.float32)
         features[0] = float(pos[0])
         features[1] = float(pos[1])
         features[2] = float(direction)
         features[3] = float(agent.state.value)
         features[4] = float(handle)
+        # Dummy: Rest mit 0 (oder nach Bedarf weitere sinnvolle Features)
         # ... weitere Feature-Berechnung nach Bedarf ...
 
         # Dummy-opp_agents-Liste (hier ggf. echte Gegnerlogik einbauen)

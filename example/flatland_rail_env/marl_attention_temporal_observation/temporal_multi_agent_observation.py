@@ -21,7 +21,7 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         super().__init__()
         self.temporal_window = temporal_window
         if base_obs is None:
-            self.base_obs = ExperimentalObservation()
+            self.base_obs = DecisionPointObservation()
         elif isinstance(base_obs, ObservationBuilder):
             self.base_obs = base_obs
         elif isinstance(base_obs, type) and issubclass(base_obs, ObservationBuilder):
