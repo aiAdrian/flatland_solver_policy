@@ -1,5 +1,167 @@
 from typing import Any, Callable, Optional, Type, List, Union, Tuple, Set, Dict
 from collections import namedtuple, deque
+import numpy as np
+from flatland.core.env_observation_builder import ObservationBuilder
+from flatland.envs.rail_env import RailEnv, RailEnvActions
+from flatland.core.grid.grid4_utils import get_new_position
+from flatland.envs.agent_utils import EnvAgent
+from flatland.envs.step_utils.states import TrainState
+from flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
+from flatland.envs.fast_methods import fast_count_nonzero, fast_argmax, fast_position_equal
+from environment.environment import Environment
+from example.flatland_rail_env.flatland_rail_env_persister import RailEnvironmentPersistable
+from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import DeadLockAvoidancePolicy
+from policy.learning_policy.learning_policy import LearningPolicy
+from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
+from solver.flatland.flatland_solver import FlatlandSolver
+from solver.multi_agent_base_solver import RewardList, TerminalList, InfoDict
+from policy.policy import Policy
+from utils.flatland.shortest_distance_walker import ShortestDistanceWalker
+from utils.training_evaluation_pipeline import create_random_policy
+from marl_attention_temporal_mappo import MARL_ATTENTION_TEMPORAL_PPOPolicy, MARL_ATTENTION_TEMPORAL_MAPPO_Param
+import torch
+
+# =============================================================================
+# NEW: DecisionPointObservation - Encodes Flatland's Sparse Decision Points
+# =============================================================================
+
+class DecisionPointObservation(ObservationBuilder):
+    """
+    Observation builder focused on Flatland's three key decision points:
+    1. Agent start (READY_TO_DEPART): Should the agent enter the board?
+    2. At a switch: Path/routing decision (agent can branch).
+    3. At a merge/crossing: One cell before a switch, cannot branch (merge/crossing logic).
+
+    Encodes:
+    - Decision type (start, switch, merge/crossing, or always-move)
+    - Local cell features (is_switch, is_merge, can_branch, can_merge, can_cross)
+    - Agent state, direction, position, and target
+    - Optionally, temporal context (for use with temporal stacking)
+    """
+    def __init__(self):
+        super().__init__()
+        self.env = None
+        self.switchAnalyser = None
+        # [decision_type, agent_state, dir, pos_y, pos_x, target_y, target_x, is_switch, is_merge, can_branch, can_merge, can_cross, wait_flag, deadlock_flag, merge_type]
+        self.feature_len = 15
+
+    def set_env(self, env):
+        self.env = env
+        self.switchAnalyser = None
+
+    def reset(self):
+        self.switchAnalyser = None
+
+    @staticmethod
+    def getObservationSize() -> int:
+        # [decision_type, agent_state, dir, pos_y, pos_x, target_y, target_x, is_switch, is_merge, can_branch, can_merge, can_cross, wait_flag, deadlock_flag, merge_type]
+        return 15
+
+    def get(self, handle: int = 0):
+        agent = self.env.agents[handle]
+        pos = agent.position if agent.position is not None else agent.initial_position
+        dir = agent.direction if agent.direction is not None else agent.initial_direction
+        target = agent.target
+        if pos is None or target is None:
+            return (np.zeros(self.feature_len, dtype=np.float32)-1, [])
+
+        # Initialize switchAnalyser if needed
+        if self.switchAnalyser is None:
+            from flatland_railway_extension.flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
+            self.switchAnalyser = RailroadSwitchAnalyser(self.env)
+
+        # Decision point analysis
+        agent_at_switch, agent_near_switch, agent_at_switch_cell, agent_near_switch_cell = \
+            self.switchAnalyser.check_agent_decision(position=pos, direction=dir)
+
+        # Decision type encoding
+        # 0: always-move, 1: start, 2: at switch, 3: at merge/crossing
+        if agent.state.name == "READY_TO_DEPART":
+            decision_type = 1.0
+        elif agent_at_switch:
+            decision_type = 2.0
+        elif agent_near_switch_cell:
+            decision_type = 3.0
+        else:
+            decision_type = 0.0
+
+        # Path-based features
+        wait_flag = 0.0
+        deadlock_flag = 0.0
+        merge_type = 0.0  # 0: none, 1: b.1 (merge order), 2: b.2 (crossing)
+
+        # Only analyze for decision points
+        if decision_type == 2.0:  # At switch
+            # Check if branching leads to deadlock (simple lookahead)
+            for d in [-1, 0, 1]:  # left, forward, right
+                abs_dir = (dir + d) % 4
+                transitions = self.env.rail.get_transitions(*pos, dir)
+                if transitions[abs_dir]:
+                    npos = get_new_position(pos, abs_dir)
+                    # Look ahead: is there an agent or deadlock ahead?
+                    if hasattr(self.env, 'agent_map') and self.env.agent_map is not None:
+                        agent_on_path = self.env.agent_map[npos] != -1 and self.env.agent_map[npos] != handle
+                        if agent_on_path:
+                            other_agent = self.env.agents[self.env.agent_map[npos]]
+                            # If agent is stopped or coming towards us, set deadlock flag
+                            if other_agent.state == TrainState.STOPPED or (other_agent.direction + 2) % 4 == abs_dir:
+                                deadlock_flag = 1.0
+        elif decision_type == 3.0:  # At merge/crossing
+            # Check for merge type: b.1 (order) or b.2 (crossing)
+            # b.2: crossing if agent in opposite direction is near
+            if hasattr(self.env, 'agent_map') and self.env.agent_map is not None:
+                for d in range(4):
+                    npos = get_new_position(pos, d)
+                    if self.env.agent_map[npos] != -1 and self.env.agent_map[npos] != handle:
+                        other_agent = self.env.agents[self.env.agent_map[npos]]
+                        if (other_agent.direction + 2) % 4 == dir:
+                            merge_type = 2.0  # crossing
+                            wait_flag = 1.0
+                            break
+                        elif other_agent.direction == dir:
+                            merge_type = 1.0  # merge order
+                            wait_flag = 1.0
+
+        # Feature vector
+        features = np.zeros(self.feature_len, dtype=np.float32)
+        features[0] = decision_type
+        features[1] = float(agent.state.value)
+        features[2] = float(dir)
+        features[3] = float(pos[0])
+        features[4] = float(pos[1])
+        features[5] = float(target[0])
+        features[6] = float(target[1])
+        features[7] = float(agent_at_switch)
+        features[8] = float(agent_near_switch_cell)
+        features[9] = float(agent_at_switch_cell)
+        features[10] = float(agent_near_switch)
+        # can_cross: true if at merge/crossing and there is an agent in the opposite direction
+        can_cross = 0.0
+        if agent_near_switch_cell:
+            if hasattr(self.env, 'agent_map') and self.env.agent_map is not None:
+                for d in range(4):
+                    npos = get_new_position(pos, d)
+                    if self.env.agent_map[npos] != -1 and self.env.agent_map[npos] != handle:
+                        other_agent = self.env.agents[self.env.agent_map[npos]]
+                        if (other_agent.direction + 2) % 4 == dir:
+                            can_cross = 1.0
+                            break
+        features[11] = can_cross
+        features[12] = wait_flag
+        features[13] = deadlock_flag
+        features[14] = merge_type
+        return (features, [])
+
+    def get_many(self, handles: Optional[list] = None):
+        if handles is None:
+            handles = list(range(len(self.env.agents)))
+        result = []
+        for handle in handles:
+            obs_self, obs_others = self.get(handle)
+            result.append((obs_self, obs_others))
+        return result
+from typing import Any, Callable, Optional, Type, List, Union, Tuple, Set, Dict
+from collections import namedtuple, deque
 
 import numpy as np
 from flatland.core.env_observation_builder import ObservationBuilder
@@ -627,12 +789,30 @@ class TemporalMultiAgentObservation(ObservationBuilder):
     - 3D:  Velocity (velocity_x, velocity_y, angular_velocity)
     """
     
-    def __init__(self, temporal_window: int = 3):
+
+    def __init__(self, temporal_window: int = 3, base_obs=None):
         super().__init__()
         self.temporal_window = temporal_window
-        self.base_obs = SimplifiedPathThreeTierObservation()
+        # Allow passing a class, string, or instance for base_obs
+        if base_obs is None:
+            self.base_obs = DecisionPointObservation()
+        elif isinstance(base_obs, ObservationBuilder):
+            self.base_obs = base_obs
+        elif isinstance(base_obs, type) and issubclass(base_obs, ObservationBuilder):
+            self.base_obs = base_obs()
+        elif isinstance(base_obs, str):
+            registry = {
+                'SimplifiedPathThreeTierObservation': SimplifiedPathThreeTierObservation,
+                'ExperimentalObservation': ExperimentalObservation,
+                'DecisionPointObservation': DecisionPointObservation,
+            }
+            if base_obs in registry:
+                self.base_obs = registry[base_obs]()
+            else:
+                raise ValueError(f"Unknown base_obs: {base_obs}")
+        else:
+            raise ValueError(f"Invalid base_obs: {base_obs}")
         self.env = None  # Will be set by set_env()
-        
         # Temporal history per agent: {handle: deque([obs_t-2, obs_t-1, obs_t])}
         self.temporal_history: Dict[int, deque] = {}
         
@@ -780,7 +960,6 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
             if start_pos is None or target is None:
                 return f
             transitions = self.env.rail.get_transitions(*start_pos, start_dir)
-            # Nutze distance_map für Distanz
             distance_map = self.env.distance_map.get()
             h, w = self.env.height, self.env.width
             handle = agent.handle
@@ -820,6 +999,10 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
             near_switch_cell = 0.0
             steps = 0
             greedy_mode = False
+
+            # DEADLOCK-Feature: Gibt es einen entgegenkommenden Agenten bis zum nächsten Switch, der nicht ausweichen kann?
+            deadlock_on_path = 0.0
+            deadlock_checked = False
             while steps < max_steps:
                 if pos == target:
                     target_found = 1
@@ -832,8 +1015,36 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
                 if agent_idx != -1 and agent_idx != handle:
                     agent_count += 1
                     other_dir = self.env.agents[agent_idx].direction
+                    # Prüfe: Kommt Agent entgegen?
                     if (other_dir + 2) % 4 == direction:
                         opp_agent_count += 1
+                        # Deadlock-Prüfung: Gibt es bis zum nächsten Switch für den anderen Agenten eine Ausweichmöglichkeit?
+                        # Wir laufen ab hier bis zum nächsten Switch rückwärts entlang der Richtung des anderen Agenten
+                        opp_pos = pos
+                        opp_dir = other_dir
+                        found_switch = False
+                        for _ in range(32):
+                            opp_trans = self.env.rail.get_transitions(*opp_pos, opp_dir)
+                            if np.sum(opp_trans) > 2:
+                                found_switch = True
+                                break
+                            # Weiterlaufen
+                            if opp_trans[opp_dir]:
+                                opp_pos = get_new_position(opp_pos, opp_dir)
+                            else:
+                                found = False
+                                for d in range(4):
+                                    if opp_trans[d]:
+                                        opp_pos = get_new_position(opp_pos, d)
+                                        opp_dir = d
+                                        found = True
+                                        break
+                                if not found:
+                                    break
+                        if not found_switch:
+                            deadlock_on_path = 1.0
+                            deadlock_checked = True
+                            break
                 # Deadlock?
                 legal_moves = [self.env.rail.get_transitions(*pos, (direction + a) % 4) for a in [-1, 0, 1]]
                 if sum([fast_count_nonzero(m) for m in legal_moves]) == 0:
@@ -844,6 +1055,7 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
                     switch_found = 1
                     # Ab jetzt greedy shortest path zum Ziel
                     greedy_mode = True
+                    break  # Stoppe bei Switch, Deadlock-Check bis hier
                 if near_switch_flag:
                     near_switch = 1.0
                 if near_switch_cell_flag:
@@ -861,14 +1073,12 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
 
                 # Weiterlaufen
                 if greedy_mode:
-                    # Greedy: Wähle Richtung mit minimaler Distanz zum Ziel, forward bevorzugen bei "fast gleich lang"
                     min_dist = np.inf
                     best_dirs = []
                     dists = {}
                     for d in range(4):
                         if transitions[d]:
                             npos = get_new_position(pos, d)
-                            # Nutze distance_map für Distanz
                             if 0 <= npos[0] < h and 0 <= npos[1] < w:
                                 d_dist = distance_map[handle, npos[0], npos[1], d]
                             else:
@@ -876,11 +1086,9 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
                             dists[d] = d_dist
                             if d_dist < min_dist:
                                 min_dist = d_dist
-                    # Sammle alle Richtungen, die innerhalb der Toleranz zum Minimum liegen
                     for d, d_dist in dists.items():
                         if d_dist - min_dist <= toleranz_max_dist_step_diff:
                             best_dirs.append(d)
-                    # Bevorzuge forward, falls enthalten
                     if direction in best_dirs:
                         chosen_dir = direction
                     else:
@@ -909,7 +1117,7 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
             f[3] = opp_agent_count
             f[4] = deadlock_found
             f[5] = switch_found
-            f[6] = deadlock_in_path
+            f[6] = deadlock_on_path  # Deadlock-Feature: 1.0 falls Deadlock bis Switch
             f[7] = near_switch
             f[8] = near_switch_cell
             f[9] = crowd / max(1, path_len)
@@ -1382,7 +1590,6 @@ if __name__ == "__main__":
             solver_deadlock.perform_evaluation(max_episodes=1000)
     else:
         for pcl in policy_creator_list:
-            # Pass 33D observation size (30 base + 3 velocity)
             policy = pcl(
                 TemporalMultiAgentObservation.getObservationSize(),
                 environment.get_action_space()
