@@ -66,11 +66,19 @@ Diese Observation ist speziell auf die drei wichtigsten Entscheidungssituationen
 - Trifft der Agent auf einen entgegenkommenden Agenten, wird zur letzten Weiche zurückgegangen (Backtracking) und dort versucht, eine alternative Richtung zu wählen. Die Anzahl der Pfadwechsel wird gezählt.
 - Für jede Richtung werden drei Werte als Features gespeichert: Distanz zum Ziel (bzw. -1, falls kein Weg gefunden wurde), Deadlock-Flag (1, falls Deadlock, sonst 0), Anzahl der Pfadwechsel.
 
+
 **Speziallogik für Merge/Kreuzung (decision_type==3):**
-- Es wird geprüft, ob das Feld vor dem Agenten frei ist. Ist das Feld belegt, wird zusätzlich geprüft, ob der belegende Agent aus der Gegenrichtung kommt (Kreuzungs-/Deadlock-Risiko).
-- Kommt ein Agent entgegen, wird ein Deadlock-Flag gesetzt. Dies signalisiert, dass ein Einfädeln oder Kreuzen aktuell riskant ist.
-- Für das Feld hinter dem Agenten (Gegenrichtung) wird geprüft, ob dort ein Agent steht, der auf den Agenten zufährt. In diesem Fall wird ein Warte-Flag gesetzt, um dem anderen Agenten Vorrang zu geben und Konflikte zu vermeiden.
-- Die ermittelten Flags (Feld vorwärts frei, entgegenkommender Agent, Deadlock, Warten) werden explizit als Features im Beobachtungsvektor abgelegt.
+- Die Analyse für das Feld vor (forward) und hinter (backward) dem Agenten erfolgt jeweils mit der rekursiven Methode `_navigate_direction`, die Deadlocks, entgegenkommende Agenten und Pfadblockaden erkennt.
+- Für beide Richtungen wird geprüft, ob die Zielzelle überhaupt im Grid liegt (Grid-Boundary-Check). Ist dies nicht der Fall, wird sofort ein Deadlock-Flag gesetzt und die Features entsprechend belegt.
+- Für das Feld vor dem Agenten (forward) werden folgende Features gesetzt:
+	- `forward_free`: 1, wenn ein Pfad zum Ziel existiert, sonst 0
+	- `forward_agent`: 1, wenn auf dem Pfad ein fremder Agent gesehen wird, sonst 0
+	- `forward_deadlock`: 1, wenn ein Deadlock erkannt wurde, sonst 0
+- Für das Feld hinter dem Agenten (backward) wird mit `_navigate_direction` geprüft, ob ein Agent entgegenkommt. Falls ja, wird das `wait_flag` gesetzt (1), um Vorrang zu geben.
+- Die Features werden explizit im Beobachtungsvektor abgelegt (forward_free, forward_agent, forward_deadlock, wait_flag).
+- Durch die Grid-Boundary-Prüfung werden Indexierungsfehler und Out-of-Bounds-Zugriffe sicher verhindert.
+
+Diese robuste und rekursive Analyse ermöglicht Policies, an Einmündungen und Kreuzungen situationsabhängig zu entscheiden, ob ein Einfädeln, Kreuzen oder Warten sinnvoll ist, und so Deadlocks und Konflikte proaktiv zu vermeiden.
 
 **Zusammenfassung:**
 - Die DecisionPointObservation ist ideal für Policies, die gezielt an Knotenpunkten, Weichen und Einmündungen agieren müssen.
