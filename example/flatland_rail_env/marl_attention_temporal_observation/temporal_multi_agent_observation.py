@@ -4,6 +4,7 @@ from collections import deque
 from typing import Optional, List, Dict
 from .experimental_observation import ExperimentalObservation
 from .decision_point_observation import DecisionPointObservation
+from .simplified_path_three_tier_observation import SimplifiedPathThreeTierObservation
 
 class TemporalMultiAgentObservation(ObservationBuilder):
     """
@@ -20,7 +21,7 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         super().__init__()
         self.temporal_window = temporal_window
         if base_obs is None:
-            self.base_obs = DecisionPointObservation()
+            self.base_obs = ExperimentalObservation()
         elif isinstance(base_obs, ObservationBuilder):
             self.base_obs = base_obs
         elif isinstance(base_obs, type) and issubclass(base_obs, ObservationBuilder):
@@ -29,6 +30,7 @@ class TemporalMultiAgentObservation(ObservationBuilder):
             registry = {
                 'ExperimentalObservation': ExperimentalObservation,
                 'DecisionPointObservation': DecisionPointObservation,
+                'SimplifiedPathThreeTierObservation': SimplifiedPathThreeTierObservation,
             }
             if base_obs in registry:
                 self.base_obs = registry[base_obs]()
@@ -38,6 +40,7 @@ class TemporalMultiAgentObservation(ObservationBuilder):
             raise ValueError(f"Invalid base_obs: {base_obs}")
         self.env = None
         self.temporal_history: Dict[int, deque] = {}
+        print(">> TemporalMultiAgentObservation loaded.")
 
     @staticmethod
     def getObservationSize() -> int:

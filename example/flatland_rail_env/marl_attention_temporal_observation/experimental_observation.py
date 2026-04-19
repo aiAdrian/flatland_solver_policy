@@ -28,6 +28,7 @@ class ExperimentalObservation(ObservationBuilder):
             ExperimentalObservation.getObservationSize() - ExperimentalObservation.getObservationOthersExtraSize(),
             dtype=np.float32
         )
+        print(">> ExperimentalObservation loaded.")
 
     @staticmethod
     def getObservationOthersExtraSize() -> int:
@@ -48,6 +49,19 @@ class ExperimentalObservation(ObservationBuilder):
         dir = agent.direction if agent.direction is not None else agent.initial_direction
         return pos, dir
 
+    def get(self, handle: int):
+        agent = self.env.agents[handle]
+        pos, direction = self.get_pos_dir(agent)
+        if pos is None or direction is None or not agent.state.is_on_map_state():
+            # Agent ist nicht auf der Map
+            return np.zeros(self.observation_space.shape, dtype=np.float32), []
+
+        # Analyse der Entscheidungsstellen und Pfade
+        decision_obs, opp_agents = DecisionPointObservation.get_decision_point_observation(
+            self.env, handle, self.switchAnalyser, self.walker, self.max_path_length, self.lookahead_cost_limit, self.max_agent_dist
+        )
+        return decision_obs, opp_agents
+
     def get_many(self, handles: Optional[List[int]] = None) -> Any:
         h, w = self.env.height, self.env.width
         self.agent_map = np.full((h, w), -1, dtype=int)
@@ -58,7 +72,10 @@ class ExperimentalObservation(ObservationBuilder):
             if agent.state.is_on_map_state():
                 self.agent_map[pos] = agent.handle
         self.walker.clear(self.agent_map)
-        all_obs = super().get_many(handles)
+        # Statt super().get_many(handles):
+        if handles is None:
+            handles = list(range(len(self.env.agents)))
+        all_obs = [self.get(handle) for handle in handles]
         states = []
         for obs_agent_handle in range(len(all_obs)):
             obs_self, opp_agents = all_obs[obs_agent_handle]
@@ -83,4 +100,3 @@ class ExperimentalObservation(ObservationBuilder):
             state = (obs_self, other_list)
             states.append(state)
         return states
-    # ...restliche Methoden (wie _analyze_direction_branches, get) bitte analog auslagern...

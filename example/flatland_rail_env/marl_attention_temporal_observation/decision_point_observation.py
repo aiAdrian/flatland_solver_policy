@@ -21,6 +21,7 @@ class DecisionPointObservation(ObservationBuilder):
         self.env = None
         self.switchAnalyser = None
         self.feature_len = 15
+        print(">> DecisionPointObservation loaded.")
 
     def set_env(self, env):
         self.env = env
@@ -42,7 +43,7 @@ class DecisionPointObservation(ObservationBuilder):
             return (np.zeros(self.feature_len, dtype=np.float32)-1, [])
 
         if self.switchAnalyser is None:
-            from flatland_railway_extension.flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
+            from flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
             self.switchAnalyser = RailroadSwitchAnalyser(self.env)
 
         agent_at_switch, agent_near_switch, agent_at_switch_cell, agent_near_switch_cell = \
@@ -123,3 +124,26 @@ class DecisionPointObservation(ObservationBuilder):
             obs_self, obs_others = self.get(handle)
             result.append((obs_self, obs_others))
         return result
+
+    @staticmethod
+    def get_decision_point_observation(env, handle, switchAnalyser, walker, max_path_length, lookahead_cost_limit, max_agent_dist):
+        agent = env.agents[handle]
+        pos = agent.position if agent.position is not None else agent.initial_position
+        direction = agent.direction if agent.direction is not None else agent.initial_direction
+        if pos is None or direction is None or not agent.state.is_on_map_state():
+            # Agent ist nicht auf der Map
+            return np.zeros(ExperimentalObservation.getObservationSize() - ExperimentalObservation.getObservationOthersExtraSize(), dtype=np.float32), []
+
+        # Beispielhafte Feature-Berechnung (hier kannst du deine Logik anpassen)
+        from .experimental_observation import ExperimentalObservation
+        features = np.zeros(ExperimentalObservation.getObservationSize() - ExperimentalObservation.getObservationOthersExtraSize(), dtype=np.float32)
+        features[0] = float(pos[0])
+        features[1] = float(pos[1])
+        features[2] = float(direction)
+        features[3] = float(agent.state.value)
+        features[4] = float(handle)
+        # ... weitere Feature-Berechnung nach Bedarf ...
+
+        # Dummy-opp_agents-Liste (hier ggf. echte Gegnerlogik einbauen)
+        opp_agents = []
+        return features, opp_agents
