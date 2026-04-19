@@ -28,10 +28,8 @@ class DecisionPointObservation(ObservationBuilder):
     def _navigate_direction(self, handle, start_pos, start_dir, target, max_steps=100):
         '''
         Navigiert ab start_pos/start_dir bis zum Ziel oder Deadlock.
-        Gibt (dist, deadlock_flag, num_switches, seen_agents) zurück.
-        Deadlock: 1, falls kein Weg zum Ziel gefunden werden kann.
-        num_switches: Wie oft wurde der Pfad gewechselt (an Weichen).
-        seen_agents: Liste aller fremden Agenten, die auf dem Pfad gesehen wurden.
+        Gibt (max_dist, deadlock_flag, num_switches, seen_agents, abort_flag, target_found_flag) zurück.
+        max_dist: Maximale Distanz, die auf dem Pfad bis Ziel, Deadlock oder max_steps zurückgelegt werden kann.
         '''
         env = self.env
         distance_map = env.distance_map.get()
@@ -42,24 +40,21 @@ class DecisionPointObservation(ObservationBuilder):
         num_switches = 0
         visited = set()
         seen_agents = set()
-        deadlock_flag = 0
         target_found_flag = 0
+        max_dist = 0
         while steps < max_steps:
             if pos == target:
                 target_found_flag = 1
-                return steps, 0, num_switches, list(seen_agents), 0, target_found_flag
+                return max_dist, 0, num_switches, list(seen_agents), 0, target_found_flag
             if not self._is_in_grid(pos):
-                return -1, 1, num_switches, list(seen_agents), 0, 0
+                return max_dist if max_dist > 0 else -1, 1, num_switches, list(seen_agents), 0, 0
             visited.add((pos, direction))
             transitions = env.rail.get_transitions(*pos, direction)
-            # Prüfe entgegenkommende Agenten
             if agent_map is not None:
                 agent_idx = agent_map[pos]
                 if agent_idx != -1 and agent_idx != handle:
                     seen_agents.add(agent_idx)
                 if agent_idx != -1 and env.agents[agent_idx].direction == (direction + 2) % 4:
-                    # Entgegenkommender Agent -> Backtrack
-                    # Suche letzte Weiche rückwärts
                     back_pos, back_dir = pos, (direction + 2) % 4
                     found_switch = False
                     for _ in range(10):
@@ -73,7 +68,6 @@ class DecisionPointObservation(ObservationBuilder):
                             break
                     if found_switch:
                         num_switches += 1
-                        # Versuche andere Richtung an der Weiche
                         for d in range(4):
                             if d != back_dir and back_trans[d]:
                                 npos = get_new_position(back_pos, d)
@@ -81,11 +75,10 @@ class DecisionPointObservation(ObservationBuilder):
                                     sub_dist, sub_deadlock, sub_switches, sub_seen, sub_abort, sub_target_found = self._navigate_direction(handle, npos, d, target, max_steps-steps)
                                     seen_agents.update(sub_seen)
                                     if sub_deadlock == 0:
-                                        return steps + sub_dist, 0, num_switches + sub_switches, list(seen_agents), sub_abort, sub_target_found
-                        return -1, 1, num_switches, list(seen_agents), 0, 0
+                                        return max(max_dist, steps + sub_dist), 0, num_switches + sub_switches, list(seen_agents), sub_abort, sub_target_found
+                        return max_dist if max_dist > 0 else -1, 1, num_switches, list(seen_agents), 0, 0
                     else:
-                        return -1, 1, num_switches, list(seen_agents), 0, 0
-            # Normale Fortsetzung auf dem kürzesten Pfad
+                        return max_dist if max_dist > 0 else -1, 1, num_switches, list(seen_agents), 0, 0
             min_dist = float('inf')
             best_dir = None
             for d in range(4):
@@ -96,12 +89,12 @@ class DecisionPointObservation(ObservationBuilder):
                         min_dist = dist
                         best_dir = d
             if best_dir is None or min_dist == np.inf:
-                return -1, 1, num_switches, list(seen_agents), 0, 0
+                return max_dist if max_dist > 0 else -1, 1, num_switches, list(seen_agents), 0, 0
             pos = get_new_position(pos, best_dir)
             direction = best_dir
             steps += 1
-        # max_steps überschritten
-        return -1, 1, num_switches, list(seen_agents), 1, 0
+            max_dist = max(max_dist, steps)
+        return max_dist if max_dist > 0 else -1, 1, num_switches, list(seen_agents), 1, 0
     """
     Observation builder focused on Flatland's three key decision points:
     1. Agent start (READY_TO_DEPART): Should the agent enter the board?
