@@ -39,6 +39,56 @@ flowchart TD
 
 ## 2. DecisionPointObservation
 
+### 2.1 Einleitung und Funktionsweise
+
+Die `DecisionPointObservation` ist die zentrale Beobachtungsklasse für alle kritischen Entscheidungssituationen im Flatland-Setting. Sie liefert einen 30-dimensionalen, klar strukturierten Feature-Vektor, der für jede Situation (Start, Weiche, Merge/Crossing) einen eigenen, disjunkten Block belegt. Ziel ist es, der Policy für jede relevante Richtung eine vollständige, konfliktbewusste Einschätzung zu ermöglichen.
+
+### 2.2 Feature-Block-Übersicht
+
+Der Feature-Vektor ist wie folgt aufgebaut:
+
+| Index | Bedeutung (Switch)         | Bedeutung (Merge/Crossing) |
+|-------|----------------------------|----------------------------|
+| 0     | decision_type              | decision_type              |
+| 1–3   | one-hot [l, f, r]          | one-hot [l, f, r]          |
+| 4–7   | left: dist, deadlock, ...  | –                          |
+| 8–11  | forward: dist, ...         | –                          |
+| 12–15 | right: dist, ...           | –                          |
+| 16–19 | reverse: dist, ...         | –                          |
+| 20–23 | –                          | forward: dist, ...         |
+| 24–27 | –                          | backward: dist, ...        |
+| 28    | delta_dist_fwd (Start)     | delta_dist_fwd (Start)     |
+
+Jeder Block ist exklusiv für eine Entscheidungssituation reserviert. Die Werte dist, deadlock, switches, delta_dist sind jeweils im Fließtext unten erklärt.
+
+### 2.3 Entscheidungslogik und Ablauf
+
+1. **Status & Position:** Die aktuelle Position, Richtung und der Status des Agenten werden bestimmt.
+2. **Klassifikation:** Mit Hilfe des `RailroadSwitchAnalyser` wird erkannt, ob der Agent startet, auf einer Weiche steht oder sich vor einer Weiche befindet.
+3. **Blockauswahl:** Je nach Situation wird der passende Feature-Block belegt.
+4. **Richtungsanalyse:** Für jede relevante Richtung werden Navigationsmetriken berechnet (siehe 2.4).
+5. **Agenten-Interaktion:** Entgegenkommende Agenten werden erkannt und beeinflussen die Deadlock-Logik.
+
+### 2.4 Algorithmus: _navigate_direction
+
+Die Methode `_navigate_direction` simuliert für jede Richtung, wie ein Agent ab einer gegebenen Position und Richtung bis zum Ziel oder bis zu einem Deadlock navigieren würde. Sie liefert für jede Richtung vier Werte:
+- Die Anzahl der Schritte bis zum Ziel (dist, oder -1 bei Deadlock)
+- Ein Deadlock-Flag (1 bei Deadlock, sonst 0)
+- Die Anzahl der Pfadwechsel (an Weichen)
+- Eine Liste aller fremden Agenten, die auf dem Pfad gesehen wurden
+
+Der Ablauf ist wie folgt:
+1. Initialisierung aller Zähler und Sets.
+2. Iterative Navigation bis Ziel, Deadlock oder max_steps:
+	- Ziel erreicht: Rückgabe der Werte.
+	- Außerhalb Grid: Deadlock.
+	- Transitions bestimmen.
+	- Agentenprüfung: Entgegenkommende Agenten → Backtracking und alternative Richtungen.
+	- Normale Fortsetzung: Richtung mit minimaler Distanz zum Ziel wählen.
+	- Kein Fortschritt: Deadlock.
+
+Die Ergebnisse werden für jede Richtung in die Features 4–19 geschrieben. So erhält die Policy eine vollständige, konfliktbewusste Einschätzung aller Alternativen.
+
 **Zweck:**
 Die `DecisionPointObservation` ist für die drei wichtigsten Entscheidungssituationen im Flatland-Setting optimiert: Start, Weiche, Merge/Crossing. Sie liefert einen 30D-Feature-Vektor mit disjunkten Blöcken für jede Situation.
 
@@ -62,67 +112,6 @@ Die `DecisionPointObservation` ist für die drei wichtigsten Entscheidungssituat
 	  - forward/backward: dist, deadlock, switches, delta_dist
 	- **Start:** Nur delta_dist_fwd
 5. **Agenten-Interaktion:** Während der Navigation werden entgegenkommende Agenten erkannt und in die Deadlock-Logik einbezogen.
-
-**Feature-Bedeutung (vollständig, DecisionPointObservation):**
-| Index | Bedeutung (decision_type==2, Switch)         | Bedeutung (decision_type==3, Merge/Crossing) |
-|-------|----------------------------------------------|----------------------------------------------|
-| 0     | decision_type                                | decision_type                                |
-| 1     | one-hot left                                 | one-hot left                                 |
-| 2     | one-hot forward                              | one-hot forward                              |
-| 3     | one-hot right                                | one-hot right                                |
-| 4     | left: dist                                   | –                                            |
-| 5     | left: deadlock                               | –                                            |
-| 6     | left: switches                               | –                                            |
-| 7     | left: delta_dist                             | –                                            |
-| 8     | forward: dist                                | –                                            |
-| 9     | forward: deadlock                            | –                                            |
-| 10    | forward: switches                            | –                                            |
-| 11    | forward: delta_dist                          | –                                            |
-| 12    | right: dist                                  | –                                            |
-| 13    | right: deadlock                              | –                                            |
-| 14    | right: switches                              | –                                            |
-| 15    | right: delta_dist                            | –                                            |
-| 16    | reverse: dist                                | –                                            |
-| 17    | reverse: deadlock                            | –                                            |
-| 18    | reverse: switches                            | –                                            |
-| 19    | reverse: delta_dist                          | –                                            |
-| 20    | –                                            | forward: dist                                |
-| 21    | –                                            | forward: deadlock                            |
-| 22    | –                                            | forward: switches                            |
-| 23    | –                                            | forward: delta_dist                          |
-| 24    | –                                            | backward: dist                               |
-| 25    | –                                            | backward: deadlock                           |
-| 26    | –                                            | backward: switches                           |
-| 27    | –                                            | backward: delta_dist                         |
-| 28    | delta_dist_fwd (decision_type==1)            | delta_dist_fwd (decision_type==1)            |
-
-**Detaillierte Entscheidungslogik:**
-```mermaid
-flowchart TD
-	 A[Agentenstatus lesen] --> B[Position & Richtung bestimmen]
-	 B --> C{Entscheidungspunkt?}
-	 C -- Start --> D[decision_type=1, nur delta_dist_fwd]
-	 C -- Weiche --> E[decision_type=2, alle Richtungen analysieren]
-	 C -- Merge/Crossing --> F[decision_type=3, forward/backward analysieren]
-	 E --> G[Für jede Richtung: dist, deadlock, switches, delta_dist]
-	 F --> H[forward/backward: dist, deadlock, switches, delta_dist]
-	 D & G & H --> I[Feature-Vektor zurückgeben]
-```
-
-**Jeder Schritt im Detail:**
-1. **Position & Richtung:** Lies agent.position und agent.direction. Falls nicht gesetzt, nimm initial_position/initial_direction.
-2. **Switch-Analyse:** Mit `RailroadSwitchAnalyser.check_agent_decision()` werden agent_at_switch, agent_near_switch, switch_cell, near_switch_cell bestimmt.
-3. **decision_type:**
-	- 1 = Start (READY_TO_DEPART)
-	- 2 = Weiche (agent_at_switch)
-	- 3 = Merge/Crossing (near_switch_cell & nicht agent_near_switch)
-	- 0 = Standardfall
-4. **Transitions:** Ermittle mit env.rail.get_transitions(), welche Richtungen möglich sind.
-5. **Feature-Berechnung:**
-	- Für jede Richtung: Navigiere mit _navigate_direction() bis zum Ziel oder Deadlock. Zähle Deadlocks, Pfadwechsel, und merke gesehene Agenten.
-	- delta_dist: Differenz der Distanz zum Ziel nach dem Schritt.
-6. **Opponenten:** Alle auf dem Pfad gesehenen Agenten werden gesammelt und können für Multi-Agenten-Features genutzt werden.
-
 ---
 
 ## 3. SimplifiedPathThreeTierObservation
