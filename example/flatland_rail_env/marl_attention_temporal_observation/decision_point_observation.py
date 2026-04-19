@@ -17,12 +17,21 @@ class DecisionPointObservation(ObservationBuilder):
     - Optionally, temporal context (for use with temporal stacking)
     """
 
+    def _is_in_grid(self, pos):
+        if pos is None:
+            return False
+        env = self.env
+        rows, cols = env.height, env.width if hasattr(env, 'height') and hasattr(env, 'width') else env.rail.grid.shape
+        r, c = pos
+        return 0 <= r < rows and 0 <= c < cols
+
     def _navigate_direction(self, handle, start_pos, start_dir, target, max_steps=100):
         '''
         Navigiert ab start_pos/start_dir bis zum Ziel oder Deadlock.
-        Gibt (dist, deadlock_flag, num_switches) zurück.
+        Gibt (dist, deadlock_flag, num_switches, seen_agents) zurück.
         Deadlock: 1, falls kein Weg zum Ziel gefunden werden kann.
         num_switches: Wie oft wurde der Pfad gewechselt (an Weichen).
+        seen_agents: Liste aller fremden Agenten, die auf dem Pfad gesehen wurden.
         '''
         env = self.env
         distance_map = env.distance_map.get()
@@ -32,15 +41,20 @@ class DecisionPointObservation(ObservationBuilder):
         steps = 0
         num_switches = 0
         visited = set()
+        seen_agents = set()
         deadlock_flag = 0
         while steps < max_steps:
             if pos == target:
-                return steps, 0, num_switches
+                return steps, 0, num_switches, list(seen_agents)
+            if not self._is_in_grid(pos):
+                return -1, 1, num_switches, list(seen_agents)
             visited.add((pos, direction))
             transitions = env.rail.get_transitions(*pos, direction)
             # Prüfe entgegenkommende Agenten
             if agent_map is not None:
                 agent_idx = agent_map[pos]
+                if agent_idx != -1 and agent_idx != handle:
+                    seen_agents.add(agent_idx)
                 if agent_idx != -1 and env.agents[agent_idx].direction == (direction + 2) % 4:
                     # Entgegenkommender Agent -> Backtrack
                     # Suche letzte Weiche rückwärts
@@ -62,31 +76,29 @@ class DecisionPointObservation(ObservationBuilder):
                             if d != back_dir and back_trans[d]:
                                 npos = get_new_position(back_pos, d)
                                 if (npos, d) not in visited:
-                                    # Rekursiver Versuch ab neuer Richtung
-                                    sub_dist, sub_deadlock, sub_switches = self._navigate_direction(handle, npos, d, target, max_steps-steps)
+                                    sub_dist, sub_deadlock, sub_switches, sub_seen = self._navigate_direction(handle, npos, d, target, max_steps-steps)
+                                    seen_agents.update(sub_seen)
                                     if sub_deadlock == 0:
-                                        return steps + sub_dist, 0, num_switches + sub_switches
-                        # Kein Weg gefunden
-                        return -1, 1, num_switches
+                                        return steps + sub_dist, 0, num_switches + sub_switches, list(seen_agents)
+                        return -1, 1, num_switches, list(seen_agents)
                     else:
-                        return -1, 1, num_switches
+                        return -1, 1, num_switches, list(seen_agents)
             # Normale Fortsetzung auf dem kürzesten Pfad
-                # Wähle Richtung mit minimaler Distanz zum Ziel
-                min_dist = float('inf')
-                best_dir = None
-                for d in range(4):
-                    if transitions[d]:
-                        npos = get_new_position(pos, d)
-                        dist = distance_map[handle, npos[0], npos[1], d]
-                        if dist < min_dist:
-                            min_dist = dist
-                            best_dir = d
-                if best_dir is None or min_dist == np.inf:
-                    return -1, 1, num_switches
-                pos = get_new_position(pos, best_dir)
-                direction = best_dir
-                steps += 1
-            return -1, 1, num_switches
+            min_dist = float('inf')
+            best_dir = None
+            for d in range(4):
+                if transitions[d]:
+                    npos = get_new_position(pos, d)
+                    dist = distance_map[handle, npos[0], npos[1], d]
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_dir = d
+            if best_dir is None or min_dist == np.inf:
+                return -1, 1, num_switches, list(seen_agents)
+            pos = get_new_position(pos, best_dir)
+            direction = best_dir
+            steps += 1
+        return -1, 1, num_switches, list(seen_agents)
     """
     Observation builder focused on Flatland's three key decision points:
     1. Agent start (READY_TO_DEPART): Should the agent enter the board?
@@ -172,6 +184,7 @@ class DecisionPointObservation(ObservationBuilder):
                 best_hint[best_idx] = 1.0
         features[1:4] = best_hint
 
+        opp_agents = set()
         # decision_type 2: auf Weiche -> für jede Richtung [dist, deadlock, switches]
         if decision_type == 2.0:
             rel_dirs = [(-1) % 4, 0, 1, 2]  # left, forward, right, reverse
@@ -179,45 +192,43 @@ class DecisionPointObservation(ObservationBuilder):
                 abs_dir = (dir + rel_dir) % 4
                 if transitions[abs_dir]:
                     npos = get_new_position(pos, abs_dir)
-                    dist, deadlock, switches = self._navigate_direction(handle, npos, abs_dir, target)
+                    dist, deadlock, switches, seen = self._navigate_direction(handle, npos, abs_dir, target)
+                    opp_agents.update(seen)
                 else:
                     dist, deadlock, switches = -1, 1, 0
                 features[4 + i*3] = dist
                 features[4 + i*3 + 1] = deadlock
                 features[4 + i*3 + 2] = switches
         if decision_type == 3.0:
-            # Vor Weiche/Merge: Forward-Analyse (Einmündung/Kreuzung)
+            # Vor Weiche/Merge: Forward- und Backward-Analyse mit _navigate_direction
             forward_dir = dir
             reverse_dir = (dir + 2) % 4
-            forward_free = 1.0
-            forward_agent = 0.0
-            forward_deadlock = 0.0
+            # Forward: 1 Schritt vorwärts
+            npos_fwd = get_new_position(pos, forward_dir)
+            if npos_fwd is not None and self._is_in_grid(npos_fwd):
+                dist_fwd, deadlock_fwd, switches_fwd, seen_fwd = self._navigate_direction(handle, npos_fwd, forward_dir, target)
+                opp_agents.update(seen_fwd)
+                forward_free = 1.0 if dist_fwd != -1 else 0.0
+                forward_agent = 1.0 if len(seen_fwd) > 0 else 0.0
+                forward_deadlock = float(deadlock_fwd)
+            else:
+                forward_free = 0.0
+                forward_agent = 0.0
+                forward_deadlock = 1.0
+            # Backward: 1 Schritt rückwärts
+            npos_bwd = get_new_position(pos, reverse_dir)
             wait_flag = 0.0
-            # Prüfe Feld vorwärts
-            npos = get_new_position(pos, forward_dir)
-            if hasattr(self.env, 'agent_map') and self.env.agent_map is not None:
-                agent_on_next = self.env.agent_map[npos] if npos is not None else -1
-                if agent_on_next != -1:
-                    forward_free = 0.0
-                    other_agent = self.env.agents[agent_on_next]
-                    # Kommt Agent entgegen?
-                    if other_agent.direction == reverse_dir:
-                        forward_agent = 1.0
-                        forward_deadlock = 1.0
-            # Prüfe, ob aus Gegenrichtung ein Agent kommt, der Vorrang haben sollte
-            npos_rev = get_new_position(pos, reverse_dir)
-            agent_on_prev = self.env.agent_map[npos_rev] if npos_rev is not None and hasattr(self.env, 'agent_map') and self.env.agent_map is not None else -1
-            if agent_on_prev != -1:
-                other_agent = self.env.agents[agent_on_prev]
-                # Kommt Agent auf mich zu?
-                if other_agent.direction == forward_dir:
+            if npos_bwd is not None and self._is_in_grid(npos_bwd):
+                dist_bwd, deadlock_bwd, switches_bwd, seen_bwd = self._navigate_direction(handle, npos_bwd, reverse_dir, target)
+                opp_agents.update(seen_bwd)
+                if len(seen_bwd) > 0:
                     wait_flag = 1.0
             # Features setzen
             features[16] = forward_free
             features[17] = forward_agent
             features[18] = forward_deadlock
             features[19] = wait_flag
-        return (features, [])
+        return (features, list(opp_agents))
 
     def get_many(self, handles: list = None):
         if handles is None:
