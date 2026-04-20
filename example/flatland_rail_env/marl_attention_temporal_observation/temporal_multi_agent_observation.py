@@ -2,9 +2,9 @@ from flatland.core.env_observation_builder import ObservationBuilder
 import numpy as np
 from collections import deque
 from typing import Optional, List, Dict
-from experimental_observation import ExperimentalObservation
-from decision_point_observation import DecisionPointObservation
-from simplified_path_three_tier_observation import SimplifiedPathThreeTierObservation
+from marl_attention_temporal_observation.experimental_observation import ExperimentalObservation
+from marl_attention_temporal_observation.decision_point_observation import DecisionPointObservation
+from marl_attention_temporal_observation.simplified_path_three_tier_observation import SimplifiedPathThreeTierObservation
 
 class TemporalMultiAgentObservation(ObservationBuilder):
     """

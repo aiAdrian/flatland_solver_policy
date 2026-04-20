@@ -1,8 +1,8 @@
 from flatland.core.env_observation_builder import ObservationBuilder
 import numpy as np
 from flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
-from walk_to_next_decision_point import WalkToNextDecisionPoint
-from experimental_observation import ExperimentalObservation
+from marl_attention_temporal_observation.walk_to_next_decision_point import WalkToNextDecisionPoint
+from marl_attention_temporal_observation.experimental_observation import ExperimentalObservation
 from flatland.core.grid.grid4_utils import get_new_position
 
 class SimplifiedPathThreeTierObservation(ObservationBuilder):

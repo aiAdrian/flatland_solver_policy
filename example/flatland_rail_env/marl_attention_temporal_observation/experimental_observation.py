@@ -4,7 +4,7 @@ from flatland.envs.step_utils.states import TrainState
 from flatland.core.grid.grid4_utils import get_new_position
 import numpy as np
 from flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
-from decision_point_observation import DecisionPointObservation
+from marl_attention_temporal_observation.decision_point_observation import DecisionPointObservation
 from collections import namedtuple
 from typing import Optional, List, Any
 
