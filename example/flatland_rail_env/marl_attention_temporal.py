@@ -131,7 +131,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 # =============================================================================
 
 # Globale Variable für die temporale Fenstergröße
-TEMPORAL_WINDOW = 3  # Einfach anpassen für Experimente
+TEMPORAL_WINDOW = 1  # Einfach anpassen für Experimente
 
 def create_temporal_obs_builder_object():
     """Factory for TemporalMultiAgentObservation"""
