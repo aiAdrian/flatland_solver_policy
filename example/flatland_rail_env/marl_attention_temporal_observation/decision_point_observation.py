@@ -59,6 +59,8 @@ class DecisionPointObservation(ObservationBuilder):
         return 32
 
     def get(self, handle: int = 0):
+
+
         # init features
         features = np.zeros(self.feature_len, dtype=np.float32)
 
@@ -66,31 +68,35 @@ class DecisionPointObservation(ObservationBuilder):
 
         # Get base information about the agent and its environment
         agent = self.env.agents[handle]  
+        agent.opp_agent_handles = []  # Initialisiere leere Liste für Gegner-Handles
+
+
         pos = agent.position if agent.position is not None else agent.initial_position
         dir = agent.direction if agent.direction is not None else agent.initial_direction
         target = agent.target
         if pos is None or target is None:
-            return (features-1, [])
+            return (features - 1, [])
 
         # retrieve distance map for pathfinding features
         distance_map = self.env.distance_map.get()
         curr_dist = self.env.distance_map.get()[handle, pos[0], pos[1], dir] if self._is_in_grid(pos) else -1
         if curr_dist == np.inf:
-            return (features -1, [])
+            return (features - 1, [])
 
         # classify decision point type based on agent state and position and infrastructure / cell 
         if self.switchAnalyser is None:
             from flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
             self.switchAnalyser = RailroadSwitchAnalyser(self.env)
 
-        agent_at_switch, agent_near_switch, switch_cell, near_switch_cell = \
+        agent_at_switch, agent_near_switch, \
+        switch_cell, near_switch_cell = \
             self.switchAnalyser.check_agent_decision(position=pos, direction=dir)
 
 
         # Check if there's an agent at the current position (e.g., for deadlock detection)
         agent_idx = self.env.agent_map[pos] if hasattr(self.env, 'agent_map') and self.env.agent_map is not None else -1
         if agent_idx != -1:
-            pass
+            return (features - 2, [])
 
         # classify decision point type
         if agent.state.name == "READY_TO_DEPART":
@@ -118,17 +124,17 @@ class DecisionPointObservation(ObservationBuilder):
         if target is not None:
             min_dist = float('inf')
             best_idx = -1
-            for idx, rel_dir in enumerate([(-1) % 4, 0, 1]):
-                abs_dir = (dir + rel_dir) % 4
-                if transitions[abs_dir]:
-                    npos = get_new_position(pos, abs_dir)
-                    distance_map = self.env.distance_map.get()
-                    dist = distance_map[handle, npos[0], npos[1], abs_dir]
+            idx = 0
+            for ndir in [(dir + i) % 4 for i in range(-1, 2)]:
+                if transitions[ndir]:
+                    npos = get_new_position(pos, ndir)
+                    dist = distance_map[handle, npos[0], npos[1], ndir]
                     if dist == np.inf:
                         dist = 2* curr_dist
                     if dist < min_dist:
                         min_dist = dist
                         best_idx = idx
+                idx += 1
             if best_idx != -1:
                 best_hint[best_idx] = 1.0
         features[1:4] = best_hint
@@ -192,7 +198,7 @@ class DecisionPointObservation(ObservationBuilder):
             npos_bwd = get_new_position(new_position, reverse_dir)
             if npos_bwd is not None and self._is_in_grid(npos_bwd):
                 _, deadlock_bwd, switches_bwd, seen_bwd, abort_bwd, target_found_bwd, visited_type_3_bwd= self._navigate_direction(handle, npos_bwd, reverse_dir, target)
-                opp_agents.update(seen_bwd) 
+                # opp_agents.update(seen_bwd) 
             else:
                 deadlock_bwd, switches_bwd, abort_bwd, target_found_bwd  = -1, -1, -1, -1
             features[28] = deadlock_bwd      # 28: deadlock_bwd
@@ -205,8 +211,9 @@ class DecisionPointObservation(ObservationBuilder):
         for a in all_visited:
             visited.append(a[0])
         self.env.dev_obs_dict.update({handle: visited})
-
-        return (features, list(opp_agents))
+    
+        agent.opp_agent_handles = list(opp_agents)  # Speichere die Gegner-Handles im Agentenobjekt
+        return (features, agent.opp_agent_handles )
 
     def get_many(self, handles: list = None):
         if handles is None:
@@ -272,43 +279,38 @@ class DecisionPointObservation(ObservationBuilder):
                 agent_idx = agent_map[pos]
                 if agent_idx != -1 and agent_idx != handle:
                     dfs_runtime_controller['seen_agents'].add(agent_idx)
-                if agent_idx != -1 and agent_idx != handle and env.agents[agent_idx].direction == (direction + 2) % 4:
-                    # Deadlock durch entgegenkommenden Agenten
-                    return cur_dist, 1, num_switches, 0, 0
+                if agent_idx != -1 and agent_idx != handle:
+                    if env.agents[agent_idx].direction != direction:
+                        # Deadlock durch entgegenkommenden Agenten
+                        return cur_dist, 1, num_switches, 0, 0
                 
             # Switch logic: mehrere Alternativen am Switch, sortiert nach distance_map
             num_trans = fast_count_nonzero(transitions)
             if num_trans > 1:
                 alternatives = []
-                for i in range(4):
-                    if transitions[i]:
-                        npos = get_new_position(pos, i)
-                        if (npos, i) not in dfs_runtime_controller['visited']:
-                            dist = distance_map[handle, npos[0], npos[1], i]
-                            alternatives.append((dist, i, npos))
+                for ndir in range(4):
+                    if transitions[ndir]:
+                        npos = get_new_position(pos, ndir)
+                        if (npos, ndir) not in dfs_runtime_controller['visited']:
+                            dist = distance_map[handle, npos[0], npos[1], ndir]
+                            alternatives.append((dist, ndir, npos))
                 alternatives.sort(key=lambda x: x[0])
                 num_switches_changed = 0
-                for _, i, npos in alternatives:
-                    agent_idx = agent_map[npos] if agent_map is not None and self._is_in_grid(npos) else -1
-                    if agent_idx != handle:
-                        if agent_idx == -1 or self.env.agents[agent_idx].direction == i:
-                            switch_stack.append((pos, direction, i))
-                            res = dfs(npos, i, switch_stack.copy(), num_switches + num_switches_changed)
-                            if res[1] == 0:
-                                return res
+                for _, ndir, npos in alternatives:
+                    switch_stack.append((pos, direction, ndir))
+                    res = dfs(npos, ndir, switch_stack.copy(), num_switches + num_switches_changed)
+                    if res[1] == 0:
+                        return res
                     num_switches_changed = 1
-                    if len(switch_stack) > 0:
-                        switch_stack.pop()
-                    else:
-                        switch_stack = []
-                # Alle Alternativen führen zu Deadlock/Abbruch
-                return cur_dist, 1, num_switches, 0, 0
+                    switch_stack.pop()
+            
             # Normale Fortsetzung: nur eine Richtung möglich
-            i = fast_argmax(transitions)
-            npos = get_new_position(pos, i)
-            if (npos, i) not in dfs_runtime_controller['visited']:
-                ret_dfs_dist, ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag = dfs(npos, i, switch_stack.copy(), num_switches)
+            ndir = fast_argmax(transitions)
+            npos = get_new_position(pos, ndir)
+            if (npos, ndir) not in dfs_runtime_controller['visited']:
+                ret_dfs_dist, ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag = dfs(npos, ndir, switch_stack.copy(), num_switches)
                 return max(ret_dfs_dist, cur_dist), ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag
+            
             # Sackgasse
             return cur_dist, 1, num_switches, 0, 0
 
