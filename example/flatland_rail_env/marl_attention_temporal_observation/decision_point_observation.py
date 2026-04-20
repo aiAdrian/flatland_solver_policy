@@ -273,11 +273,13 @@ class DecisionPointObservation(ObservationBuilder):
                                 dist = distance_map[handle, npos[0], npos[1], i]
                                 alternatives.append((dist, i, npos))
                     alternatives.sort(key=lambda x: x[0])
+                    num_switches_changed = 0
                     for _, i, npos in alternatives:
                         switch_stack.append((pos, direction, i))
-                        res = dfs(npos, i, switch_stack.copy(), num_switches+1)
+                        res = dfs(npos, i, switch_stack.copy(), num_switches + num_switches_changed)
                         if res[1] == 0:
                             return res
+                        num_switches_changed = 1
                         switch_stack.pop()
                     # Alle Alternativen führen zu Deadlock/Abbruch
                     return cur_dist, 1, num_switches, 0, 0

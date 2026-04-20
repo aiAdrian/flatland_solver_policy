@@ -43,9 +43,9 @@ flowchart TD
 
 Die `DecisionPointObservation` ist die zentrale Beobachtungsklasse für alle kritischen Entscheidungssituationen im Flatland-Setting. Sie liefert einen 30-dimensionalen, klar strukturierten Feature-Vektor, der für jede Situation (Start, Weiche, Merge/Crossing) einen eigenen, disjunkten Block belegt. Ziel ist es, der Policy für jede relevante Richtung eine vollständige, konfliktbewusste Einschätzung zu ermöglichen.
 
-### 2.2 Feature-Block-Übersicht
+### 2.2 Feature-Block-Übersicht (32D)
 
-Der Feature-Vektor ist exakt wie folgt aufgebaut. Jeder Index ist eindeutig belegt und wird im Folgenden ausführlich beschrieben:
+Der Feature-Vektor ist exakt wie folgt aufgebaut (Index 0–31):
 
 | Index | Feature-Name (Switch)                | Beschreibung (Switch)                                                                 | Feature-Name (Merge/Crossing)         | Beschreibung (Merge/Crossing)                                  |
 |-------|--------------------------------------|--------------------------------------------------------------------------------------|---------------------------------------|---------------------------------------------------------------|
@@ -69,27 +69,32 @@ Der Feature-Vektor ist exakt wie folgt aufgebaut. Jeder Index ist eindeutig bele
 | 17    | reverse_deadlock                     | 1, falls Deadlock auf rückwärtigem Pfad, sonst 0                                     | –                                     | –                                                             |
 | 18    | reverse_switches                     | Anzahl der Pfadwechsel (an Weichen) auf rückwärtigem Pfad                            | –                                     | –                                                             |
 | 19    | reverse_delta_dist                   | Distanzdifferenz zum Ziel nach Schritt rückwärts                                     | –                                     | –                                                             |
-| 20    | –                                    | –                                                                                    | forward_dist                          | Maximale Distanz auf dem Zielpfad (bis Ziel, Deadlock oder max_steps), wenn ein Schritt vorwärts gemacht wird |
-| 21    | –                                    | –                                                                                    | forward_deadlock                      | 1, falls Deadlock auf Forward-Pfad, sonst 0                    |
-| 22    | –                                    | –                                                                                    | forward_switches                      | Anzahl der Pfadwechsel (an Weichen) auf Forward-Pfad           |
-| 23    | –                                    | –                                                                                    | forward_delta_dist                    | Distanzdifferenz zum Ziel nach Schritt vorwärts                |
-| 24    | –                                    | –                                                                                    | backward_dist                         | Maximale Distanz auf dem Zielpfad (bis Ziel, Deadlock oder max_steps), wenn ein Schritt rückwärts gemacht wird |
-| 25    | –                                    | –                                                                                    | backward_deadlock                     | 1, falls Deadlock auf Backward-Pfad, sonst 0                   |
-| 26    | –                                    | –                                                                                    | backward_switches                     | Anzahl der Pfadwechsel (an Weichen) auf Backward-Pfad          |
-| 27    | –                                    | –                                                                                    | backward_delta_dist                   | Distanzdifferenz zum Ziel nach Schritt rückwärts               |
+| 20    | forward_dist_merge                   | –                                                                                    | forward_dist                          | wie oben, für Merge/Crossing                                  |
+| 21    | forward_deadlock_merge               | –                                                                                    | forward_deadlock                      | wie oben, für Merge/Crossing                                  |
+| 22    | forward_switches_merge               | –                                                                                    | forward_switches                      | wie oben, für Merge/Crossing                                  |
+| 23    | forward_delta_dist_merge             | –                                                                                    | forward_delta_dist                    | wie oben, für Merge/Crossing                                  |
+| 24    | backward_dist_merge                  | –                                                                                    | backward_dist                         | wie oben, für Merge/Crossing                                  |
+| 25    | backward_deadlock_merge              | –                                                                                    | backward_deadlock                     | wie oben, für Merge/Crossing                                  |
+| 26    | backward_switches_merge              | –                                                                                    | backward_switches                     | wie oben, für Merge/Crossing                                  |
+| 27    | backward_delta_dist_merge            | –                                                                                    | backward_delta_dist                   | wie oben, für Merge/Crossing                                  |
 | 28    | delta_dist_fwd (nur Start)           | Distanzdifferenz zum Ziel nach Startschritt                                          | delta_dist_fwd (nur Start)            | wie links                                                     |
 | 29    | abort                                | 1, wenn die maximale Schrittzahl (max_steps) überschritten wurde, sonst 0            | abort                                 | wie links                                                     |
 | 30    | target_found                         | 1, wenn das Ziel auf dem Pfad erreicht wurde, sonst 0                                | target_found                          | wie links                                                     |
+| 31    | reserved/extra/legacy                | (Optional: z.B. für Debug, Legacy, oder künftige Erweiterung, je nach Code)          | reserved/extra/legacy                 | wie links                                                     |
+
 
 **Feature-Beschreibungen im Detail:**
 - **decision_type:** Kodiert die aktuelle Entscheidungssituation (0=Standard, 1=Start, 2=Weiche, 3=Merge/Crossing).
 - **one-hot_left/forward/right:** Zeigt an, welche Richtung aktuell am günstigsten ist (laut distance_map).
-- **[left|forward|right|reverse]_dist:** Gibt die maximale Distanz auf dem Zielpfad an (also die größte Zahl an Schritten, die auf dem Pfad bis Ziel, Deadlock oder max_steps zurückgelegt werden kann), wenn der Agent in die jeweilige Richtung abbiegt. Dies ist nicht zwingend die direkte Distanz zum Ziel, sondern der längste tatsächlich gefundene Pfad in diese Richtung.
-- **[left|forward|right|reverse]_deadlock:** 1, falls auf dem Pfad ein Deadlock erkannt wird (z.B. Sackgasse, Blockade), sonst 0.
-- **[left|forward|right|reverse]_switches:** Zählt, wie oft auf dem Pfad an einer Weiche die Richtung gewechselt werden musste (Backtracking).
-- **[left|forward|right|reverse]_delta_dist:** Differenz der Distanz zum Ziel nach dem ersten Schritt in die jeweilige Richtung (hilft, kurzfristige Fortschritte zu bewerten).
-- **[forward|backward]_dist/deadlock/switches/delta_dist:** Wie oben, aber für die Merge/Crossing-Situation (decision_type==3), jeweils für einen Schritt vorwärts oder rückwärts. Auch hier ist die Distanz die maximale auf dem Zielpfad gefundene Schrittzahl.
+- **[left|forward|right|reverse]_dist:** Maximale Schrittzahl auf dem Zielpfad in die jeweilige Richtung (nicht zwingend direkte Distanz zum Ziel).
+- **[left|forward|right|reverse]_deadlock:** 1, falls Deadlock erkannt, sonst 0.
+- **[left|forward|right|reverse]_switches:** Anzahl der Pfadwechsel (an Weichen) auf dem Pfad.
+- **[left|forward|right|reverse]_delta_dist:** Distanzdifferenz zum Ziel nach dem ersten Schritt in die jeweilige Richtung.
+- **[forward|backward]_[...]_merge:** Wie oben, aber für Merge/Crossing-Situation (decision_type==3), jeweils für einen Schritt vorwärts oder rückwärts.
 - **delta_dist_fwd:** Nur bei Start (decision_type==1) belegt; gibt an, wie sich die Distanz zum Ziel nach dem ersten Schritt verändert.
+- **abort:** 1, wenn max_steps überschritten, sonst 0.
+- **target_found:** 1, wenn Ziel erreicht, sonst 0.
+- **reserved/extra/legacy:** Optionales Feld für Debugging, Legacy-Code oder künftige Erweiterungen (je nach Implementierung, siehe Code). Wird ggf. mit 0 belegt.
 
 Jeder Block ist exklusiv für eine Entscheidungssituation reserviert. Die Werte werden nur für die jeweils relevante Situation gesetzt, alle anderen Felder bleiben 0.
 
