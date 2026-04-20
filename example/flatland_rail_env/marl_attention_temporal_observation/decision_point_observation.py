@@ -29,73 +29,70 @@ class DecisionPointObservation(ObservationBuilder):
     def _navigate_direction(self, handle, start_pos, start_dir, target, max_steps=100):
         '''
         Navigiert ab start_pos/start_dir bis zum Ziel oder Deadlock.
-        Gibt (max_dist, deadlock_flag, num_switches, seen_agents, abort_flag, target_found_flag) zurück.
-        max_dist: Maximale Distanz, die auf dem Pfad bis Ziel, Deadlock oder max_steps zurückgelegt werden kann.
+        Backtracking: An jedem Switch werden alle Alternativen ausprobiert, falls Deadlock.
+        Gibt (steps, deadlock_flag, num_switches, seen_agents, abort_flag, target_found_flag) zurück.
         '''
         env = self.env
         distance_map = env.distance_map.get()
         agent_map = env.agent_map if hasattr(env, 'agent_map') else None
-        pos = start_pos
-        direction = start_dir
-        steps = 0
-        num_switches = 0
-        visited = set()
-        seen_agents = set()
-        target_found_flag = 0
-        max_dist = 0
-        while steps < max_steps:
+
+        dfs_runtime_controller = {
+            'count': 0,
+            'visited': set(),
+            'seen_agents': set()
+        }
+        def dfs(pos, direction, switch_stack, num_switches):
+            if dfs_runtime_controller['count'] >= max_steps:
+                return dfs_runtime_controller['count'], 1, num_switches, 1, 0
             if pos == target:
-                target_found_flag = 1
-                return max_dist, 0, num_switches, list(seen_agents), 0, target_found_flag
+                return dfs_runtime_controller['count'], 0, num_switches, 0, 1
             if not self._is_in_grid(pos):
-                return max_dist if max_dist > 0 else -1, 1, num_switches, list(seen_agents), 0, 0
-            visited.add((pos, direction))
+                return dfs_runtime_controller['count'], 1, num_switches, 0, 0
+            if (pos, direction) in dfs_runtime_controller['visited']:
+                return dfs_runtime_controller['count'], 1, num_switches, 0, 0
+            dfs_runtime_controller['visited'].add((pos, direction))
+            dfs_runtime_controller['count'] += 1
+
             transitions = env.rail.get_transitions(*pos, direction)
+            
+            # Deadlock: entgegenkommender Agent
             if agent_map is not None:
                 agent_idx = agent_map[pos]
                 if agent_idx != -1 and agent_idx != handle:
-                    seen_agents.add(agent_idx)
+                    dfs_runtime_controller['seen_agents'].add(agent_idx)
                 if agent_idx != -1 and env.agents[agent_idx].direction == (direction + 2) % 4:
-                    back_pos, back_dir = pos, (direction + 2) % 4
-                    found_switch = False
-                    for _ in range(10):
-                        back_trans = env.rail.get_transitions(*back_pos, back_dir)
-                        if np.sum(back_trans) > 1:
-                            found_switch = True
-                            break
-                        if back_trans[back_dir]:
-                            back_pos = get_new_position(back_pos, back_dir)
-                        else:
-                            break
-                    if found_switch:
-                        num_switches += 1
-                        for d in range(4):
-                            if d != back_dir and back_trans[d]:
-                                npos = get_new_position(back_pos, d)
-                                if (npos, d) not in visited:
-                                    sub_dist, sub_deadlock, sub_switches, sub_seen, sub_abort, sub_target_found = self._navigate_direction(handle, npos, d, target, max_steps-steps)
-                                    seen_agents.update(sub_seen)
-                                    if sub_deadlock == 0:
-                                        return max(max_dist, steps + sub_dist), 0, num_switches + sub_switches, list(seen_agents), sub_abort, sub_target_found
-                        return max_dist if max_dist > 0 else -1, 1, num_switches, list(seen_agents), 0, 0
-                    else:
-                        return max_dist if max_dist > 0 else -1, 1, num_switches, list(seen_agents), 0, 0
-            min_dist = float('inf')
-            best_dir = None
-            for d in range(4):
-                if transitions[d]:
-                    npos = get_new_position(pos, d)
-                    dist = distance_map[handle, npos[0], npos[1], d]
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_dir = d
-            if best_dir is None or min_dist == np.inf:
-                return max_dist if max_dist > 0 else -1, 1, num_switches, list(seen_agents), 0, 0
-            pos = get_new_position(pos, best_dir)
-            direction = best_dir
-            steps += 1
-            max_dist = max(max_dist, steps)
-        return max_dist if max_dist > 0 else -1, 1, num_switches, list(seen_agents), 1, 0
+                    return dfs_runtime_controller['count'], 1, num_switches, 0, 0
+                
+            # Switch logic: multiple transitions = switch
+            num_trans = fast_count_nonzero(transitions)
+            if num_trans > 1:
+                alternatives = []
+                for i in range(4):
+                    if transitions[i]:
+                        npos = get_new_position(pos, i)
+                        if (npos, i) not in dfs_runtime_controller['visited']:
+                            dist = distance_map[handle, npos[0], npos[1], i]
+                            alternatives.append((dist, i, npos))
+                alternatives.sort(key=lambda x: x[0])
+                for _, i, npos in alternatives:
+                    switch_stack.append((pos, direction, i))
+                    res = dfs(npos, i, switch_stack.copy(), num_switches+1)
+                    if res[1] == 0:
+                        return res
+                    switch_stack.pop()
+                return dfs_runtime_controller['count'], 1, num_switches, 0, 0
+            
+            # Normal continuation: only one direction
+            i = fast_argmax(transitions)
+            npos = get_new_position(pos, i)
+            if (npos, i) not in dfs_runtime_controller['visited']:
+                return dfs(npos, i, switch_stack.copy(), num_switches)
+            # Dead end
+            return dfs_runtime_controller['count'], 1, num_switches, 0, 0
+
+        steps, deadlock_flag, num_switches, abort_flag, target_found_flag = dfs(start_pos, start_dir, [], 0)
+        seen_agents = sorted(set(dfs_runtime_controller['seen_agents']))
+        return steps, deadlock_flag, num_switches, seen_agents, abort_flag, target_found_flag
     
     """
     Observation builder focused on Flatland's three key decision points:
