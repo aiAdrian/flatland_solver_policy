@@ -26,73 +26,7 @@ class DecisionPointObservation(ObservationBuilder):
         r, c = pos
         return 0 <= r < rows and 0 <= c < cols
 
-    def _navigate_direction(self, handle, start_pos, start_dir, target, max_steps=100):
-        '''
-        Navigiert ab start_pos/start_dir bis zum Ziel oder Deadlock.
-        Backtracking: An jedem Switch werden alle Alternativen ausprobiert, falls Deadlock.
-        Gibt (steps, deadlock_flag, num_switches, seen_agents, abort_flag, target_found_flag) zurück.
-        '''
-        env = self.env
-        distance_map = env.distance_map.get()
-        agent_map = env.agent_map if hasattr(env, 'agent_map') else None
-
-        dfs_runtime_controller = {
-            'count': 0,
-            'visited': set(),
-            'seen_agents': set()
-        }
-        def dfs(pos, direction, switch_stack, num_switches):
-            if dfs_runtime_controller['count'] >= max_steps:
-                return dfs_runtime_controller['count'], 1, num_switches, 1, 0
-            if pos == target:
-                return dfs_runtime_controller['count'], 0, num_switches, 0, 1
-            if not self._is_in_grid(pos):
-                return dfs_runtime_controller['count'], 1, num_switches, 0, 0
-            if (pos, direction) in dfs_runtime_controller['visited']:
-                return dfs_runtime_controller['count'], 1, num_switches, 0, 0
-            dfs_runtime_controller['visited'].add((pos, direction))
-            dfs_runtime_controller['count'] += 1
-
-            transitions = env.rail.get_transitions(*pos, direction)
-            
-            # Deadlock: entgegenkommender Agent
-            if agent_map is not None:
-                agent_idx = agent_map[pos]
-                if agent_idx != -1 and agent_idx != handle:
-                    dfs_runtime_controller['seen_agents'].add(agent_idx)
-                if agent_idx != -1 and env.agents[agent_idx].direction == (direction + 2) % 4:
-                    return dfs_runtime_controller['count'], 1, num_switches, 0, 0
-                
-            # Switch logic: multiple transitions = switch
-            num_trans = fast_count_nonzero(transitions)
-            if num_trans > 1:
-                alternatives = []
-                for i in range(4):
-                    if transitions[i]:
-                        npos = get_new_position(pos, i)
-                        if (npos, i) not in dfs_runtime_controller['visited']:
-                            dist = distance_map[handle, npos[0], npos[1], i]
-                            alternatives.append((dist, i, npos))
-                alternatives.sort(key=lambda x: x[0])
-                for _, i, npos in alternatives:
-                    switch_stack.append((pos, direction, i))
-                    res = dfs(npos, i, switch_stack.copy(), num_switches+1)
-                    if res[1] == 0:
-                        return res
-                    switch_stack.pop()
-                return dfs_runtime_controller['count'], 1, num_switches, 0, 0
-            
-            # Normal continuation: only one direction
-            i = fast_argmax(transitions)
-            npos = get_new_position(pos, i)
-            if (npos, i) not in dfs_runtime_controller['visited']:
-                return dfs(npos, i, switch_stack.copy(), num_switches)
-            # Dead end
-            return dfs_runtime_controller['count'], 1, num_switches, 0, 0
-
-        steps, deadlock_flag, num_switches, abort_flag, target_found_flag = dfs(start_pos, start_dir, [], 0)
-        seen_agents = sorted(set(dfs_runtime_controller['seen_agents']))
-        return steps, deadlock_flag, num_switches, seen_agents, abort_flag, target_found_flag
+   
     
     """
     Observation builder focused on Flatland's three key decision points:
@@ -122,7 +56,7 @@ class DecisionPointObservation(ObservationBuilder):
 
     @staticmethod
     def getObservationSize() -> int:
-        return 31
+        return 32
 
     def get(self, handle: int = 0):
         # init features
@@ -139,6 +73,8 @@ class DecisionPointObservation(ObservationBuilder):
         # retrieve distance map for pathfinding features
         distance_map = self.env.distance_map.get()
         curr_dist = self.env.distance_map.get()[handle, pos[0], pos[1], dir] if self._is_in_grid(pos) else -1
+        if curr_dist == np.inf:
+            return (features -1, [])
 
         # classify decision point type based on agent state and position and infrastructure / cell 
         if self.switchAnalyser is None:
@@ -183,6 +119,8 @@ class DecisionPointObservation(ObservationBuilder):
                     npos = get_new_position(pos, abs_dir)
                     distance_map = self.env.distance_map.get()
                     dist = distance_map[handle, npos[0], npos[1], abs_dir]
+                    if dist == np.inf:
+                        dist = 2* curr_dist
                     if dist < min_dist:
                         min_dist = dist
                         best_idx = idx
@@ -208,6 +146,8 @@ class DecisionPointObservation(ObservationBuilder):
                     abort_flag = max(abort_flag, abort) 
                 else:
                     dist, deadlock, switches, abort, target_found  = -1, -1, -1, -1, -1
+                if dist == np.inf:
+                        dist = 2* curr_dist
                 features[base] = dist         # 4,8,12,16: dist
                 features[base + 1] = deadlock   # 5,9,13,17: deadlock
                 features[base + 2] = switches   # 6,10,14,18: switches
@@ -228,42 +168,30 @@ class DecisionPointObservation(ObservationBuilder):
 
             npos_fwd = new_position
             if npos_fwd is not None and self._is_in_grid(npos_fwd):
-                dist_fwd, deadlock_fwd, switches_fwd, seen_fwd, abort_fwd, target_found_fwd = self._navigate_direction(handle, npos_fwd, forward_dir, target)
+                _, deadlock_fwd, switches_fwd, seen_fwd, abort_fwd, target_found_fwd = self._navigate_direction(handle, npos_fwd, forward_dir, target)
                 opp_agents.update(seen_fwd)
                 abort_flag = max(abort_flag, abort_fwd) 
-                dist_fwd_map = self.env.distance_map.get()[handle, npos_fwd[0], npos_fwd[1], forward_dir]
-                delta_dist_fwd = dist_fwd_map - curr_dist if curr_dist != -1 and dist_fwd_map != np.inf else -1
             else:
-                dist_fwd, deadlock_fwd, switches_fwd, abort_fwd, target_found_fwd = -1, -1, -1, -1, -1
-                delta_dist_fwd = -1
+                deadlock_fwd, switches_fwd, abort_fwd, target_found_fwd = -1, -1, -1, -1
 
-            features[21] = dist_fwd          # 20: dist_fwd
             features[22] = deadlock_fwd      # 21: deadlock_fwd
             features[23] = switches_fwd      # 22: switches_fwd
-            features[24] = delta_dist_fwd    # 23: delta_dist_fwd
-            features[25] = target_found_fwd  # 24: target_found_fwd
-            features[26] = abort_fwd         # 25: abort_flag_fwd
+            features[24] = target_found_fwd  # 24: target_found_fwd
+            features[25] = abort_fwd         # 25: abort_flag_fwd
 
             # Backward: 1 step backward (merge/crossing logic) 
             new_position = get_new_position(pos, dir)
             reverse_dir = (forward_dir + 2) % 4
             npos_bwd = get_new_position(new_position, reverse_dir)
             if npos_bwd is not None and self._is_in_grid(npos_bwd):
-                dist_bwd, deadlock_bwd, switches_bwd, seen_bwd, abort_bwd, target_found_bwd = self._navigate_direction(handle, npos_bwd, reverse_dir, target)
+                _, deadlock_bwd, switches_bwd, seen_bwd, abort_bwd, target_found_bwd = self._navigate_direction(handle, npos_bwd, reverse_dir, target)
                 opp_agents.update(seen_bwd) 
-                dist_bwd_map = self.env.distance_map.get()[handle, npos_bwd[0], npos_bwd[1], reverse_dir]
-                delta_dist_bwd = dist_bwd_map - curr_dist if curr_dist != -1 and dist_bwd_map != np.inf else -1
             else:
-                dist_bwd, deadlock_bwd, switches_bwd, abort_bwd, target_found_bwd  = -1, -1, -1, -1, -1
-                delta_dist_bwd = -1
-            features[27] = dist_bwd          # 24: dist_bwd
-            features[28] = deadlock_bwd      # 25: deadlock_bwd
-            features[29] = switches_bwd      # 26: switches_bwd
-            features[30] = delta_dist_bwd    # 27: delta_dist_bwd
-            features[31] = target_found_bwd  # 28: target_found_bwd
-            features[32] = abort_bwd         # 29: abort_flag_bwd
-         
-
+                deadlock_bwd, switches_bwd, abort_bwd, target_found_bwd  = -1, -1, -1, -1
+            features[28] = deadlock_bwd      # 28: deadlock_bwd
+            features[29] = switches_bwd      # 29: switches_bwd
+            features[30] = target_found_bwd  # 30: target_found_bwd
+            features[31] = abort_bwd         # 31: abort_flag_bwd
 
         return (features, list(opp_agents))
 
@@ -275,6 +203,98 @@ class DecisionPointObservation(ObservationBuilder):
             obs_self, obs_others = self.get(handle)
             result.append((obs_self, obs_others))
         return result
+
+
+    def _navigate_direction(self, handle, start_pos, start_dir, target, max_steps=100):
+            '''
+            Navigiert ab start_pos/start_dir bis zum Ziel oder Deadlock.
+            Backtracking: An jedem Switch werden alle Alternativen ausprobiert, falls Deadlock.
+            Die DFS-Laufzeit wird global über einen Controller gesteuert:
+            - count: Anzahl der insgesamt besuchten Zellen (max_steps, global für alle DFS-Aufrufe)
+            - visited: Alle (pos, direction) Paare, die besucht wurden (cycle prevention, global)
+            - seen_agents: Alle Agenten, die auf dem Pfad begegnet wurden (deadlock detection, global)
+
+            Rückgabe:
+                steps: Anzahl der insgesamt besuchten Zellen (global, max_steps)
+                deadlock_flag: 1, falls Deadlock oder Abbruch, sonst 0
+                num_switches: Anzahl der durchlaufenen Switches
+                seen_agents: sortierte Liste aller gesehenen Agenten (unique)
+                abort_flag: 1, falls Suche wegen max_steps abgebrochen wurde, sonst 0
+                target_found_flag: 1, falls Ziel erreicht wurde, sonst 0
+            '''
+            env = self.env
+            distance_map = env.distance_map.get()
+            agent_map = env.agent_map if hasattr(env, 'agent_map') else None
+
+            # Globaler Controller für DFS-Laufzeit und besuchte Knoten/Agenten
+            dfs_runtime_controller = {
+                'count': 0,           # Gesamtanzahl besuchter Zellen
+                'visited': set(),     # Alle besuchten (pos, direction) Paare
+                'seen_agents': set()  # Alle gesehenen Agenten
+            }
+            def dfs(pos, direction, switch_stack, num_switches):
+                cur_dist = distance_map[handle, pos[0], pos[1], direction] if self._is_in_grid(pos) else -1
+
+                # DFS mit globalem Controller für count, visited, seen_agents
+                if dfs_runtime_controller['count'] >= max_steps:
+                    # Abbruch wegen Schrittbegrenzung
+                    return cur_dist, 1, num_switches, 1, 0
+                if pos == target:
+                    # Ziel erreicht
+                    return cur_dist, 0, num_switches, 0, 1
+                if not self._is_in_grid(pos):
+                    # Außerhalb des Grids
+                    return cur_dist, 1, num_switches, 0, 0
+                if (pos, direction) in dfs_runtime_controller['visited']:
+                    # Zyklus erkannt
+                    return cur_dist, 1, num_switches, 0, 0
+                dfs_runtime_controller['visited'].add((pos, direction))
+                dfs_runtime_controller['count'] += 1
+
+
+
+                transitions = env.rail.get_transitions(*pos, direction)
+                # Deadlock: entgegenkommender Agent
+                if agent_map is not None:
+                    agent_idx = agent_map[pos]
+                    if agent_idx != -1 and agent_idx != handle:
+                        dfs_runtime_controller['seen_agents'].add(agent_idx)
+                    if agent_idx != -1 and env.agents[agent_idx].direction == (direction + 2) % 4:
+                        # Deadlock durch entgegenkommenden Agenten
+                        return cur_dist, 1, num_switches, 0, 0
+                # Switch logic: mehrere Alternativen am Switch, sortiert nach distance_map
+                num_trans = fast_count_nonzero(transitions)
+                if num_trans > 1:
+                    alternatives = []
+                    for i in range(4):
+                        if transitions[i]:
+                            npos = get_new_position(pos, i)
+                            if (npos, i) not in dfs_runtime_controller['visited']:
+                                dist = distance_map[handle, npos[0], npos[1], i]
+                                alternatives.append((dist, i, npos))
+                    alternatives.sort(key=lambda x: x[0])
+                    for _, i, npos in alternatives:
+                        switch_stack.append((pos, direction, i))
+                        res = dfs(npos, i, switch_stack.copy(), num_switches+1)
+                        if res[1] == 0:
+                            return res
+                        switch_stack.pop()
+                    # Alle Alternativen führen zu Deadlock/Abbruch
+                    return cur_dist, 1, num_switches, 0, 0
+                # Normale Fortsetzung: nur eine Richtung möglich
+                i = fast_argmax(transitions)
+                npos = get_new_position(pos, i)
+                if (npos, i) not in dfs_runtime_controller['visited']:
+                    ret_dfs_dist, ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag = dfs(npos, i, switch_stack.copy(), num_switches)
+                    return max(ret_dfs_dist, cur_dist), ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag
+                # Sackgasse
+                return cur_dist, 1, num_switches, 0, 0
+
+            dist, deadlock_flag, num_switches, abort_flag, target_found_flag = dfs(start_pos, start_dir, [], 0)
+            # Nach DFS: Rückgabe der global gesammelten Agenten als sortierte Liste
+            seen_agents = sorted(set(dfs_runtime_controller['seen_agents']))
+            return dist, deadlock_flag, num_switches, seen_agents, abort_flag, target_found_flag
+
 
     @staticmethod
     def get_decision_point_observation(env, handle, switchAnalyser, walker, max_path_length, lookahead_cost_limit, max_agent_dist):

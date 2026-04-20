@@ -103,25 +103,42 @@ Jeder Block ist exklusiv für eine Entscheidungssituation reserviert. Die Werte 
 
 ### 2.4 Algorithmus: _navigate_direction
 
-Die Methode `_navigate_direction` simuliert für jede Richtung, wie ein Agent ab einer gegebenen Position und Richtung bis zum Ziel oder bis zu einem Deadlock navigieren würde. Sie liefert für jede Richtung folgende Werte:
-- Die Anzahl der Schritte bis zum Ziel (dist, oder -1 bei Deadlock)
-- Ein Deadlock-Flag (1 bei Deadlock, sonst 0)
-- Die Anzahl der Pfadwechsel (an Weichen)
-- Eine Liste aller fremden Agenten, die auf dem Pfad gesehen wurden
-- Ein Abort-Flag (1, wenn max_steps überschritten wurde, sonst 0)
-- Ein Target-Found-Flag (1, wenn das Ziel auf dem Pfad erreicht wurde, sonst 0)
+**Algorithmus-Details: DecisionPointObservation und _navigate_direction**
 
-**Wie lange läuft der Algorithmus? Wann bricht er ab?**
-Der Algorithmus läuft in einer Schleife und prüft bei jedem Schritt mehrere Abbruchbedingungen:
-- **Ziel erreicht:** Sobald die Zielposition erreicht ist, wird sofort abgebrochen, das Feature `target_found` (Index 30) auf 1 gesetzt und die aktuellen Werte zurückgegeben.
-- **Außerhalb des Grids:** Wenn der Agent das Spielfeld verlässt, wird dies als Deadlock gewertet und abgebrochen.
-- **Kein Fortschritt möglich:** Wenn keine erlaubte Richtung mehr existiert (z.B. Sackgasse), wird ebenfalls abgebrochen (Deadlock).
-- **Maximale Schrittzahl (max_steps):** Es gibt eine feste Obergrenze für die Anzahl der Schritte (Standard: 100). Wird diese überschritten, wird nicht deadlock=1 gesetzt, sondern das Feature `abort` (Index 29) auf 1 gesetzt. So weiß die Policy, dass der Algorithmus wegen Schrittbegrenzung abgebrochen wurde und der Pfad besonders lang oder problematisch ist. Dies verhindert Endlosschleifen bei zirkulären oder fehlerhaften Pfaden und macht den Abbruch explizit sichtbar.
+Die Methode `_navigate_direction` implementiert eine rekursive Tiefensuche (DFS) mit Backtracking, um für jede relevante Richtung ab einer Startposition und -richtung den maximal erreichbaren Pfad zu simulieren. Die wichtigsten Schritte und Mechanismen sind:
+
+1. **Initialisierung:**
+	- Ein globaler Controller (dict) zählt die insgesamt besuchten Zellen (`count`), speichert alle besuchten (Position, Richtung)-Paare (`visited`) und alle auf dem Pfad gesehenen Agenten (`seen_agents`).
+	- Die Suche startet an der gegebenen Position und Richtung.
+
+2. **Abbruchbedingungen:**
+	- **Ziel erreicht:** Wenn die Zielposition erreicht wird, wird sofort abgebrochen (`target_found=1`).
+	- **Außerhalb des Grids:** Verlässt der Agent das Spielfeld, wird dies als Deadlock gewertet.
+	- **Cycle Prevention:** Bereits besuchte (Position, Richtung)-Paare werden nicht erneut betreten, um Endlosschleifen zu verhindern.
+	- **Kein Fortschritt möglich:** Gibt es keine erlaubte Richtung mehr (Sackgasse), wird abgebrochen (Deadlock).
+	- **Maximale Schrittzahl:** Wird die globale Obergrenze für besuchte Zellen (`max_steps`, z.B. 100) überschritten, wird das Feature `abort` (Index 29) auf 1 gesetzt und die Suche abgebrochen.
+	- **Deadlock Detection:** Trifft der Agent auf einen entgegenkommenden Agenten, wird dies als Deadlock erkannt.
+
+3. **Switch-Backtracking:**
+	- Steht der Agent auf einer Weiche (mehrere mögliche Transitions), werden alle Alternativen ausprobiert (rekursiv, sortiert nach kürzester Distanz laut distance_map). Die Suche bricht ab, sobald ein Pfad ohne Deadlock gefunden wurde.
+
+4. **Feature-Befüllung:**
+	- Für jede relevante Richtung (links, geradeaus, rechts, rückwärts, vorwärts, rückwärts) werden folgende Werte berechnet und in den Feature-Vektor geschrieben:
+	  - **dist:** Maximale Anzahl Schritte auf dem Pfad bis Ziel, Deadlock oder Abbruch (bzw. -1, falls unerreichbar).
+	  - **deadlock:** 1, falls Deadlock erkannt, sonst 0.
+	  - **switches:** Anzahl der durchlaufenen Weichen auf dem Pfad.
+	  - **delta_dist:** Differenz der Distanz zum Ziel nach dem ersten Schritt.
+	  - **abort:** 1, falls max_steps überschritten, sonst 0.
+	  - **target_found:** 1, falls Ziel erreicht, sonst 0.
+	- Die Features werden nur für die aktuelle Entscheidungssituation (Start, Switch, Merge/Crossing) gesetzt, alle anderen Felder bleiben 0.
+
+5. **Umgang mit unerreichbaren Zellen (np.inf/NaN):**
+	- Die distance_map liefert für unerreichbare Zellen `np.inf`. Vor dem Eintragen in den Feature-Vektor werden solche Werte explizit durch -1 ersetzt.
+	- Nach der Feature-Berechnung wird der gesamte Vektor mit `np.nan_to_num` bereinigt, sodass keine NaN/Inf-Werte in den finalen Features stehen.
+	- Falls dennoch NaN/Inf auftreten, wird eine Warnung mit Agenten-Handle und Feature-Vektor ausgegeben.
 
 **Zusammengefasst:**
-Die Navigation endet, sobald das Ziel erreicht (`target_found`=1), das Grid verlassen, ein Deadlock erkannt oder die maximale Schrittzahl überschritten wurde (`abort`=1). Dadurch ist der Algorithmus robust gegen Endlosschleifen und die Policy kann explizit erkennen, wenn ein Pfad zu lang, nicht sinnvoll oder erfolgreich ist.
-
-Die Ergebnisse werden für jede Richtung in die Features 4–19 geschrieben. So erhält die Policy eine vollständige, konfliktbewusste Einschätzung aller Alternativen.
+Die DecisionPointObservation nutzt eine robuste, rekursive DFS mit Backtracking, Deadlock- und Cycle-Erkennung sowie explizitem Timeout. Die Policy erhält für jede relevante Richtung einen konfliktbewussten, RL-tauglichen Feature-Vektor ohne NaN/Inf.
 
 **Zweck:**
 Die `DecisionPointObservation` ist für die drei wichtigsten Entscheidungssituationen im Flatland-Setting optimiert: Start, Weiche, Merge/Crossing. Sie liefert einen 30D-Feature-Vektor mit disjunkten Blöcken für jede Situation.
