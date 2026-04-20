@@ -1,3 +1,4 @@
+from flatland.envs.fast_methods import fast_count_nonzero, fast_argmax
 from flatland.core.env_observation_builder import ObservationBuilder
 import numpy as np
 from flatland.core.grid.grid4_utils import get_new_position
@@ -95,6 +96,7 @@ class DecisionPointObservation(ObservationBuilder):
             steps += 1
             max_dist = max(max_dist, steps)
         return max_dist if max_dist > 0 else -1, 1, num_switches, list(seen_agents), 1, 0
+    
     """
     Observation builder focused on Flatland's three key decision points:
     1. Agent start (READY_TO_DEPART): Should the agent enter the board?
@@ -111,7 +113,7 @@ class DecisionPointObservation(ObservationBuilder):
         super().__init__()
         self.env = None
         self.switchAnalyser = None
-        self.feature_len = 31  # +1 für target_found
+        self.feature_len = 33 
         print(">> DecisionPointObservation loaded.")
 
     def set_env(self, env):
@@ -126,13 +128,22 @@ class DecisionPointObservation(ObservationBuilder):
         return 31
 
     def get(self, handle: int = 0):
+        # init features
+        features = np.zeros(self.feature_len, dtype=np.float32)
+
+        # Get base information about the agent and its environment
         agent = self.env.agents[handle]  
         pos = agent.position if agent.position is not None else agent.initial_position
         dir = agent.direction if agent.direction is not None else agent.initial_direction
         target = agent.target
         if pos is None or target is None:
-            return (np.zeros(self.feature_len, dtype=np.float32)-1, [])
+            return (features-1, [])
 
+        # retrieve distance map for pathfinding features
+        distance_map = self.env.distance_map.get()
+        curr_dist = self.env.distance_map.get()[handle, pos[0], pos[1], dir] if self._is_in_grid(pos) else -1
+
+        # classify decision point type based on agent state and position and infrastructure / cell 
         if self.switchAnalyser is None:
             from flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
             self.switchAnalyser = RailroadSwitchAnalyser(self.env)
@@ -140,12 +151,13 @@ class DecisionPointObservation(ObservationBuilder):
         agent_at_switch, agent_near_switch, switch_cell, near_switch_cell = \
             self.switchAnalyser.check_agent_decision(position=pos, direction=dir)
 
-        distance_map = self.env.distance_map.get()
 
+        # Check if there's an agent at the current position (e.g., for deadlock detection)
         agent_idx = self.env.agent_map[pos] if hasattr(self.env, 'agent_map') and self.env.agent_map is not None else -1
         if agent_idx != -1:
             pass
 
+        # classify decision point type
         if agent.state.name == "READY_TO_DEPART":
             decision_type = 1.0
         elif agent_at_switch:
@@ -157,21 +169,15 @@ class DecisionPointObservation(ObservationBuilder):
         else:
             decision_type = 0.0
         
-        features = np.zeros(self.feature_len, dtype=np.float32)
+
 
         # Feature 0: decision_type
         features[0] = decision_type
-
-        # Feature 1-3: one-hot shortest path hint [left, forward, right]
-        # Feature 1: left
-        # Feature 2: forward
-        # Feature 3: right
+ 
         transitions = self.env.rail.get_transitions(*pos, dir)
         best_hint = [0.0, 0.0, 0.0]  # [l, f, r]
         delta_dist_fwd = 0
-        curr_dist = -1
         if target is not None:
-            curr_dist = self.env.distance_map.get()[handle, pos[0], pos[1], dir] if self._is_in_grid(pos) else -1
             min_dist = float('inf')
             best_idx = -1
             for idx, rel_dir in enumerate([(-1) % 4, 0, 1]):
@@ -188,19 +194,11 @@ class DecisionPointObservation(ObservationBuilder):
             if best_idx != -1:
                 best_hint[best_idx] = 1.0
         features[1:4] = best_hint
-
-        # Feature 4-19: Für decision_type==2 (Weiche):
-        # Je Richtung (left, forward, right, reverse):
-        #   dist (4,8,12,16), deadlock (5,9,13,17), switches (6,10,14,18), delta_dist (7,11,15,19)
-        # Feature 20-27: Für decision_type==3 (forward/backward):
-        #   20: dist_fwd, 21: deadlock_fwd, 22: switches_fwd, 23: delta_dist_fwd
-        #   24: dist_bwd, 25: deadlock_bwd, 26: switches_bwd, 27: delta_dist_bwd
-        # Feature 28: delta_dist_fwd (decision_type==1)
+ 
 
         opp_agents = set()
         abort_flag = 0
-        target_found_flag = 0
-        # decision_type 2: auf Weiche -> für jede Richtung [dist, deadlock, switches]
+        # decision_type 2: agent on a switch -> for each direction [dist, deadlock, switches]
         if decision_type == 2.0:
             rel_dirs = [(-1) % 4, 0, 1, 2]  # left, forward, right, reverse
             for i, rel_dir in enumerate(rel_dirs):
@@ -210,61 +208,66 @@ class DecisionPointObservation(ObservationBuilder):
                     npos = get_new_position(pos, abs_dir)
                     dist, deadlock, switches, seen, abort, target_found = self._navigate_direction(handle, npos, abs_dir, target)
                     opp_agents.update(seen)
-                    abort_flag = max(abort_flag, abort)
-                    target_found_flag = max(target_found_flag, target_found)
+                    abort_flag = max(abort_flag, abort) 
                 else:
-                    dist, deadlock, switches = -1, 1, 0
+                    dist, deadlock, switches, abort, target_found  = -1, -1, -1, -1, -1
                 features[base] = dist         # 4,8,12,16: dist
-                features[base+1] = deadlock   # 5,9,13,17: deadlock
-                features[base+2] = switches   # 6,10,14,18: switches
-                features[base+3] = dist - curr_dist if dist != -1 and curr_dist != -1 and dist != np.inf else 0 # 7,11,15,19: delta_dist
+                features[base + 1] = deadlock   # 5,9,13,17: deadlock
+                features[base + 2] = switches   # 6,10,14,18: switches
+                features[base + 3] = dist - curr_dist if dist != -1 and curr_dist != -1 and dist != np.inf else -1
+                features[base + 4] = target_found  # 8,12,16,20: target_found_flag
+                features[base + 5] = abort  # 9,13,17,21: abort_flag
 
+        # decision_type 3: agent near a merging switch 
+        # -  look forward and backward for crossing and ordering (priority) logic 
+        #    (e.g., if forward path is blocked by another agent, can we merge/cross? 
+        #    If backward path is blocked, do we have priority?)
+        # - cannot branch, but can merge/cross) -> for each direction 
+        #   [dist, deadlock, switches, delta_dist, target_found, abort]
+        if decision_type == 3.0: 
+            # Forward: 1 step forward (merge/crossing logic)
+            forward_dir = fast_argmax(transitions)
+            new_position = get_new_position(pos, dir)
 
-        if decision_type == 3.0:
-            # decision_type==3: Forward- und Backward-Analyse, jetzt komplett disjunkt im Feature-Vektor
-            # Forward-Block: features[20:23] (20: dist_fwd, 21: deadlock_fwd, 22: switches_fwd, 23: delta_dist_fwd)
-            # Backward-Block: features[24:27] (24: dist_bwd, 25: deadlock_bwd, 26: switches_bwd, 27: delta_dist_bwd)
-            forward_dir = dir
-            reverse_dir = (dir + 2) % 4
-            curr_dist = self.env.distance_map.get()[handle, pos[0], pos[1], dir] if self._is_in_grid(pos) else -1
-            # Forward: 1 Schritt vorwärts
-            npos_fwd = get_new_position(pos, forward_dir)
+            npos_fwd = new_position
             if npos_fwd is not None and self._is_in_grid(npos_fwd):
                 dist_fwd, deadlock_fwd, switches_fwd, seen_fwd, abort_fwd, target_found_fwd = self._navigate_direction(handle, npos_fwd, forward_dir, target)
                 opp_agents.update(seen_fwd)
-                abort_flag = max(abort_flag, abort_fwd)
-                target_found_flag = max(target_found_flag, target_found_fwd)
+                abort_flag = max(abort_flag, abort_fwd) 
                 dist_fwd_map = self.env.distance_map.get()[handle, npos_fwd[0], npos_fwd[1], forward_dir]
-                delta_dist_fwd = dist_fwd_map - curr_dist if curr_dist != -1 and dist_fwd_map != np.inf else 0
+                delta_dist_fwd = dist_fwd_map - curr_dist if curr_dist != -1 and dist_fwd_map != np.inf else -1
             else:
-                dist_fwd, deadlock_fwd, switches_fwd = -1, 1, 0
-                delta_dist_fwd = 0
-            features[20] = dist_fwd         # 20: dist_fwd
-            features[21] = deadlock_fwd     # 21: deadlock_fwd
-            features[22] = switches_fwd     # 22: switches_fwd
-            features[23] = delta_dist_fwd   # 23: delta_dist_fwd
-            # Backward: 1 Schritt rückwärts
-            npos_bwd = get_new_position(pos, reverse_dir)
+                dist_fwd, deadlock_fwd, switches_fwd, abort_fwd, target_found_fwd = -1, -1, -1, -1, -1
+                delta_dist_fwd = -1
+
+            features[21] = dist_fwd          # 20: dist_fwd
+            features[22] = deadlock_fwd      # 21: deadlock_fwd
+            features[23] = switches_fwd      # 22: switches_fwd
+            features[24] = delta_dist_fwd    # 23: delta_dist_fwd
+            features[25] = target_found_fwd  # 24: target_found_fwd
+            features[26] = abort_fwd         # 25: abort_flag_fwd
+
+            # Backward: 1 step backward (merge/crossing logic) 
+            new_position = get_new_position(pos, dir)
+            reverse_dir = (forward_dir + 2) % 4
+            npos_bwd = get_new_position(new_position, reverse_dir)
             if npos_bwd is not None and self._is_in_grid(npos_bwd):
                 dist_bwd, deadlock_bwd, switches_bwd, seen_bwd, abort_bwd, target_found_bwd = self._navigate_direction(handle, npos_bwd, reverse_dir, target)
-                opp_agents.update(seen_bwd)
-                abort_flag = max(abort_flag, abort_bwd)
-                target_found_flag = max(target_found_flag, target_found_bwd)
+                opp_agents.update(seen_bwd) 
                 dist_bwd_map = self.env.distance_map.get()[handle, npos_bwd[0], npos_bwd[1], reverse_dir]
-                delta_dist_bwd = dist_bwd_map - curr_dist if curr_dist != -1 and dist_bwd_map != np.inf else 0
+                delta_dist_bwd = dist_bwd_map - curr_dist if curr_dist != -1 and dist_bwd_map != np.inf else -1
             else:
-                dist_bwd, deadlock_bwd, switches_bwd = -1, 1, 0
-                delta_dist_bwd = 0
-            features[24] = dist_bwd         # 24: dist_bwd
-            features[25] = deadlock_bwd     # 25: deadlock_bwd
-            features[26] = switches_bwd     # 26: switches_bwd
-            features[27] = delta_dist_bwd   # 27: delta_dist_bwd
+                dist_bwd, deadlock_bwd, switches_bwd, abort_bwd, target_found_bwd  = -1, -1, -1, -1, -1
+                delta_dist_bwd = -1
+            features[27] = dist_bwd          # 24: dist_bwd
+            features[28] = deadlock_bwd      # 25: deadlock_bwd
+            features[29] = switches_bwd      # 26: switches_bwd
+            features[30] = delta_dist_bwd    # 27: delta_dist_bwd
+            features[31] = target_found_bwd  # 28: target_found_bwd
+            features[32] = abort_bwd         # 29: abort_flag_bwd
+         
 
-            
-        # Feature 29: abort (max_steps überschritten)
-        features[29] = abort_flag
-        # Feature 30: target_found (Ziel wurde auf dem Pfad erreicht)
-        features[30] = target_found_flag
+
         return (features, list(opp_agents))
 
     def get_many(self, handles: list = None):
