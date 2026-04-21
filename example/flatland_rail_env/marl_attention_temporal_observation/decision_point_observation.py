@@ -334,13 +334,13 @@ class DecisionPointObservation(ObservationBuilder):
                         return res
                     num_switches_changed = 1
                     switch_stack.pop()
-            
-            # Normale Fortsetzung: nur eine Richtung möglich
-            ndir = fast_argmax(transitions)
-            npos = get_new_position(pos, ndir)
-            if (npos, ndir) not in dfs_runtime_controller['visited']:
-                ret_dfs_dist, ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag = dfs(npos, ndir, switch_stack.copy(), num_switches)
-                return max(ret_dfs_dist, cur_dist), ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag
+            else:
+                # Normale Fortsetzung: nur eine Richtung möglich
+                ndir = fast_argmax(transitions)
+                npos = get_new_position(pos, ndir)
+                if (npos, ndir) not in dfs_runtime_controller['visited']:
+                    ret_dfs_dist, ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag = dfs(npos, ndir, switch_stack.copy(), num_switches)
+                    return max(ret_dfs_dist, cur_dist), ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag
             
             # Sackgasse
             return cur_dist, 1, num_switches, 0, 0
