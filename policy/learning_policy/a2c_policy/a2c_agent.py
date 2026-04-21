@@ -121,6 +121,9 @@ class A2CPolicy(LearningPolicy):
         if self.a2c_parameters.use_gpu and torch.cuda.is_available():
             self.device = torch.device("cuda:0")
             print("🐇 Using GPU")
+        elif self.a2c_parameters.use_gpu and torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+            print("🐇 Using MPS")
         else:
             self.device = torch.device("cpu")
             print("🐢 Using CPU")

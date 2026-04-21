@@ -316,7 +316,7 @@ class FlatlandTreeObservation(ObservationBuilder):
         return ret
 
     def _get_transition_action(self, position, direction, next_direction, next_position):
-        possible_transitions = self.env.rail.get_transitions(*position, direction)
+        possible_transitions = self.env.rail.get_transitions((position, direction))
         num_transitions = fast_count_nonzero(possible_transitions)
         if num_transitions == 1:
             return RailEnvActions.MOVE_FORWARD
@@ -332,7 +332,7 @@ class FlatlandTreeObservation(ObservationBuilder):
     def _get_shortest_walk_action_one_hot_encoded(self, handle, position, direction):
 
         ret = [0, 0, 0]
-        possible_transitions = self.env.rail.get_transitions(*position, direction)
+        possible_transitions = self.env.rail.get_transitions((position, direction))
         num_transitions = fast_count_nonzero(possible_transitions)
         if num_transitions == 1:
             ret[RailEnvActions.MOVE_FORWARD] = 1

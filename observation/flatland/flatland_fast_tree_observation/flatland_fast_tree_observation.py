@@ -84,7 +84,7 @@ class WalkToNextDecisionPoint(ShortestDistanceWalker):
         if fast_count_nonzero(possible_transitions) > 1:
             return False
 
-        possible_transitions_opp_dir = self.env.rail.get_transitions(*position, (direction + 2 % 4))
+        possible_transitions_opp_dir = self.env.rail.get_transitions((position, (direction + 2 % 4)))
         if fast_count_nonzero(possible_transitions_opp_dir) > 1:
             return False
 
@@ -169,7 +169,7 @@ class FlatlandFastTreeObservation(ObservationBuilder):
             current_cell_dist = self.distance_map[handle, agent_pos[0], agent_pos[1], agent_dir]
 
             orientation = agent_dir
-            possible_transitions = self.env.rail.get_transitions(*agent_pos, agent_dir)
+            possible_transitions = self.env.rail.get_transitions((agent_pos, agent_dir))
             if fast_count_nonzero(possible_transitions) == 1:
                 orientation = fast_argmax(possible_transitions)
 

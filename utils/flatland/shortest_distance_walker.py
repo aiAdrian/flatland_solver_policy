@@ -38,7 +38,7 @@ class ShortestDistanceWalker:
         if self.distance_map is None:
             self.distance_map = self.env.distance_map.get()
 
-        possible_transitions = self.env.rail.get_transitions(*position, direction)
+        possible_transitions = self.env.rail.get_transitions((position, direction))
         num_transitions = fast_count_nonzero(possible_transitions)
         if num_transitions == 1:
             new_direction = fast_argmax(possible_transitions)
@@ -85,7 +85,7 @@ class ShortestDistanceWalker:
         position, direction = self._get_pos_dir_wtt(position, direction,
                                                     agent.position, agent.direction,
                                                     agent.initial_position)
-
+        direction = direction or agent.initial_direction
         agent = self.env.agents[handle]
         step = 0
         while (position != agent.target) and (step < max_step):
@@ -115,9 +115,10 @@ class ShortestDistanceWalker:
         agent = self.env.agents[handle]
         if agent.position is not None:
             position = agent.position
+            direction = agent.direction
         else:
             position = agent.initial_position
-        direction = agent.direction
+            direction = agent.initial_direction
         possible_transitions = (0, 1, 0, 0)
         new_position = agent.target
         new_direction = agent.direction

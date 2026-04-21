@@ -91,7 +91,7 @@ class DeadlockAvoidanceShortestDistanceWalker(ShortestDistanceWalker):
     @_enable_flatland_deadlock_avoidance_policy_lru_cache(maxsize=100000)
     def _is_no_switch_cell(self, position) -> bool:
         for new_dir in range(4):
-            possible_transitions = self.env.rail.get_transitions(*position, new_dir)
+            possible_transitions = self.env.rail.get_transitions((position, new_dir))
             num_transitions = fast_count_nonzero(possible_transitions)
             if num_transitions > 1:
                 return False
