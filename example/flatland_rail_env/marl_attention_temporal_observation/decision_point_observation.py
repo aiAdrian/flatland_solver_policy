@@ -23,7 +23,7 @@ class DecisionPointObservation(ObservationBuilder):
         super().__init__()
         self.env = None
         self.switchAnalyser = None
-        self.feature_len = 33 
+        self.feature_len = DecisionPointObservation.getObservationSize()
         print(">> DecisionPointObservation loaded.")
 
     def set_env(self, env):
@@ -35,7 +35,7 @@ class DecisionPointObservation(ObservationBuilder):
 
     @staticmethod
     def getObservationSize() -> int:
-        return 32
+        return 34
 
     def get(self, handle: int = 0):
         if self.switchAnalyser is None:
@@ -126,7 +126,8 @@ class DecisionPointObservation(ObservationBuilder):
                 base = 4 + i*4
                 if transitions[abs_dir]:
                     npos = get_new_position(pos, abs_dir)
-                    dist, deadlock, switches, seen, abort, target_found, visited_type_2 = self._navigate_direction(handle, npos, abs_dir, target)
+                    dist, deadlock, switches, seen, abort, target_found, visited_type_2 = \
+                        self._navigate_direction(handle, npos, abs_dir, target)
                     opp_agents.update(seen)
                     abort_flag = max(abort_flag, abort) 
                 else:
@@ -158,9 +159,16 @@ class DecisionPointObservation(ObservationBuilder):
             # < other agent's travel direction which agent must let pass (deadlock avoidance -> no options)
             # * path to _navigate forward is blocked by other agent -> can we merge/cross? (switch logic, deadlock avoidance -> maybe options)
 
-            npos_fwd = get_new_position(pos, dir)
-            forward_dir = fast_argmax(transitions)
-            _, deadlock_fwd, switches_fwd, seen_fwd, abort_fwd, target_found_fwd, visited_type_3_fwd = self._navigate_direction(handle, npos_fwd, forward_dir, target)
+            # 1. Alle möglichen Ausgänge für die aktuelle Blickrichtung holen
+            transitions = self.env.rail.get_transitions(*pos, dir)
+            # 2. Die einzige mögliche Richtung finden (ndir)
+            # Da es nur eine Option gibt, ist nur ein Index in transitions == 1
+            forward_dir = np.argmax(transitions) 
+            # 3. Die neue Position basierend auf dieser Richtung berechnen
+            npos_fwd = get_new_position(pos, forward_dir)
+
+            _, deadlock_fwd, switches_fwd, seen_fwd, abort_fwd, target_found_fwd, visited_type_3_fwd = \
+                self._navigate_direction(handle, npos_fwd, forward_dir, target)
             opp_agents.update(seen_fwd)
             abort_flag = max(abort_flag, abort_fwd) 
 
@@ -180,18 +188,34 @@ class DecisionPointObservation(ObservationBuilder):
             # > other agent travel direction 
             # decision to take agent before other agent or other agent before agent
             # * path to _navigate backward is blocked by other agent -> do we have priority? (switch logic, deadlock avoidance -> maybe options)
+            bwd_pos = None
+            bwd_dir = None
 
-            new_position = get_new_position(pos, dir)
-            reverse_dir = (forward_dir + 2) % 4
-            npos_bwd = get_new_position(new_position, reverse_dir)           
-            _, deadlock_bwd, switches_bwd, seen_bwd, abort_bwd, target_found_bwd, visited_type_3_bwd= self._navigate_direction(handle, npos_bwd, reverse_dir, target)
-            # don't merge them opp_agents.update(seen_bwd) 
+            for d in range(1,4):
+                nd = (forward_dir + d) % 4
+                nt = self.env.rail.get_transitions(*npos_fwd, nd)
+                if fast_count_nonzero(nt) > 1:
+                    for i in range(4):
+                        if nt[i]:
+                            tmp_pos = get_new_position(npos_fwd, i) 
+                            if tmp_pos != pos:
+                                bwd_pos = tmp_pos
+                                bwd_dir = i
+                            break
+            if bwd_pos is not None:
+                _, deadlock_bwd, switches_bwd, seen_bwd, abort_bwd, target_found_bwd, visited_type_3_bwd = \
+                    self._navigate_direction(handle, bwd_pos, bwd_dir, target)
+                # don't merge them opp_agents.update(seen_bwd) 
 
-            features[28] = deadlock_bwd      # 28: deadlock_bwd
-            features[29] = switches_bwd      # 29: switches_bwd
-            features[30] = target_found_bwd  # 30: target_found_bwd
-            features[31] = abort_bwd         # 31: abort_flag_bwd
+                features[28] = deadlock_bwd      # 28: deadlock_bwd
+                features[29] = switches_bwd      # 29: switches_bwd
+                features[30] = target_found_bwd  # 30: target_found_bwd
+                features[31] = abort_bwd         # 31: abort_flag_bwd
 
+
+        features[32] = agent.state.value  
+        features[33] = agent.action_saver.saved_action if agent.action_saver.is_action_saved else -1.0  # 32: saved_action (dummy example, hier kannst du deine Logik anpassen)
+ 
         all_visited = visited_type_2.union(visited_type_3_fwd).union(visited_type_3_bwd)
         visited = []
         for a in all_visited:
@@ -206,8 +230,7 @@ class DecisionPointObservation(ObservationBuilder):
             handles = list(range(len(self.env.agents)))
         result = []
 
-        for agent in self.env.agents:
-            print(agent)
+        for agent in self.env.agents: 
             if not hasattr(agent, 'opp_agent_handles'):
                 agent.opp_agent_handles = []  # Initialisiere leere Liste für Gegner-Handles
             if not hasattr(agent, 'cur_opp_agent_handles'):
@@ -285,6 +308,10 @@ class DecisionPointObservation(ObservationBuilder):
             if (pos, direction) in dfs_runtime_controller['visited']:
                 # Zyklus erkannt
                 return cur_dist, 1, num_switches, 0, 0
+            if cur_dist == np.inf:
+                # Kein Pfad zum Ziel
+                return 0, 1, -1, -1, -1  
+            
             dfs_runtime_controller['visited'].add((pos, direction))
             dfs_runtime_controller['count'] += 1
 
