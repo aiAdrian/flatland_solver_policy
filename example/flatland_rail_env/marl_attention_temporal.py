@@ -274,8 +274,8 @@ if __name__ == "__main__":
     )
     
     environment.generate_and_persist_environments(
-        generate_nbr_env=10,
-        generate_agents_per_env=[1, 2, 3, 4, 5],#[1, 2, 5, 10], 
+        generate_nbr_env=50,
+        generate_agents_per_env=[3],#[1, 2, 3, 4, 5],#[1, 2, 5, 10], 
         overwrite_existing=False
     )
     environment.load_environments_from_path()

@@ -45,6 +45,31 @@ class ExperimentalObservation(ObservationBuilder):
         dir = agent.direction if agent.direction is not None else agent.initial_direction
         return pos, dir
 
+
+    @staticmethod
+    def get_decision_point_observation(env, handle, switchAnalyser, walker, max_path_length, lookahead_cost_limit, max_agent_dist):
+        agent = env.agents[handle]
+        pos = agent.position if agent.position is not None else agent.initial_position
+        direction = agent.direction if agent.direction is not None else agent.initial_direction
+        if pos is None or direction is None or not agent.state.is_on_map_state():
+            # Agent ist nicht auf der Map
+            return np.zeros(30, dtype=np.float32), []
+
+        # Beispielhafte Feature-Berechnung (hier kannst du deine Logik anpassen) 
+        # Korrigiere: Features-Länge auf 30 (wie erwartet)
+        features = np.zeros(30, dtype=np.float32)
+        features[0] = float(pos[0])
+        features[1] = float(pos[1])
+        features[2] = float(direction)
+        features[3] = float(agent.state.value)
+        features[4] = float(handle)
+        # Dummy: Rest mit 0 (oder nach Bedarf weitere sinnvolle Features)
+        # ... weitere Feature-Berechnung nach Bedarf ...
+
+        # Dummy-opp_agents-Liste (hier ggf. echte Gegnerlogik einbauen)
+        opp_agents = []
+        return features, opp_agents
+
     def get(self, handle: int):
         agent = self.env.agents[handle]
         pos, direction = self.get_pos_dir(agent)
@@ -53,7 +78,7 @@ class ExperimentalObservation(ObservationBuilder):
             return np.zeros(ExperimentalObservation.getObservationSize(), dtype=np.float32), []
 
         # Analyse der Entscheidungsstellen und Pfade
-        decision_obs, opp_agents = DecisionPointObservation.get_decision_point_observation(
+        decision_obs, opp_agents = ExperimentalObservation.get_decision_point_observation(
             self.env, handle, self.switchAnalyser, self.walker, self.max_path_length, self.lookahead_cost_limit, self.max_agent_dist
         )
         return decision_obs, opp_agents

@@ -58,7 +58,7 @@ class DecisionPointObservation(ObservationBuilder):
 
         # retrieve distance map for pathfinding features
         distance_map = self.env.distance_map.get()
-        curr_dist = self.env.distance_map.get()[handle, pos[0], pos[1], dir] if self._is_in_grid(pos) else -1
+        curr_dist = self.env.distance_map.get()[handle, pos[0], pos[1], dir]  
         if curr_dist == np.inf:
             return (features - 1, [])
 
@@ -82,16 +82,22 @@ class DecisionPointObservation(ObservationBuilder):
         elif agent_at_switch:
             # agent is currently at a switch (branching logic
             # 
-            # --- [ ] --- [ ] --- \  
-            # --- [ ] --- [ ] --- [switch: agent] --- [ ] --- < agent travel direction 
+            # *** [ ] *** [ ] *** \  
+            # *** [ ] *** [ ] *** [switch: agent] --- [ ] --- 
             # 
+            # < agent travel direction 
+            # * path to search (shortest path first) if blocked otherpath ,... -> local serach (~one path in the tree)
+
             decision_type = 2.0
         elif near_switch_cell and not agent_near_switch:
             # agent is one cell before a (merge/crossing) switch 
             # 
-            # --- [ ] --- [     ] --- \  
-            # --- [ ] --- [agent] --- [switch] --- [ ] --- > agent travel direction 
+            # *** [ ] *** [     ] *** \  
+            # --- [ ] --- [agent] --- [switch] *** [ ] *** 
             # 
+            # > agent travel direction 
+            # * path to search 
+
             decision_type = 3.0
         elif agent.state.name == "DONE":
             # agent has completed its journey
@@ -146,22 +152,17 @@ class DecisionPointObservation(ObservationBuilder):
             # ----------------------------------------------
             # 
             # --- [ ] --- [       ] --- \  
-            # --- [ ] --- [agent >] --- [switch] --- [< other agent] --- 
+            # --- [ ] --- [agent >] --- [switch] *** [< other agent] ***
             # 
             # > agent travel direction   
             # < other agent's travel direction which agent must let pass (deadlock avoidance -> no options)
-            # 
+            # * path to _navigate forward is blocked by other agent -> can we merge/cross? (switch logic, deadlock avoidance -> maybe options)
 
+            npos_fwd = get_new_position(pos, dir)
             forward_dir = fast_argmax(transitions)
-            new_position = get_new_position(pos, dir)
-
-            npos_fwd = new_position
-            if npos_fwd is not None and self._is_in_grid(npos_fwd):
-                _, deadlock_fwd, switches_fwd, seen_fwd, abort_fwd, target_found_fwd, visited_type_3_fwd = self._navigate_direction(handle, npos_fwd, forward_dir, target)
-                opp_agents.update(seen_fwd)
-                abort_flag = max(abort_flag, abort_fwd) 
-            else:
-                deadlock_fwd, switches_fwd, abort_fwd, target_found_fwd = -1, -1, -1, -1
+            _, deadlock_fwd, switches_fwd, seen_fwd, abort_fwd, target_found_fwd, visited_type_3_fwd = self._navigate_direction(handle, npos_fwd, forward_dir, target)
+            opp_agents.update(seen_fwd)
+            abort_flag = max(abort_flag, abort_fwd) 
 
             features[22] = deadlock_fwd      # 21: deadlock_fwd
             features[23] = switches_fwd      # 22: switches_fwd
@@ -172,20 +173,20 @@ class DecisionPointObservation(ObservationBuilder):
             # Backward: 1 step backward (merge/crossing logic) 
             # ----------------------------------------------
             # 
-            # --- [ ] --- [other agent >] --- \  
-            # --- [ ] --- [agent >      ] --- [switch] --- [ ] --- > agent travel direction > other agent travel direction 
+            # *** [ ] *** [other agent >] *** \  
+            # --- [ ] --- [agent >      ] --- [switch] --- [ ] --- 
             # 
+            # > agent travel direction 
+            # > other agent travel direction 
             # decision to take agent before other agent or other agent before agent
-            # 
+            # * path to _navigate backward is blocked by other agent -> do we have priority? (switch logic, deadlock avoidance -> maybe options)
 
             new_position = get_new_position(pos, dir)
             reverse_dir = (forward_dir + 2) % 4
-            npos_bwd = get_new_position(new_position, reverse_dir)
-            if npos_bwd is not None and self._is_in_grid(npos_bwd):
-                _, deadlock_bwd, switches_bwd, seen_bwd, abort_bwd, target_found_bwd, visited_type_3_bwd= self._navigate_direction(handle, npos_bwd, reverse_dir, target)
-                # opp_agents.update(seen_bwd) 
-            else:
-                deadlock_bwd, switches_bwd, abort_bwd, target_found_bwd  = -1, -1, -1, -1
+            npos_bwd = get_new_position(new_position, reverse_dir)           
+            _, deadlock_bwd, switches_bwd, seen_bwd, abort_bwd, target_found_bwd, visited_type_3_bwd= self._navigate_direction(handle, npos_bwd, reverse_dir, target)
+            # don't merge them opp_agents.update(seen_bwd) 
+
             features[28] = deadlock_bwd      # 28: deadlock_bwd
             features[29] = switches_bwd      # 29: switches_bwd
             features[30] = target_found_bwd  # 30: target_found_bwd
@@ -206,6 +207,7 @@ class DecisionPointObservation(ObservationBuilder):
         result = []
 
         for agent in self.env.agents:
+            print(agent)
             if not hasattr(agent, 'opp_agent_handles'):
                 agent.opp_agent_handles = []  # Initialisiere leere Liste für Gegner-Handles
             if not hasattr(agent, 'cur_opp_agent_handles'):
@@ -220,14 +222,6 @@ class DecisionPointObservation(ObservationBuilder):
 
         return result
 
-
-    def _is_in_grid(self, pos):
-        if pos is None:
-            return False
-        env = self.env
-        rows, cols = env.height, env.width if hasattr(env, 'height') and hasattr(env, 'width') else env.rail.grid.shape
-        r, c = pos
-        return 0 <= r < rows and 0 <= c < cols
 
     def _shortest_path_action_hint(self, handle, pos, dir, transitions, distance_map):
         """
@@ -279,7 +273,7 @@ class DecisionPointObservation(ObservationBuilder):
             'seen_agents': set()  # Alle gesehenen Agenten
         }
         def dfs(pos, direction, switch_stack, num_switches):
-            cur_dist = distance_map[handle, pos[0], pos[1], direction] if self._is_in_grid(pos) else -1
+            cur_dist = distance_map[handle, pos[0], pos[1], direction] 
 
             # DFS mit globalem Controller für count, visited, seen_agents
             if dfs_runtime_controller['count'] >= max_steps:
@@ -287,10 +281,7 @@ class DecisionPointObservation(ObservationBuilder):
                 return cur_dist, 1, num_switches, 1, 0
             if pos == target:
                 # Ziel erreicht
-                return cur_dist, 0, num_switches, 0, 1
-            if not self._is_in_grid(pos):
-                # Außerhalb des Grids
-                return cur_dist, 1, num_switches, 0, 0
+                return cur_dist, 0, num_switches, 0, 1 
             if (pos, direction) in dfs_runtime_controller['visited']:
                 # Zyklus erkannt
                 return cur_dist, 1, num_switches, 0, 0
@@ -304,7 +295,8 @@ class DecisionPointObservation(ObservationBuilder):
             if agent_map is not None:
                 agent_idx = agent_map[pos]
                 if agent_idx != -1 and agent_idx != handle:
-                    dfs_runtime_controller['seen_agents'].add(agent_idx)
+                    if env.agents[agent_idx].direction != direction:
+                        dfs_runtime_controller['seen_agents'].add(agent_idx)
                 if agent_idx != -1:
                     if agent_idx != handle:
                         if env.agents[agent_idx].direction != direction:
@@ -342,36 +334,11 @@ class DecisionPointObservation(ObservationBuilder):
                     ret_dfs_dist, ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag = dfs(npos, ndir, switch_stack.copy(), num_switches)
                     return max(ret_dfs_dist, cur_dist), ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag
             
-            # Sackgasse
+            # should no occur: keine Alternativen (deadlock) oder Ziel erreicht (handled oben) oder ...
             return cur_dist, 1, num_switches, 0, 0
 
         dist, deadlock_flag, num_switches, abort_flag, target_found_flag = dfs(start_pos, start_dir, [], 0)
         # Nach DFS: Rückgabe der global gesammelten Agenten als sortierte Liste
         seen_agents = sorted(set(dfs_runtime_controller['seen_agents']))
         return dist, deadlock_flag, num_switches, seen_agents, abort_flag, target_found_flag, dfs_runtime_controller['visited']   
-
-
-    @staticmethod
-    def get_decision_point_observation(env, handle, switchAnalyser, walker, max_path_length, lookahead_cost_limit, max_agent_dist):
-        agent = env.agents[handle]
-        pos = agent.position if agent.position is not None else agent.initial_position
-        direction = agent.direction if agent.direction is not None else agent.initial_direction
-        if pos is None or direction is None or not agent.state.is_on_map_state():
-            # Agent ist nicht auf der Map
-            return np.zeros(30, dtype=np.float32), []
-
-        # Beispielhafte Feature-Berechnung (hier kannst du deine Logik anpassen)
-        from .experimental_observation import ExperimentalObservation
-        # Korrigiere: Features-Länge auf 30 (wie erwartet)
-        features = np.zeros(30, dtype=np.float32)
-        features[0] = float(pos[0])
-        features[1] = float(pos[1])
-        features[2] = float(direction)
-        features[3] = float(agent.state.value)
-        features[4] = float(handle)
-        # Dummy: Rest mit 0 (oder nach Bedarf weitere sinnvolle Features)
-        # ... weitere Feature-Berechnung nach Bedarf ...
-
-        # Dummy-opp_agents-Liste (hier ggf. echte Gegnerlogik einbauen)
-        opp_agents = []
-        return features, opp_agents
+    
