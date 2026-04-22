@@ -35,7 +35,7 @@ class DecisionPointObservation(ObservationBuilder):
 
     @staticmethod
     def getObservationSize() -> int:
-        return 34
+        return 38
 
     def get(self, handle: int = 0):
         if self.switchAnalyser is None:
@@ -119,7 +119,7 @@ class DecisionPointObservation(ObservationBuilder):
         visited_type_3_bwd = set()
 
         # decision_type 2: agent on a switch -> for each direction [dist, deadlock, switches]
-        if decision_type == 2.0:
+        if decision_type == 2 and True:
             rel_dirs = [(-1) % 4, 0, 1, 2]  # left, forward, right, reverse
             for i, rel_dir in enumerate(rel_dirs):
                 abs_dir = (dir + rel_dir) % 4
@@ -216,6 +216,11 @@ class DecisionPointObservation(ObservationBuilder):
         features[32] = agent.state.value  
         features[33] = agent.action_saver.saved_action if agent.action_saver.is_action_saved else -1.0  # 32: saved_action (dummy example, hier kannst du deine Logik anpassen)
  
+        features[34] = agent_at_switch
+        features[35] = agent_near_switch 
+        features[36] = switch_cell
+        features[37] = near_switch_cell 
+
         all_visited = visited_type_2.union(visited_type_3_fwd).union(visited_type_3_bwd)
         visited = []
         for a in all_visited:
