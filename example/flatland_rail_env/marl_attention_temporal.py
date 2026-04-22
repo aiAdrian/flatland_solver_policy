@@ -233,13 +233,10 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
         reward[i] = -1.0
         # Ziel erreicht: +100
         if agent.state == TrainState.DONE:
-            reward[i] += 1.0
-        # Deadlock/Malfunction: -5
+            reward[i] += 1.0 
         if agent.state in [TrainState.WAITING, TrainState.MALFUNCTION_OFF_MAP, TrainState.MALFUNCTION]:
             reward[i] += 0.0
-        if hasattr(info, '__getitem__') and i in info and info[i] is not None:
-            if isinstance(info[i], dict) and info[i].get('deadlock', False):
-                reward[i] += -1.0
+ 
     return reward
 
 

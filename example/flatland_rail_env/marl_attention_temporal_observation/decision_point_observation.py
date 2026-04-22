@@ -35,7 +35,8 @@ class DecisionPointObservation(ObservationBuilder):
 
     @staticmethod
     def getObservationSize() -> int:
-        return 38
+        # Ursprüngliche Feature-Länge + 6 neue Features
+        return 44
 
     def get(self, handle: int = 0):
         if self.switchAnalyser is None:
@@ -216,10 +217,47 @@ class DecisionPointObservation(ObservationBuilder):
         features[32] = agent.state.value  
         features[33] = agent.action_saver.saved_action if agent.action_saver.is_action_saved else -1.0  # 32: saved_action (dummy example, hier kannst du deine Logik anpassen)
  
+
         features[34] = agent_at_switch
         features[35] = agent_near_switch 
         features[36] = switch_cell
         features[37] = near_switch_cell 
+
+        # --- Erweiterte Deadlock/Maze-Features ---
+        # 38: Anzahl Richtungen mit Deadlock=1 (0-4)
+        deadlock_count = 0
+        for idx in [5, 9, 13, 17]:
+            if features[idx] == 1:
+                deadlock_count += 1
+        features[38] = deadlock_count
+
+
+        # 39: True, wenn ALLE Bewegungsoptionen Deadlock (außer warten)
+        features[39] = 1.0 if deadlock_count >= 3 else 0.0
+
+        # 40: True, wenn nur eine Richtung kein Deadlock ("Engstelle")
+        features[40] = 1.0 if deadlock_count == 2 else 0.0
+
+        # 41: True, wenn der Agent aktuell blockiert ist (Agent direkt vor ihm)
+        blocked = 0.0
+        fwd_dir = (dir + 0) % 4
+        npos = get_new_position(pos, fwd_dir)
+        if hasattr(self.env, 'agent_map') and self.env.agent_map is not None:
+            agent_idx = self.env.agent_map[npos] if npos in self.env.agent_map else -1
+            if agent_idx != -1 and agent_idx != handle:
+                blocked = 1.0
+        features[41] = blocked
+
+        switch_count = 0
+        for idx in [6,10,14,18]: 
+            switch_count += features[idx]
+        features[42] = switch_count
+
+        target_count = 0
+        for idx in [8,12,16,20]: 
+            target_count += features[idx]
+        features[43] = target_count
+ 
 
         all_visited = visited_type_2.union(visited_type_3_fwd).union(visited_type_3_bwd)
         visited = []
