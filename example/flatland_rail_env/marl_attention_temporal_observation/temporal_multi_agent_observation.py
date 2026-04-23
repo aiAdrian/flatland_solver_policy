@@ -13,9 +13,6 @@ class TemporalMultiAgentObservation(ObservationBuilder):
     1. Temporal Buffer: Stores last T timesteps (default T=3)
     2. Velocity Features: Computed from position/direction deltas
     3. Sequential Format: Returns [(obs_t-2, opp_t-2), (obs_t-1, opp_t-1), (obs_t, opp_t)]
-    Observation Size: 33D per timestep
-    - 30D: Base features (from ExperimentalObservation)
-    - 3D:  Velocity (velocity_x, velocity_y, angular_velocity)
     """
     def __init__(self, temporal_window: int = 3, base_obs=None):
         super().__init__()
@@ -44,7 +41,7 @@ class TemporalMultiAgentObservation(ObservationBuilder):
 
     @staticmethod
     def getObservationSize() -> int:
-        return 30
+        return DecisionPointObservation.getObservationSize()
 
     def set_env(self, env):
         super().set_env(env)
@@ -64,11 +61,9 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         for handle_idx, (obs_self, obs_others) in enumerate(current_obs):
             obs_fixed_size = obs_self[:TemporalMultiAgentObservation.getObservationSize()]
             obs_others_enriched = []
-            for opp_obs in obs_others:
-                opp_base = opp_obs[:30]
-                opp_vel = np.zeros(3, dtype=np.float32)
-                opp_enriched = np.concatenate([opp_base, opp_vel])
-                obs_others_enriched.append(opp_enriched)
+            for opp_handle in obs_others:
+                opp_base = current_obs[opp_handle][0]
+                obs_others_enriched.append(opp_base)
             enriched_obs.append((obs_fixed_size, obs_others_enriched))
         temporal_sequences = []
         for handle_idx, (obs_self, obs_others) in enumerate(enriched_obs):
@@ -80,7 +75,7 @@ class TemporalMultiAgentObservation(ObservationBuilder):
                 if len(seq) > 0:
                     seq.insert(0, seq[0])
                 else:
-                    zero_obs = np.zeros(33, dtype=np.float32)
+                    zero_obs = np.zeros(TemporalMultiAgentObservation.getObservationSize(), dtype=np.float32)
                     seq.insert(0, (zero_obs, []))
             temporal_sequences.append(seq)
         return temporal_sequences

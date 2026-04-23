@@ -236,7 +236,10 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
             reward[i] += 1.0 
         if agent.state in [TrainState.WAITING, TrainState.MALFUNCTION_OFF_MAP, TrainState.MALFUNCTION]:
             reward[i] += 0.0
+
  
+    #import time
+    #time.sleep(0.2)  # Simuliere komplexe Berechnung (z.B. Deadlock-Erkennung)
     return reward
 
 
@@ -271,8 +274,8 @@ if __name__ == "__main__":
     )
     
     environment.generate_and_persist_environments(
-        generate_nbr_env=50,
-        generate_agents_per_env=[3],#[1, 2, 3, 4, 5],#[1, 2, 5, 10], 
+        generate_nbr_env=1,
+        generate_agents_per_env=[1, 2, 3, 4, 5]*10,#[1, 2, 5, 10], 
         overwrite_existing=False
     )
     environment.load_environments_from_path()

@@ -3,7 +3,6 @@ from flatland.core.env_observation_builder import ObservationBuilder
 import numpy as np
 from flatland.core.grid.grid4_utils import get_new_position
 from flatland.envs.step_utils.states import TrainState
-from flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
 
 class DecisionPointObservation(ObservationBuilder):
     """
@@ -22,27 +21,21 @@ class DecisionPointObservation(ObservationBuilder):
     def __init__(self):
         super().__init__()
         self.env = None
-        self.switchAnalyser = None
         self.feature_len = DecisionPointObservation.getObservationSize()
         print(">> DecisionPointObservation loaded.")
 
     def set_env(self, env):
-        self.env = env
-        self.switchAnalyser = None
+        self.env = env 
 
     def reset(self):
-        self.switchAnalyser = None
+         self.agent_map = np.zeros((self.env.height, self.env.width), dtype=np.int32) - 1
 
     @staticmethod
     def getObservationSize() -> int:
         # Ursprüngliche Feature-Länge + 6 neue Features
-        return 44
+        return 34
 
-    def get(self, handle: int = 0):
-        if self.switchAnalyser is None:
-            self.switchAnalyser = RailroadSwitchAnalyser(self.env)
-
-
+    def get(self, handle: int = 0): 
         # init features
         features = np.zeros(self.feature_len, dtype=np.float32)
 
@@ -63,49 +56,50 @@ class DecisionPointObservation(ObservationBuilder):
         if curr_dist == np.inf:
             return (features - 1, [])
 
-        # classify decision point type based on agent state and position and infrastructure / cell 
-        agent_at_switch, agent_near_switch, \
-        switch_cell, near_switch_cell = \
-            self.switchAnalyser.check_agent_decision(position=pos, direction=dir)
-        
         # get current possible transistions
         transitions = self.env.rail.get_transitions(*pos, dir)
+        merge_switch = False
+        for nd in range(4):  # Nur bei genau einem möglichen Übergang prüfen
+            if transitions[nd]:
+                next_pos = get_new_position(pos, nd)  
+                for d in range(4):  
+                    next_transitions = self.env.rail.get_transitions(*next_pos, d)        
+                    if fast_count_nonzero(next_transitions) > 1:  # Wenn der nächste Übergang ein Switch ist
+                        if d != nd:
+                            merge_switch=True
 
-        # Check if there's an agent at the current position (e.g., for deadlock detection)
-        # This is only possible if the agent is outside the board and the init position is occupied!
-        agent_idx = self.env.agent_map[pos] if hasattr(self.env, 'agent_map') and self.env.agent_map is not None else -1
-        if agent_idx != -1:
-            return (features - 2, [])
+        # agent is traveling on a normal track segment (no decision point)
+        decision_type = 0
 
         # classify decision point type
         if agent.state.name == "READY_TO_DEPART":
-            decision_type = 1.0
-        elif agent_at_switch:
-            # agent is currently at a switch (branching logic
-            # 
-            # *** [ ] *** [ ] *** \  
-            # *** [ ] *** [ ] *** [switch: agent] --- [ ] --- 
-            # 
-            # < agent travel direction 
-            # * path to search (shortest path first) if blocked otherpath ,... -> local serach (~one path in the tree)
-
-            decision_type = 2.0
-        elif near_switch_cell and not agent_near_switch:
-            # agent is one cell before a (merge/crossing) switch 
-            # 
-            # *** [ ] *** [     ] *** \  
-            # --- [ ] --- [agent] --- [switch] *** [ ] *** 
-            # 
-            # > agent travel direction 
-            # * path to search 
-
-            decision_type = 3.0
-        elif agent.state.name == "DONE":
-            # agent has completed its journey
-           decision_type = -1.0
+            decision_type = 1
         else:
-            # agent is traveling on a normal track segment (no decision point)
-            decision_type = 0.0
+            if fast_count_nonzero(transitions) > 1:
+                # agent is currently at a switch (branching logic)
+                # 
+                #                            / *** [ ] *** [ ] *** 
+                # --- [ ] ---  [switch: agent] *** [ ] *** [ ] *** 
+                # 
+                # > agent travel direction 
+                # * path to search (shortest path first) if blocked otherpath ,... -> local serach (~one path in the tree)
+                decision_type += 2
+
+            if merge_switch:
+                # agent is one cell before a (merge/crossing) switch 
+                # 
+                # *** [ ] *** [     ] *** \  
+                # --- [ ] --- [agent] --- [switch] *** [ ] *** 
+                # 
+                # > agent travel direction 
+                # * path to search 
+                decision_type += 4
+
+        if agent.state.name == "DONE":
+            # agent has completed its journey
+            decision_type = 8
+
+               
         
 
         # Feature 0: decision_type
@@ -120,7 +114,7 @@ class DecisionPointObservation(ObservationBuilder):
         visited_type_3_bwd = set()
 
         # decision_type 2: agent on a switch -> for each direction [dist, deadlock, switches]
-        if decision_type == 2 and True:
+        if decision_type & 2:
             rel_dirs = [(-1) % 4, 0, 1, 2]  # left, forward, right, reverse
             for i, rel_dir in enumerate(rel_dirs):
                 abs_dir = (dir + rel_dir) % 4
@@ -148,7 +142,7 @@ class DecisionPointObservation(ObservationBuilder):
         #    If backward path is blocked, do we have priority?)
         # - cannot branch, but can merge/cross) -> for each direction 
         #   [dist, deadlock, switches, delta_dist, target_found, abort]
-        if decision_type == 3.0: 
+        if decision_type & 4: 
             # ----------------------------------------------
             # Forward: 1 step forward (merge/crossing logic)
             # ----------------------------------------------
@@ -206,7 +200,7 @@ class DecisionPointObservation(ObservationBuilder):
             if bwd_pos is not None:
                 _, deadlock_bwd, switches_bwd, seen_bwd, abort_bwd, target_found_bwd, visited_type_3_bwd = \
                     self._navigate_direction(handle, bwd_pos, bwd_dir, target)
-                # don't merge them opp_agents.update(seen_bwd) 
+                opp_agents.update(seen_bwd) 
 
                 features[28] = deadlock_bwd      # 28: deadlock_bwd
                 features[29] = switches_bwd      # 29: switches_bwd
@@ -216,55 +210,29 @@ class DecisionPointObservation(ObservationBuilder):
 
         features[32] = agent.state.value  
         features[33] = agent.action_saver.saved_action if agent.action_saver.is_action_saved else -1.0  # 32: saved_action (dummy example, hier kannst du deine Logik anpassen)
- 
-
-        features[34] = agent_at_switch
-        features[35] = agent_near_switch 
-        features[36] = switch_cell
-        features[37] = near_switch_cell 
-
-        # --- Erweiterte Deadlock/Maze-Features ---
-        # 38: Anzahl Richtungen mit Deadlock=1 (0-4)
-        deadlock_count = 0
-        for idx in [5, 9, 13, 17]:
-            if features[idx] == 1:
-                deadlock_count += 1
-        features[38] = deadlock_count
-
-
-        # 39: True, wenn ALLE Bewegungsoptionen Deadlock (außer warten)
-        features[39] = 1.0 if deadlock_count >= 3 else 0.0
-
-        # 40: True, wenn nur eine Richtung kein Deadlock ("Engstelle")
-        features[40] = 1.0 if deadlock_count == 2 else 0.0
-
-        # 41: True, wenn der Agent aktuell blockiert ist (Agent direkt vor ihm)
-        blocked = 0.0
-        fwd_dir = (dir + 0) % 4
-        npos = get_new_position(pos, fwd_dir)
-        if hasattr(self.env, 'agent_map') and self.env.agent_map is not None:
-            agent_idx = self.env.agent_map[npos] if npos in self.env.agent_map else -1
-            if agent_idx != -1 and agent_idx != handle:
-                blocked = 1.0
-        features[41] = blocked
-
-        switch_count = 0
-        for idx in [6,10,14,18]: 
-            switch_count += features[idx]
-        features[42] = switch_count
-
-        target_count = 0
-        for idx in [8,12,16,20]: 
-            target_count += features[idx]
-        features[43] = target_count
- 
+   
 
         all_visited = visited_type_2.union(visited_type_3_fwd).union(visited_type_3_bwd)
-        visited = []
-        for a in all_visited:
-            visited.append(a[0])
-        self.env.dev_obs_dict.update({handle: visited})
-    
+        if False:
+            visited = []
+            for a in all_visited:
+                visited.append(a[0])
+            self.env.dev_obs_dict.update({handle: visited})
+        else:
+            if handle == 0: 
+                visited = []
+                for a in visited_type_2:
+                    visited.append(a[0])
+                self.env.dev_obs_dict.update({0: visited}) 
+                visited = []
+                for a in visited_type_3_fwd:
+                    visited.append(a[0])
+                self.env.dev_obs_dict.update({1: visited}) 
+                visited = []
+                for a in visited_type_3_bwd: 
+                    visited.append(a[0])
+                self.env.dev_obs_dict.update({2: visited})
+
         agent.cur_opp_agent_handles = list(opp_agents)  # Speichere die Gegner-Handles im Agentenobjekt
         return (features, agent.cur_opp_agent_handles)
 
@@ -272,6 +240,11 @@ class DecisionPointObservation(ObservationBuilder):
         if handles is None:
             handles = list(range(len(self.env.agents)))
         result = []
+
+        self.agent_map = np.zeros((self.env.height, self.env.width), dtype=np.int32) - 1
+        for agent in self.env.agents:
+            if agent.position is not None: 
+                self.agent_map[agent.position] = agent.handle   
 
         for agent in self.env.agents: 
             if not hasattr(agent, 'opp_agent_handles'):
@@ -329,8 +302,7 @@ class DecisionPointObservation(ObservationBuilder):
             target_found_flag: 1, falls Ziel erreicht wurde, sonst 0
         '''
         env = self.env
-        distance_map = env.distance_map.get()
-        agent_map = env.agent_map if hasattr(env, 'agent_map') else None
+        distance_map = env.distance_map.get() 
 
         # Globaler Controller für DFS-Laufzeit und besuchte Knoten/Agenten
         dfs_runtime_controller = {
@@ -344,37 +316,43 @@ class DecisionPointObservation(ObservationBuilder):
             # DFS mit globalem Controller für count, visited, seen_agents
             if dfs_runtime_controller['count'] >= max_steps:
                 # Abbruch wegen Schrittbegrenzung
-                return cur_dist, 1, num_switches, 1, 0
+                return cur_dist, 0, num_switches, 1, -1
             if pos == target:
                 # Ziel erreicht
                 return cur_dist, 0, num_switches, 0, 1 
             if (pos, direction) in dfs_runtime_controller['visited']:
                 # Zyklus erkannt
-                return cur_dist, 1, num_switches, 0, 0
+                return cur_dist, -1, num_switches, 1, -1
             if cur_dist == np.inf:
                 # Kein Pfad zum Ziel
-                return 0, 1, -1, -1, -1  
+                return -1, -1, num_switches, 1, -1
             
             dfs_runtime_controller['visited'].add((pos, direction))
             dfs_runtime_controller['count'] += 1
 
-
-
             transitions = env.rail.get_transitions(*pos, direction)
             # Deadlock: entgegenkommender Agent
-            if agent_map is not None:
-                agent_idx = agent_map[pos]
+            if self.agent_map is not None: 
+                agent_idx = self.agent_map[pos]
                 if agent_idx != -1 and agent_idx != handle:
-                    if env.agents[agent_idx].direction != direction:
-                        dfs_runtime_controller['seen_agents'].add(agent_idx)
+                    #if env.agents[agent_idx].direction != direction:
+                    # alle agente werden als potenzielle Deadlock-Quelle betrachtet, 
+                    # da sie sich in die Quere kommen könnten (z.B. bei decision_type 3 backward)
+                    # nun kann das system aber entscheiden, ich habe einen deadlock und sehe den agenten, der andere mich 
+                    # allenfalls nicht, dann ist es ein nicht echter deadlock, 
+                    # da er mir noch ausweichen kann 
+                    dfs_runtime_controller['seen_agents'].add(agent_idx)
                 if agent_idx != -1:
                     if agent_idx != handle:
                         if env.agents[agent_idx].direction != direction:
-                            if handle in self.env.agents[agent_idx].opp_agent_handles:
-                                # Deadlock durch entgegenkommenden Agenten
-                                return cur_dist, 1, num_switches, 0, 0
+                            # Deadlock durch entgegenkommenden Agenten - hier geht es momentan nicht mehr weiter!
+                            return cur_dist, 1, num_switches, 0, 0
                     else:
-                        # Deadlock durch entgegenkommenden Agenten (mich selst) - can auftreten, falls desciiton_type=3 backward
+                        # Deadlock durch entgegenkommenden Agenten (mich selst) - 
+                        # dies kann auftreten falls ich mit descition_type = 4 (bit) 
+                        # rückwärts navigiere und auf einen anderen Agenten treffe,
+                        # der in die gleiche Richtung unterwegs ist (z.B. beide Agenten 
+                        # wollen vor einem Switch warten und haben sich gegenseitig blockiert)
                         return cur_dist, 2, num_switches, 0, 0
                     
             # Switch logic: mehrere Alternativen am Switch, sortiert nach distance_map
@@ -392,7 +370,7 @@ class DecisionPointObservation(ObservationBuilder):
                 for _, ndir, npos in alternatives:
                     switch_stack.append((pos, direction, ndir))
                     res = dfs(npos, ndir, switch_stack.copy(), num_switches + num_switches_changed)
-                    if res[1] == 0:
+                    if res[1] < 1:
                         return res
                     num_switches_changed = 1
                     switch_stack.pop()
