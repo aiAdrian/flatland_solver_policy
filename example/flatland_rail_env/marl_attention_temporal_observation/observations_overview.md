@@ -30,30 +30,53 @@ Die `DecisionPointObservation` ist ein spezialisierter Beobachtungs-Builder für
 - Die Features werden dynamisch und kontextsensitiv befüllt: Nur die für die aktuelle Entscheidungssituation relevanten Blöcke sind aktiv, alle anderen sind 0.
 - Die Entscheidungslogik basiert auf rekursiver Tiefensuche (DFS) zur Pfadanalyse, Deadlockerkennung und Zielprüfung.
 
-### Feature-Tabelle: DecisionPointObservation (42D)
 
-| Index      | Name                        | Beschreibung                                                                 | decision_type (gesetzt bei)         |
-|------------|-----------------------------|------------------------------------------------------------------------------|-------------------------------------|
-| 0          | decision_type               | Entscheidungssituation (0=normal, 1=Start, 2=Switch, 4=Merge, 8=DONE)        | alle                                |
-| 1          | onehot_left                 | 1, wenn links optimal (laut distance_map), sonst 0                           | Switch, Merge/Crossing              |
-| 2          | onehot_forward              | 1, wenn geradeaus optimal, sonst 0                                           | Switch, Merge/Crossing              |
-| 3          | onehot_right                | 1, wenn rechts optimal, sonst 0                                              | Switch, Merge/Crossing              |
-| 4-21       | [Switch-Block]              | Für jede Richtung (links, geradeaus, rechts, rückwärts): Distanz, Deadlock, Switches, Delta, Target, Abort | Switch                              |
-| 22-29      | [Merge/Crossing-Block]      | Für vorwärts/rückwärts: Deadlock, Switches, Target, Abort                    | Merge/Crossing                      |
-| 30-36      | agent_state_onehot          | One-hot-Kodierung des Agentenstatus (READY_TO_DEPART, ..., DONE)             | alle                                |
-| 37-41      | last_action_onehot          | One-hot-Kodierung der zuletzt gespeicherten Aktion                           | alle                                |
+### Feature-Tabelle: DecisionPointObservation (alle 42 Features einzeln)
 
-**Details zu den Blöcken:**
-
-- **Switch-Block (4-21):**
-	- Für jede Richtung (links, geradeaus, rechts, rückwärts):
-		- Aktuelle Distanz, Deadlock-Flag, Anzahl Weichen, Distanzdifferenz, Zielerreichung, Abbruch-Flag
-- **Merge/Crossing-Block (22-29):**
-	- Für vorwärts/rückwärts: Deadlock, Switches, Target, Abort
-- **Agentenstatus (30-36):**
-	- One-hot-Kodierung des aktuellen Status (READY_TO_DEPART, MALFUNCTION_OFF_MAP, MOVING, STOPPED, MALFUNCTION, DONE)
-- **Letzte Aktion (37-41):**
-	- One-hot-Kodierung der zuletzt gespeicherten Aktion
+| Index | Name                        | Beschreibung                                                                 | decision_type (gesetzt bei)         |
+|-------|-----------------------------|------------------------------------------------------------------------------|-------------------------------------|
+| 0     | decision_type               | Entscheidungssituation (0=normal, 1=Start, 2=Switch, 4=Merge, 8=DONE)        | alle                                |
+| 1     | onehot_left                 | 1, wenn links optimal (laut distance_map), sonst 0                           | Switch, Merge/Crossing              |
+| 2     | onehot_forward              | 1, wenn geradeaus optimal, sonst 0                                           | Switch, Merge/Crossing              |
+| 3     | onehot_right                | 1, wenn rechts optimal, sonst 0                                              | Switch, Merge/Crossing              |
+| 4     | left_curr_dist              | Aktuelle Distanz (vor Schritt links)                                         | Switch                              |
+| 5     | left_deadlock               | Deadlock-Flag nach Schritt links                                             | Switch                              |
+| 6     | left_switches               | Anzahl Weichen nach Schritt links                                            | Switch                              |
+| 7     | left_delta_dist             | Distanzdifferenz zum Ziel nach Schritt links                                 | Switch                              |
+| 8     | left_target_found           | Ziel erreicht nach Schritt links                                             | Switch                              |
+| 9     | left_abort                  | Abbruch-Flag nach Schritt links                                              | Switch                              |
+| 10    | forward_curr_dist           | Aktuelle Distanz (vor Schritt geradeaus)                                     | Switch                              |
+| 11    | forward_deadlock            | Deadlock-Flag nach Schritt geradeaus                                         | Switch                              |
+| 12    | forward_switches            | Anzahl Weichen nach Schritt geradeaus                                        | Switch                              |
+| 13    | forward_delta_dist          | Distanzdifferenz zum Ziel nach Schritt geradeaus                             | Switch                              |
+| 14    | forward_target_found        | Ziel erreicht nach Schritt geradeaus                                         | Switch                              |
+| 15    | forward_abort               | Abbruch-Flag nach Schritt geradeaus                                          | Switch                              |
+| 16    | right_curr_dist             | Aktuelle Distanz (vor Schritt rechts)                                        | Switch                              |
+| 17    | right_deadlock              | Deadlock-Flag nach Schritt rechts                                            | Switch                              |
+| 18    | right_switches              | Anzahl Weichen nach Schritt rechts                                           | Switch                              |
+| 19    | right_delta_dist            | Distanzdifferenz zum Ziel nach Schritt rechts                                | Switch                              |
+| 20    | right_target_found          | Ziel erreicht nach Schritt rechts                                            | Switch                              |
+| 21    | right_abort                 | Abbruch-Flag nach Schritt rechts                                             | Switch                              |
+| 22    | merge_deadlock_fwd          | Deadlock-Flag nach Schritt vorwärts (Merge/Crossing)                         | Merge/Crossing (forward)            |
+| 23    | merge_switches_fwd          | Anzahl Weichen nach Schritt vorwärts (Merge/Crossing)                        | Merge/Crossing (forward)            |
+| 24    | merge_target_found_fwd      | Ziel erreicht nach Schritt vorwärts (Merge/Crossing)                         | Merge/Crossing (forward)            |
+| 25    | merge_abort_fwd             | Abbruch-Flag nach Schritt vorwärts (Merge/Crossing)                          | Merge/Crossing (forward)            |
+| 26    | merge_deadlock_bwd          | Deadlock-Flag nach Schritt rückwärts (Merge/Crossing)                        | Merge/Crossing (backward)           |
+| 27    | merge_switches_bwd          | Anzahl Weichen nach Schritt rückwärts (Merge/Crossing)                       | Merge/Crossing (backward)           |
+| 28    | merge_target_found_bwd      | Ziel erreicht nach Schritt rückwärts (Merge/Crossing)                        | Merge/Crossing (backward)           |
+| 29    | merge_abort_bwd             | Abbruch-Flag nach Schritt rückwärts (Merge/Crossing)                         | Merge/Crossing (backward)           |
+| 30    | agent_state_ready_to_depart | One-hot: Agent ist READY_TO_DEPART                                           | alle                                |
+| 31    | agent_state_malfunction_off_map | One-hot: Agent ist MALFUNCTION_OFF_MAP                                  | alle                                |
+| 32    | agent_state_moving          | One-hot: Agent ist MOVING                                                    | alle                                |
+| 33    | agent_state_stopped         | One-hot: Agent ist STOPPED                                                   | alle                                |
+| 34    | agent_state_malfunction     | One-hot: Agent ist in MALFUNCTION                                            | alle                                |
+| 35    | agent_state_done            | One-hot: Agent ist DONE                                                      | alle                                |
+| 36    | agent_state_other           | One-hot: Sonstiger Status                                                    | alle                                |
+| 37    | last_action_left            | One-hot: Letzte Aktion war links                                              | alle                                |
+| 38    | last_action_forward         | One-hot: Letzte Aktion war geradeaus                                         | alle                                |
+| 39    | last_action_right           | One-hot: Letzte Aktion war rechts                                            | alle                                |
+| 40    | last_action_stop            | One-hot: Letzte Aktion war stop                                              | alle                                |
+| 41    | last_action_other           | One-hot: Letzte Aktion war sonstiges                                         | alle                                |
 
 ### Feature-Befüllung & Speziallogik
 
