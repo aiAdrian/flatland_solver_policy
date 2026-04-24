@@ -88,12 +88,38 @@ Die `DecisionPointObservation` ist ein spezialisierter Beobachtungs-Builder für
 - **abort**-Flags werden gesetzt, wenn die maximale Schrittzahl (max_steps) überschritten wird.
 - **target_found** wird gesetzt, wenn das Ziel auf dem Pfad erreicht wird.
 
-### Entscheidungsfindung & DFS-Logik
 
-- Die Methode `_navigate_direction` implementiert eine rekursive Tiefensuche (DFS), um von einer gegebenen Startposition und Richtung aus den Pfad zum Ziel zu analysieren.
-- Für jede relevante Richtung werden Distanz, Deadlock, Weichen, Zielerreichung und Abbruch-Flag berechnet.
-- Die DFS prüft an jedem Switch alle Alternativen (Backtracking), erkennt Deadlocks (z.B. entgegenkommende Agenten), verhindert Zyklen und speichert gesehene Agenten für Konfliktlösung.
-- Die Ergebnisse der DFS werden direkt in die Feature-Blöcke übernommen.
+### Entscheidungsfindung & DFS-Logik (Algorithmus-Details)
+
+Die Methode `_navigate_direction` ist das Herzstück der Entscheidungslogik. Sie implementiert eine rekursive Tiefensuche (Depth-First Search, DFS), um für jede relevante Richtung (links, geradeaus, rechts, rückwärts) den Pfad zum Ziel zu analysieren und dabei Deadlocks, Weichen, Zielerreichung und Abbruchbedingungen zu erkennen.
+
+
+#### Algorithmus in verständlicher Prosa
+
+Die rekursive Tiefensuche (DFS) zur Entscheidungsfindung funktioniert wie folgt:
+
+1. **Start und Zielprüfung:** Die Suche beginnt an der aktuellen Position und prüft zunächst, ob das Ziel bereits erreicht ist. Ist dies der Fall, wird dies sofort als Erfolg gemeldet.
+2. **Abbruchbedingungen:** Die Suche wird abgebrochen, wenn eine maximale Suchtiefe überschritten wird (um endlose Rekursionen zu verhindern) oder wenn die aktuelle Position und Richtung bereits besucht wurden (Zyklenerkennung).
+3. **Deadlock-Erkennung:** Trifft die Suche auf einen entgegenkommenden oder blockierenden Agenten, wird dies als Deadlock erkannt und entsprechend im Ergebnis markiert.
+4. **Weichen und Alternativen:** An jeder Weiche (Switch) prüft die Suche alle möglichen Weiterführungen (z.B. links, geradeaus, rechts, rückwärts). Für jede Alternative wird die Suche rekursiv fortgesetzt. So werden alle potenziellen Pfade analysiert.
+5. **Backtracking und Auswahl:** Nach der Analyse aller Alternativen wählt die Suche das beste Ergebnis aus (z.B. den Pfad mit minimalem Deadlock-Risiko oder kürzester Distanz).
+6. **Feature-Befüllung:** Die Ergebnisse der Suche – Distanz zum Ziel, Deadlock-Status, Anzahl durchlaufener Weichen, Zielerreichung und Abbruch-Flag – werden für jede Richtung in die entsprechenden Features des Beobachtungsvektors eingetragen.
+7. **Cycle Prevention:** Um Endlosschleifen zu vermeiden, merkt sich die Suche alle bereits besuchten (Position, Richtung)-Paare und prüft vor jedem Schritt, ob sie erneut betreten werden.
+
+Diese Vorgehensweise stellt sicher, dass alle relevanten Entscheidungsalternativen im Schienennetz berücksichtigt werden, Deadlocks und Konflikte realistisch erkannt werden und die resultierenden Features robust und RL-tauglich sind.
+
+#### Warum ist diese DFS-Logik ideal für Flatland-RL?
+
+- **Realistische Konflikterkennung:** Die DFS erkennt echte Deadlocks und Konflikte mit anderen Agenten, was für Multi-Agenten-Planung und RL-Policies essenziell ist.
+- **Flexible Pfadanalyse:** Durch Backtracking an Weichen werden alle Alternativen geprüft, sodass Policies nicht in lokale Minima laufen und komplexe Entscheidungssituationen abgebildet werden.
+- **Effizient und sicher:** Die maximale Suchtiefe verhindert endlose Rekursionen und hält die Berechnung effizient und RL-tauglich.
+- **Zyklenerkennung:** Cycle Prevention ist wichtig, da das Schienennetz Zyklen enthalten kann – so werden Endlosschleifen vermieden.
+- **Konfliktlösung:** Die DFS speichert alle gesehene Agenten auf dem Pfad, was für Prioritätsentscheidungen und Konfliktlösung genutzt werden kann.
+- **RL-taugliche Features:** Die so gewonnenen Features (Distanz, Deadlock, Ziel, Weichen, Abbruch) sind direkt für RL nutzbar und ermöglichen Policies, auf komplexe Situationen zu reagieren.
+- **Disjunkte Feature-Blöcke:** Nur die für die aktuelle Entscheidungssituation relevanten Features werden befüllt, was die Policy-Entwicklung vereinfacht und Overfitting reduziert.
+
+**Fazit:**
+Die rekursive DFS-Logik in `_navigate_direction` bildet die reale Entscheidungsstruktur im Flatland-Setting ab, erkennt Deadlocks und Konflikte, prüft alle Alternativen und liefert robuste, RL-taugliche Features für jede relevante Richtung. Damit ist sie optimal geeignet, um Policies für komplexe Multi-Agenten-Szenarien im Bahnnetz zu trainieren.
 
 ### Flatland-Kontext & RL-Tauglichkeit
 
