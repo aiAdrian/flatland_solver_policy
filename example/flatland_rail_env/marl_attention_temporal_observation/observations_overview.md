@@ -102,6 +102,57 @@ Alle Feature-Indizes, Bedeutungen und Setzlogik sind exakt aus dem aktuellen Cod
 
 ---
 
+## 2.1 Ausführliche Beschreibung: DecisionPointObservation
+
+Die `DecisionPointObservation` ist ein spezialisierter Beobachtungs-Builder für Multi-Agenten-Umgebungen im Flatland-Railway-Setting. Ihr Ziel ist es, für jeden Agenten einen Feature-Vektor zu erzeugen, der die wichtigsten Entscheidungssituationen im Bahnnetz abbildet. Sie ist darauf ausgelegt, die Entscheidungslogik an den drei zentralen Punkten im Flatland-Setting zu unterstützen:
+
+1. **Startpunkt (READY_TO_DEPART):** Soll der Agent das Spielfeld betreten?
+2. **Weiche (Switch):** Der Agent steht auf einer Weiche und kann abzweigen – hier ist eine Richtungsentscheidung nötig.
+3. **Merge/Crossing (vor einer Weiche):** Der Agent steht eine Zelle vor einer Weiche, kann nicht abzweigen, aber es besteht Konfliktpotenzial (z.B. Überholen, Vorrang).
+
+### Feature-Vektor und Entscheidungslogik
+
+Die Beobachtung besteht aus einem 42-dimensionalen Feature-Vektor (im Code: `self.feature_len`). Die ersten Features kodieren den Entscheidungstyp und geben einen Hinweis auf die beste Richtung (one-hot für links, geradeaus, rechts) entlang des kürzesten Pfads zum Ziel. Die weiteren Features sind in Blöcke für die verschiedenen Entscheidungssituationen unterteilt und werden nur befüllt, wenn die jeweilige Situation vorliegt.
+
+- **decision_type (Feature 0):** Gibt an, in welcher Entscheidungssituation sich der Agent befindet (0 = normal, 1 = Start, 2 = Switch, 4 = Merge/Crossing, 8 = DONE).
+- **Richtungshinweis (Features 1-3):** One-hot-Vektor, der die beste Richtung (links, geradeaus, rechts) zum Ziel markiert.
+- **Switch-Block (Features 4-21):** Für jede mögliche Richtung (links, geradeaus, rechts, rückwärts) werden Distanz zum Ziel, Deadlock-Flag, Anzahl durchlaufener Weichen, Zielerreichung und Abbruch-Flag berechnet.
+- **Merge/Crossing-Block (Features 22-29):** Betrachtet speziell die Situation vor einer Weiche, sowohl vorwärts als auch rückwärts.
+- **Agentenstatus (Features 30-36):** One-hot-Kodierung des aktuellen Agentenstatus (READY_TO_DEPART, MALFUNCTION_OFF_MAP, MOVING, STOPPED, MALFUNCTION, DONE).
+- **Letzte Aktion (Features 37-41):** One-hot-Kodierung der zuletzt gespeicherten Aktion des Agenten.
+
+### Entscheidungsfindung im Detail
+
+- **Entscheidungstyp-Bestimmung:** Der Code prüft, ob der Agent am Start steht, auf einer Weiche ist oder sich vor einer Weiche befindet. Je nach Situation werden die entsprechenden Feature-Blöcke befüllt.
+- **Pfadbewertung:** Für jede relevante Richtung wird per rekursiver Tiefensuche (DFS) der Pfad zum Ziel analysiert. Dabei werden Deadlocks, Zyklen und andere Agenten erkannt. Die DFS ist so gestaltet, dass sie an jedem Switch alle Alternativen ausprobiert, um Deadlocks zu vermeiden.
+- **Konflikt- und Deadlockerkennung:** Trifft der Agent auf einen entgegenkommenden Agenten, wird dies als potenzieller Deadlock erkannt und im Feature-Vektor kodiert.
+- **Abbruch-Flag:** Wird die maximale Schritttiefe der Suche überschritten, wird ein Abbruch-Flag gesetzt.
+- **Zielerreichung:** Wird das Ziel auf dem Pfad gefunden, wird dies ebenfalls im Feature-Vektor markiert.
+
+### Multi-Agenten-Logik
+
+Die Klasse speichert für jeden Agenten, welche gegnerischen Agenten auf dem Pfad begegnet wurden. Diese Information kann für Konfliktlösung und Prioritätsentscheidungen genutzt werden.
+
+### Methodenüberblick
+
+- **`get(handle)`**: Erzeugt den Feature-Vektor für einen einzelnen Agenten.
+- **`get_many(handles)`**: Erzeugt die Beobachtungen für mehrere Agenten gleichzeitig.
+- **`_shortest_path_action_hint(...)`**: Berechnet, welche Richtung (links, geradeaus, rechts) entlang des kürzesten Pfads zum Ziel optimal ist.
+- **`_navigate_direction(...)`**: Führt die rekursive Tiefensuche durch, um Pfadmetriken, Deadlocks und Zielerreichung zu bestimmen.
+
+### Besonderheiten
+
+- Die Features sind so angeordnet, dass sie für RL-Algorithmen direkt nutzbar sind.
+- Die Beobachtung ist disjunkt: Nur die für die aktuelle Entscheidungssituation relevanten Features werden befüllt, alle anderen bleiben 0.
+- Die Klasse ist darauf ausgelegt, sowohl Einzelagenten- als auch Multi-Agenten-Szenarien effizient zu unterstützen.
+
+---
+
+**Fazit:**  
+Die `DecisionPointObservation` abstrahiert die komplexen Entscheidungssituationen im Flatland-Railway-Setting in einen strukturierten, RL-tauglichen Feature-Vektor. Sie erkennt und kodiert alle relevanten Entscheidungs- und Konfliktpunkte, sodass Policies gezielt auf diese Situationen reagieren können.
+
+---
+
 ## 3. SimplifiedPathThreeTierObservation
 
 **Beschreibung:**

@@ -131,7 +131,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 # =============================================================================
 
 # Globale Variable für die temporale Fenstergröße
-TEMPORAL_WINDOW = 3  # Einfach anpassen für Experimente
+TEMPORAL_WINDOW = 1  # Einfach anpassen für Experimente
 
 def create_temporal_obs_builder_object():
     """Factory for TemporalMultiAgentObservation"""
@@ -141,7 +141,7 @@ def create_temporal_obs_builder_object():
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     hidden_size=128,
     batch_size=512,  # Größere Batches für stabileres Training
-    learning_rate=2e-4,  # Höhere Lernrate für schnellere Konvergenz
+    learning_rate=3e-4,  # Höhere Lernrate für schnellere Konvergenz
     discount=0.99,  # Längere Belohnungsketten
     gae_lambda=0.97,  # Weniger Bias
     use_gpu=True,
@@ -233,13 +233,10 @@ def flatland_reward_shaper(reward: RewardList, terminal: TerminalList, info: Inf
         reward[i] = -1.0
         # Ziel erreicht: +100
         if agent.state == TrainState.DONE:
-            reward[i] += 1.0 
-        if agent.state in [TrainState.WAITING, TrainState.MALFUNCTION_OFF_MAP, TrainState.MALFUNCTION]:
-            reward[i] += 0.0
+            reward[i] += 1.0  
 
- 
     #import time
-    #time.sleep(0.2)  # Simuliere komplexe Berechnung (z.B. Deadlock-Erkennung)
+    # time.sleep(.05)  # Simuliere komplexe Berechnung (z.B. Deadlock-Erkennung)
     return reward
 
 
@@ -274,8 +271,8 @@ if __name__ == "__main__":
     )
     
     environment.generate_and_persist_environments(
-        generate_nbr_env=1,
-        generate_agents_per_env=[1, 2, 3, 4, 5]*10,#[1, 2, 5, 10], 
+        generate_nbr_env=10,
+        generate_agents_per_env=[1, 2, 3, 4, 5],#[1, 2, 5, 10], 
         overwrite_existing=False
     )
     environment.load_environments_from_path()

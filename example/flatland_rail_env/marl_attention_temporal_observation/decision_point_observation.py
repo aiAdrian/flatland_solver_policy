@@ -33,7 +33,7 @@ class DecisionPointObservation(ObservationBuilder):
     @staticmethod
     def getObservationSize() -> int:
         # Ursprüngliche Feature-Länge + 6 neue Features
-        return 34
+        return 42
 
     def get(self, handle: int = 0): 
         # init features
@@ -66,7 +66,7 @@ class DecisionPointObservation(ObservationBuilder):
                     next_transitions = self.env.rail.get_transitions(*next_pos, d)        
                     if fast_count_nonzero(next_transitions) > 1:  # Wenn der nächste Übergang ein Switch ist
                         if d != nd:
-                            merge_switch=True
+                            merge_switch = True
 
         # agent is traveling on a normal track segment (no decision point)
         decision_type = 0
@@ -115,26 +115,25 @@ class DecisionPointObservation(ObservationBuilder):
 
         # decision_type 2: agent on a switch -> for each direction [dist, deadlock, switches]
         if decision_type & 2:
-            rel_dirs = [(-1) % 4, 0, 1, 2]  # left, forward, right, reverse
+            rel_dirs = [-1, 0, 1]  # left, forward, right, reverse
             for i, rel_dir in enumerate(rel_dirs):
                 abs_dir = (dir + rel_dir) % 4
-                base = 4 + i*4
+                base = 4 + (rel_dir + 1) * 6
                 if transitions[abs_dir]:
                     npos = get_new_position(pos, abs_dir)
                     dist, deadlock, switches, seen, abort, target_found, visited_type_2 = \
-                        self._navigate_direction(handle, npos, abs_dir, target)
+                        self._navigate_direction(handle, npos, abs_dir, target, False)
                     opp_agents.update(seen)
                     abort_flag = max(abort_flag, abort) 
                 else:
                     dist, deadlock, switches, abort, target_found  = -1, -1, -1, -1, -1
-                if dist == np.inf:
-                        dist = 2* curr_dist
-                features[base] = dist         # 4,8,12,16: dist
-                features[base + 1] = deadlock   # 5,9,13,17: deadlock
-                features[base + 2] = switches   # 6,10,14,18: switches
-                features[base + 3] = dist - curr_dist if dist != -1 and curr_dist != -1 and dist != np.inf else -1
-                features[base + 4] = target_found  # 8,12,16,20: target_found_flag
-                features[base + 5] = abort  # 9,13,17,21: abort_flag
+
+                features[base] = curr_dist      # 4,10,16: dist
+                features[base + 1] = deadlock   # 5,11,17: deadlock
+                features[base + 2] = switches   # 6,12,18: switches
+                features[base + 3] = dist # 7,13,19: dist
+                features[base + 4] = target_found  # 8,14,20: target_found_flag
+                features[base + 5] = abort  # 9,15,21: abort_flag
 
         # decision_type 3: agent near a merging switch 
         # -  look forward and backward for crossing and ordering (priority) logic 
@@ -159,19 +158,21 @@ class DecisionPointObservation(ObservationBuilder):
             # 2. Die einzige mögliche Richtung finden (ndir)
             # Da es nur eine Option gibt, ist nur ein Index in transitions == 1
             forward_dir = np.argmax(transitions) 
+
+            
             # 3. Die neue Position basierend auf dieser Richtung berechnen
             npos_fwd = get_new_position(pos, forward_dir)
 
-            _, deadlock_fwd, switches_fwd, seen_fwd, abort_fwd, target_found_fwd, visited_type_3_fwd = \
-                self._navigate_direction(handle, npos_fwd, forward_dir, target)
+            dist, deadlock_fwd, switches_fwd, seen_fwd, abort_fwd, target_found_fwd, visited_type_3_fwd = \
+                self._navigate_direction(handle, npos_fwd, forward_dir, target, False)
             opp_agents.update(seen_fwd)
             abort_flag = max(abort_flag, abort_fwd) 
-
-            features[22] = deadlock_fwd      # 21: deadlock_fwd
-            features[23] = switches_fwd      # 22: switches_fwd
+ 
+            features[22] = deadlock_fwd      # 22: deadlock_fwd
+            features[23] = switches_fwd      # 23: switches_fwd
             features[24] = target_found_fwd  # 24: target_found_fwd
             features[25] = abort_fwd         # 25: abort_flag_fwd
-
+            
             # ----------------------------------------------
             # Backward: 1 step backward (merge/crossing logic) 
             # ----------------------------------------------
@@ -196,26 +197,43 @@ class DecisionPointObservation(ObservationBuilder):
                             if tmp_pos != pos:
                                 bwd_pos = tmp_pos
                                 bwd_dir = i
-                            break
+                                break
+
             if bwd_pos is not None:
                 _, deadlock_bwd, switches_bwd, seen_bwd, abort_bwd, target_found_bwd, visited_type_3_bwd = \
-                    self._navigate_direction(handle, bwd_pos, bwd_dir, target)
+                    self._navigate_direction(handle, bwd_pos, bwd_dir, target, True)
                 opp_agents.update(seen_bwd) 
 
-                features[28] = deadlock_bwd      # 28: deadlock_bwd
-                features[29] = switches_bwd      # 29: switches_bwd
-                features[30] = target_found_bwd  # 30: target_found_bwd
-                features[31] = abort_bwd         # 31: abort_flag_bwd
+                features[26] = deadlock_bwd      # 26: deadlock_bwd
+                features[27] = switches_bwd      # 27: switches_bwd
+                features[28] = target_found_bwd  # 28: target_found_bwd
+                features[29] = abort_bwd         # 29: abort_flag_bwd
 
+        # agent.state => 
+        #   TrainState.WAITING
+        #     READY_TO_DEPART = 1
+        #     MALFUNCTION_OFF_MAP = 2
+        #     MOVING = 3
+        #     STOPPED = 4
+        #     MALFUNCTION = 5
+        #     DONE = 6
+        features[30 + agent.state.value] = 1.0 # 30-36: one-hot encoding des Agentenzustands (READY_TO_DEPART, MALFUNCTION_OFF_MAP, MOVING, STOPPED, MALFUNCTION, DONE)
 
-        features[32] = agent.state.value  
-        features[33] = agent.action_saver.saved_action if agent.action_saver.is_action_saved else -1.0  # 32: saved_action (dummy example, hier kannst du deine Logik anpassen)
-   
+        #     DO_NOTHING = 0  # implies change of direction in a dead-end!
+        #     MOVE_LEFT = 1
+        #     MOVE_FORWARD = 2
+        #     MOVE_RIGHT = 3
+        #     STOP_MOVING = 4
+        if agent.action_saver.is_action_saved:
+            features[37 + agent.action_saver.saved_action] = 1.0 # 37-41: one-hot encoding der zuletzt gespeicherten Aktion (MOVE_LEFT, MOVE_FORWARD, MOVE_RIGHT, STOP_MOVING)
 
-        all_visited = visited_type_2.union(visited_type_3_fwd).union(visited_type_3_bwd)
-        if False:
+        if True: 
             visited = []
-            for a in all_visited:
+            for a in visited_type_2:
+                visited.append(a[0])
+            for a in visited_type_3_fwd:
+                visited.append(a[0])
+            for a in visited_type_3_bwd:
                 visited.append(a[0])
             self.env.dev_obs_dict.update({handle: visited})
         else:
@@ -284,7 +302,7 @@ class DecisionPointObservation(ObservationBuilder):
 
         return best_hint
 
-    def _navigate_direction(self, handle, start_pos, start_dir, target, max_steps=100):
+    def _navigate_direction(self, handle, start_pos, start_dir, target, backward_trace, max_steps=100):
         '''
         Navigiert ab start_pos/start_dir bis zum Ziel oder Deadlock.
         Backtracking: An jedem Switch werden alle Alternativen ausprobiert, falls Deadlock.
@@ -310,20 +328,20 @@ class DecisionPointObservation(ObservationBuilder):
             'visited': set(),     # Alle besuchten (pos, direction) Paare
             'seen_agents': set()  # Alle gesehenen Agenten
         }
-        def dfs(pos, direction, switch_stack, num_switches):
+        def dfs(pos, direction, switch_stack, num_switches, backward_trace, max_steps):
             cur_dist = distance_map[handle, pos[0], pos[1], direction] 
 
             # DFS mit globalem Controller für count, visited, seen_agents
             if dfs_runtime_controller['count'] >= max_steps:
                 # Abbruch wegen Schrittbegrenzung
                 return cur_dist, 0, num_switches, 1, -1
-            if pos == target:
+            if pos == target and not backward_trace:
                 # Ziel erreicht
                 return cur_dist, 0, num_switches, 0, 1 
             if (pos, direction) in dfs_runtime_controller['visited']:
                 # Zyklus erkannt
                 return cur_dist, -1, num_switches, 1, -1
-            if cur_dist == np.inf:
+            if cur_dist == np.inf and not backward_trace:
                 # Kein Pfad zum Ziel
                 return -1, -1, num_switches, 1, -1
             
@@ -335,13 +353,13 @@ class DecisionPointObservation(ObservationBuilder):
             if self.agent_map is not None: 
                 agent_idx = self.agent_map[pos]
                 if agent_idx != -1 and agent_idx != handle:
-                    #if env.agents[agent_idx].direction != direction:
-                    # alle agente werden als potenzielle Deadlock-Quelle betrachtet, 
-                    # da sie sich in die Quere kommen könnten (z.B. bei decision_type 3 backward)
-                    # nun kann das system aber entscheiden, ich habe einen deadlock und sehe den agenten, der andere mich 
-                    # allenfalls nicht, dann ist es ein nicht echter deadlock, 
-                    # da er mir noch ausweichen kann 
-                    dfs_runtime_controller['seen_agents'].add(agent_idx)
+                    if env.agents[agent_idx].direction != direction and not backward_trace:
+                        # alle agente werden als potenzielle Deadlock-Quelle betrachtet, 
+                        # da sie sich in die Quere kommen könnten (z.B. bei decision_type 3 backward)
+                        # nun kann das system aber entscheiden, ich habe einen deadlock und sehe den agenten, der andere mich 
+                        # allenfalls nicht, dann ist es ein nicht echter deadlock, 
+                        # da er mir noch ausweichen kann 
+                        dfs_runtime_controller['seen_agents'].add(agent_idx)
                 if agent_idx != -1:
                     if agent_idx != handle:
                         if env.agents[agent_idx].direction != direction:
@@ -366,26 +384,50 @@ class DecisionPointObservation(ObservationBuilder):
                             dist = distance_map[handle, npos[0], npos[1], ndir]
                             alternatives.append((dist, ndir, npos))
                 alternatives.sort(key=lambda x: x[0])
-                num_switches_changed = 0
-                for _, ndir, npos in alternatives:
-                    switch_stack.append((pos, direction, ndir))
-                    res = dfs(npos, ndir, switch_stack.copy(), num_switches + num_switches_changed)
-                    if res[1] < 1:
-                        return res
-                    num_switches_changed = 1
-                    switch_stack.pop()
+                if not backward_trace:
+                    num_switches_changed = 0
+                    for _, ndir, npos in alternatives:
+                        switch_stack.append((pos, direction, ndir))
+                        ret_dfs_dist, ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag = dfs(npos, ndir, switch_stack.copy(), num_switches + num_switches_changed, backward_trace, max_steps)
+                        if ret_deadlock_flag < 1:
+                            return max(ret_dfs_dist, cur_dist), ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag
+                        num_switches_changed = 1
+                        switch_stack.pop()
+                else:
+                    dfs_dist = 0
+                    deadlock_flag = 0
+                    num_swtich = 0
+                    abort_flag = 0
+                    target_found_flag = 0
+                    mx_steps = 2.0*max_steps-dfs_runtime_controller['count']/2
+                    for _, ndir, npos in alternatives:
+                        switch_stack.append((pos, direction, ndir))
+                        ret_dfs_dist, ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag = dfs(npos, ndir, switch_stack.copy(), num_switches + 1, backward_trace, mx_steps)
+                        dfs_dist += ret_dfs_dist
+                        deadlock_flag += ret_deadlock_flag
+                        num_swtich += ret_num_swtich
+                        abort_flag += ret_abort_flag
+                        target_found_flag += ret_target_found_flag
+                        switch_stack.pop()
+                    if (len(alternatives) > 0): 
+                        dfs_dist /= len(alternatives)
+                        deadlock_flag /= len(alternatives)
+                        num_swtich /= len(alternatives)  
+                        abort_flag /= len(alternatives)
+                        target_found_flag /= len(alternatives)
+                    return max(dfs_dist, cur_dist), deadlock_flag, num_swtich, abort_flag, target_found_flag
             else:
                 # Normale Fortsetzung: nur eine Richtung möglich
                 ndir = fast_argmax(transitions)
                 npos = get_new_position(pos, ndir)
                 if (npos, ndir) not in dfs_runtime_controller['visited']:
-                    ret_dfs_dist, ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag = dfs(npos, ndir, switch_stack.copy(), num_switches)
+                    ret_dfs_dist, ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag = dfs(npos, ndir, switch_stack.copy(), num_switches, backward_trace, max_steps)
                     return max(ret_dfs_dist, cur_dist), ret_deadlock_flag, ret_num_swtich, ret_abort_flag, ret_target_found_flag
             
             # should no occur: keine Alternativen (deadlock) oder Ziel erreicht (handled oben) oder ...
             return cur_dist, 1, num_switches, 0, 0
 
-        dist, deadlock_flag, num_switches, abort_flag, target_found_flag = dfs(start_pos, start_dir, [], 0)
+        dist, deadlock_flag, num_switches, abort_flag, target_found_flag = dfs(start_pos, start_dir, [], 0, backward_trace, max_steps)
         # Nach DFS: Rückgabe der global gesammelten Agenten als sortierte Liste
         seen_agents = sorted(set(dfs_runtime_controller['seen_agents']))
         return dist, deadlock_flag, num_switches, seen_agents, abort_flag, target_found_flag, dfs_runtime_controller['visited']   
