@@ -19,75 +19,45 @@ Die `ExperimentalObservation` ist eine generische, 30-dimensionale Beobachtung f
 
 ---
 
+
 ## 2. DecisionPointObservation
 
-Die `DecisionPointObservation` liefert für jeden Agenten einen 34-dimensionalen Feature-Vektor, der die drei wichtigsten Entscheidungssituationen im Flatland-Setting abbildet: **Start**, **Weiche (Switch)**, **Merge/Crossing**. Die Features sind disjunkt angeordnet und werden nur für die jeweils relevante Situation befüllt, alle anderen Felder bleiben 0.
+Die `DecisionPointObservation` ist ein spezialisierter Beobachtungs-Builder für Multi-Agenten-Umgebungen im Flatland-Railway-Setting. Sie liefert für jeden Agenten einen 42-dimensionalen Feature-Vektor, der die wichtigsten Entscheidungssituationen im Bahnnetz abbildet: **Start**, **Weiche (Switch)**, **Merge/Crossing**. Die Features sind disjunkt angeordnet und werden nur für die jeweils relevante Situation befüllt, alle anderen Felder bleiben 0. Die Feature-Logik und -Befüllung ist eng an die Flatland-rl-API und die reale Entscheidungsstruktur im Schienennetz angelehnt.
 
-### Feature-Index und Bedeutung
+### Kontext & Zielsetzung
 
-| Index | Name/Bedeutung | Typ | Beschreibung | Setzlogik (decision_type) |
-|-------|----------------|-----|--------------|---------------------------|
-| 0     | decision_type  | float | Typ der Entscheidungssituation:<br>0 = Standard (kein Decision Point)<br>1 = Start (READY_TO_DEPART)<br>2 = Switch (Weiche, Agent kann abzweigen)<br>3 = Merge/Crossing (vor Weiche, Konfliktpotenzial)<br>-1 = DONE | Immer gesetzt |
-| 1     | one-hot_left   | float | 1, wenn links der beste Pfad (laut distance_map), sonst 0 | 2, 3 |
-| 2     | one-hot_forward| float | 1, wenn geradeaus der beste Pfad, sonst 0 | 2, 3 |
-| 3     | one-hot_right  | float | 1, wenn rechts der beste Pfad, sonst 0 | 2, 3 |
+- **Flatland-rl** ist eine Multi-Agenten-Umgebung zur Simulation von Zugverkehr und Konfliktlösung auf Schienennetzen. Die DecisionPointObservation abstrahiert die wichtigsten Entscheidungspunkte (Start, Weiche, Merge/Crossing) in einen RL-tauglichen, strukturierten Feature-Vektor.
+- Die Features werden dynamisch und kontextsensitiv befüllt: Nur die für die aktuelle Entscheidungssituation relevanten Blöcke sind aktiv, alle anderen sind 0.
+- Die Entscheidungslogik basiert auf rekursiver Tiefensuche (DFS) zur Pfadanalyse, Deadlockerkennung und Zielprüfung.
 
-#### Switch-Block (decision_type == 2, Weiche)
-| Index | Name | Typ | Beschreibung |
-|-------|------|-----|--------------|
-| 4     | left_dist      | float | Distanz auf linkem Pfad zum Ziel (DFS, -1 falls nicht möglich) |
-| 5     | left_deadlock  | float | 1, falls Deadlock auf linkem Pfad, sonst 0 |
-| 6     | left_switches  | float | Anzahl durchlaufener Weichen auf linkem Pfad |
-| 7     | left_delta_dist| float | Distanzdifferenz zum Ziel nach Schritt links (dist - curr_dist) |
-| 8     | left_target_found | float | 1, wenn Ziel auf linkem Pfad erreicht, sonst 0 |
-| 9     | left_abort     | float | 1, wenn max_steps auf linkem Pfad überschritten, sonst 0 |
-| 10    | forward_dist      | float | Distanz auf geradem Pfad zum Ziel |
-| 11    | forward_deadlock  | float | 1, falls Deadlock auf geradem Pfad |
-| 12    | forward_switches  | float | Anzahl Weichen auf geradem Pfad |
-| 13    | forward_delta_dist| float | Distanzdifferenz zum Ziel nach Schritt geradeaus |
-| 14    | forward_target_found | float | 1, wenn Ziel auf geradem Pfad erreicht |
-| 15    | forward_abort     | float | 1, wenn max_steps auf geradem Pfad überschritten |
-| 16    | right_dist      | float | Distanz auf rechtem Pfad zum Ziel |
-| 17    | right_deadlock  | float | 1, falls Deadlock auf rechtem Pfad |
-| 18    | right_switches  | float | Anzahl Weichen auf rechtem Pfad |
-| 19    | right_delta_dist| float | Distanzdifferenz zum Ziel nach Schritt rechts |
-| 20    | right_target_found | float | 1, wenn Ziel auf rechtem Pfad erreicht |
-| 21    | right_abort     | float | 1, wenn max_steps auf rechtem Pfad überschritten |
-| 22    | reverse_dist      | float | Distanz auf rückwärts Pfad zum Ziel |
-| 23    | reverse_deadlock  | float | 1, falls Deadlock auf rückwärts Pfad |
-| 24    | reverse_switches  | float | Anzahl Weichen auf rückwärts Pfad |
-| 25    | reverse_delta_dist| float | Distanzdifferenz zum Ziel nach Schritt rückwärts |
-| 26    | reverse_target_found | float | 1, wenn Ziel auf rückwärts Pfad erreicht |
-| 27    | reverse_abort     | float | 1, wenn max_steps auf rückwärts Pfad überschritten |
+### Feature-Tabelle: DecisionPointObservation (42D)
 
-#### Merge/Crossing-Block (decision_type == 3)
-| Index | Name | Typ | Beschreibung |
-|-------|------|-----|--------------|
-| 22    | fwd_deadlock_merge      | float | 1, falls Deadlock vorwärts (Merge/Crossing) |
-| 23    | fwd_switches_merge      | float | Anzahl Weichen vorwärts (Merge/Crossing) |
-| 24    | fwd_target_found_merge  | float | 1, wenn Ziel vorwärts erreicht (Merge/Crossing) |
-| 25    | fwd_abort_merge         | float | 1, wenn max_steps vorwärts überschritten (Merge/Crossing) |
-| 28    | bwd_deadlock_merge      | float | 1, falls Deadlock rückwärts (Merge/Crossing) |
-| 29    | bwd_switches_merge      | float | Anzahl Weichen rückwärts (Merge/Crossing) |
-| 30    | bwd_target_found_merge  | float | 1, wenn Ziel rückwärts erreicht (Merge/Crossing) |
-| 31    | bwd_abort_merge         | float | 1, wenn max_steps rückwärts überschritten (Merge/Crossing) |
+| Index      | Name                        | Beschreibung                                                                 | decision_type (gesetzt bei)         |
+|------------|-----------------------------|------------------------------------------------------------------------------|-------------------------------------|
+| 0          | decision_type               | Entscheidungssituation (0=normal, 1=Start, 2=Switch, 4=Merge, 8=DONE)        | alle                                |
+| 1          | onehot_left                 | 1, wenn links optimal (laut distance_map), sonst 0                           | Switch, Merge/Crossing              |
+| 2          | onehot_forward              | 1, wenn geradeaus optimal, sonst 0                                           | Switch, Merge/Crossing              |
+| 3          | onehot_right                | 1, wenn rechts optimal, sonst 0                                              | Switch, Merge/Crossing              |
+| 4-21       | [Switch-Block]              | Für jede Richtung (links, geradeaus, rechts, rückwärts): Distanz, Deadlock, Switches, Delta, Target, Abort | Switch                              |
+| 22-29      | [Merge/Crossing-Block]      | Für vorwärts/rückwärts: Deadlock, Switches, Target, Abort                    | Merge/Crossing                      |
+| 30-36      | agent_state_onehot          | One-hot-Kodierung des Agentenstatus (READY_TO_DEPART, ..., DONE)             | alle                                |
+| 37-41      | last_action_onehot          | One-hot-Kodierung der zuletzt gespeicherten Aktion                           | alle                                |
 
-#### Start-Block (decision_type == 1)
-| Index | Name | Typ | Beschreibung |
-|-------|------|-----|--------------|
-| 28    | delta_dist_fwd | float | Distanzdifferenz zum Ziel nach dem ersten Schritt (nur Start) |
+**Details zu den Blöcken:**
 
-#### Allgemeine Zusatzfeatures
-| Index | Name | Typ | Beschreibung |
-|-------|------|-----|--------------|
-| 32    | agent_state | float | Aktueller Agentenstatus (enum value) |
-| 33    | saved_action | float | Letzte gespeicherte Aktion (falls vorhanden, sonst -1) |
+- **Switch-Block (4-21):**
+	- Für jede Richtung (links, geradeaus, rechts, rückwärts):
+		- Aktuelle Distanz, Deadlock-Flag, Anzahl Weichen, Distanzdifferenz, Zielerreichung, Abbruch-Flag
+- **Merge/Crossing-Block (22-29):**
+	- Für vorwärts/rückwärts: Deadlock, Switches, Target, Abort
+- **Agentenstatus (30-36):**
+	- One-hot-Kodierung des aktuellen Status (READY_TO_DEPART, MALFUNCTION_OFF_MAP, MOVING, STOPPED, MALFUNCTION, DONE)
+- **Letzte Aktion (37-41):**
+	- One-hot-Kodierung der zuletzt gespeicherten Aktion
 
----
+### Feature-Befüllung & Speziallogik
 
-**Feature-Befüllung und Speziallogik**
-
-- **decision_type** wird immer gesetzt.
+- **decision_type** wird immer gesetzt und kodiert die aktuelle Entscheidungssituation.
 - Die Blöcke für Switch und Merge/Crossing werden nur bei passender Situation befüllt, alle anderen Felder bleiben 0.
 - Die Features für jede Richtung werden per rekursiver DFS mit Backtracking berechnet (`_navigate_direction`), inkl. Deadlock- und Cycle-Erkennung.
 - Unerreichbare Zellen (`np.inf`) werden durch $2 \times$ aktuelle Distanz ersetzt, NaN/Inf werden durch -1 ersetzt.
@@ -95,132 +65,25 @@ Die `DecisionPointObservation` liefert für jeden Agenten einen 34-dimensionalen
 - **abort**-Flags werden gesetzt, wenn die maximale Schrittzahl (max_steps) überschritten wird.
 - **target_found** wird gesetzt, wenn das Ziel auf dem Pfad erreicht wird.
 
----
+### Entscheidungsfindung & DFS-Logik
 
-**Quelle:**
-Alle Feature-Indizes, Bedeutungen und Setzlogik sind exakt aus dem aktuellen Code in [decision_point_observation.py](flatland_solver_policy/example/flatland_rail_env/marl_attention_temporal_observation/decision_point_observation.py) extrahiert. Bei Änderungen im Code ist diese Tabelle zu aktualisieren.
+- Die Methode `_navigate_direction` implementiert eine rekursive Tiefensuche (DFS), um von einer gegebenen Startposition und Richtung aus den Pfad zum Ziel zu analysieren.
+- Für jede relevante Richtung werden Distanz, Deadlock, Weichen, Zielerreichung und Abbruch-Flag berechnet.
+- Die DFS prüft an jedem Switch alle Alternativen (Backtracking), erkennt Deadlocks (z.B. entgegenkommende Agenten), verhindert Zyklen und speichert gesehene Agenten für Konfliktlösung.
+- Die Ergebnisse der DFS werden direkt in die Feature-Blöcke übernommen.
 
----
+### Flatland-Kontext & RL-Tauglichkeit
 
-### Feature-Tabelle: DecisionPointObservation
-
-| Index | Name                        | Beschreibung                                                                 | decision_type |
-|-------|-----------------------------|------------------------------------------------------------------------------|--------------|
-| 0     | decision_type               | Entscheidungssituation (0=normal, 1=Start, 2=Switch, 4=Merge, 8=DONE)        | alle         |
-| 1     | onehot_left                 | 1, wenn links optimal (laut distance_map), sonst 0                           | 2, 4         |
-| 2     | onehot_forward              | 1, wenn geradeaus optimal, sonst 0                                           | 2, 4         |
-| 3     | onehot_right                | 1, wenn rechts optimal, sonst 0                                              | 2, 4         |
-| 4     | left_curr_dist              | Aktuelle Distanz (vor Schritt links)                                         | 2            |
-| 5     | left_deadlock               | Deadlock-Flag nach Schritt links                                             | 2            |
-| 6     | left_switches               | Anzahl Weichen nach Schritt links                                            | 2            |
-| 7     | left_dist                   | Distanz zum Ziel nach Schritt links                                          | 2            |
-| 8     | left_target_found           | Ziel erreicht nach Schritt links                                             | 2            |
-| 9     | left_abort                  | Abbruch-Flag nach Schritt links                                              | 2            |
-| 10    | forward_curr_dist           | Aktuelle Distanz (vor Schritt geradeaus)                                     | 2            |
-| 11    | forward_deadlock            | Deadlock-Flag nach Schritt geradeaus                                         | 2            |
-| 12    | forward_switches            | Anzahl Weichen nach Schritt geradeaus                                        | 2            |
-| 13    | forward_dist                | Distanz zum Ziel nach Schritt geradeaus                                      | 2            |
-| 14    | forward_target_found        | Ziel erreicht nach Schritt geradeaus                                         | 2            |
-| 15    | forward_abort               | Abbruch-Flag nach Schritt geradeaus                                          | 2            |
-| 16    | right_curr_dist             | Aktuelle Distanz (vor Schritt rechts)                                        | 2            |
-| 17    | right_deadlock              | Deadlock-Flag nach Schritt rechts                                            | 2            |
-| 18    | right_switches              | Anzahl Weichen nach Schritt rechts                                           | 2            |
-| 19    | right_dist                  | Distanz zum Ziel nach Schritt rechts                                         | 2            |
-| 20    | right_target_found          | Ziel erreicht nach Schritt rechts                                            | 2            |
-| 21    | right_abort                 | Abbruch-Flag nach Schritt rechts                                             | 2            |
-| 22    | merge_deadlock_fwd          | Deadlock-Flag nach Schritt vorwärts (Merge/Crossing)                         | 4 (3-fwd)    |
-| 23    | merge_switches_fwd          | Anzahl Weichen nach Schritt vorwärts (Merge/Crossing)                        | 4 (3-fwd)    |
-| 24    | merge_target_found_fwd      | Ziel erreicht nach Schritt vorwärts (Merge/Crossing)                         | 4 (3-fwd)    |
-| 25    | merge_abort_fwd             | Abbruch-Flag nach Schritt vorwärts (Merge/Crossing)                          | 4 (3-fwd)    |
-| 26    | merge_deadlock_bwd          | Deadlock-Flag nach Schritt rückwärts (Merge/Crossing)                        | 4 (3-bwd)    |
-| 27    | merge_switches_bwd          | Anzahl Weichen nach Schritt rückwärts (Merge/Crossing)                       | 4 (3-bwd)    |
-| 28    | merge_target_found_bwd      | Ziel erreicht nach Schritt rückwärts (Merge/Crossing)                        | 4 (3-bwd)    |
-| 29    | merge_abort_bwd             | Abbruch-Flag nach Schritt rückwärts (Merge/Crossing)                         | 4 (3-bwd)    |
-| 30-36 | agent_state_onehot          | One-hot-Kodierung des Agentenstatus (READY_TO_DEPART, ..., DONE)             | alle         |
-| 37-41 | last_action_onehot          | One-hot-Kodierung der zuletzt gespeicherten Aktion                           | alle         |
-
-**Legende decision_type:**  
-- 2 = Switch (Weiche, Agent kann abzweigen)  
-- 4 = Merge/Crossing (vor Weiche, Konfliktpotenzial)  
-- 4 (3-fwd) = Merge/Crossing, Schritt vorwärts  
-- 4 (3-bwd) = Merge/Crossing, Schritt rückwärts  
-
----
-
-### Was macht `_navigate_direction` (DFS)?
-
-Die Methode `_navigate_direction` implementiert eine rekursive Tiefensuche (Depth-First Search, DFS), um von einer gegebenen Startposition und Richtung aus den Pfad zum Ziel zu analysieren. Sie wird für jede relevante Richtung aufgerufen, um folgende Informationen zu berechnen:
-
-- **Distanz zum Ziel** (unter Berücksichtigung von Weichen und Blockaden)
-- **Deadlock-Erkennung:** Erkennt, ob auf dem Pfad ein Deadlock (z.B. durch entgegenkommenden Agenten) entsteht.
-- **Anzahl durchlaufener Weichen**
-- **Abbruch-Flag:** Wird gesetzt, wenn die maximale Suchtiefe überschritten wird (Schutz vor Endlosschleifen).
-- **Zielerreichung:** Flag, ob das Ziel auf dem Pfad gefunden wurde.
-- **Cycle Prevention:** Verhindert Zyklen durch Speicherung aller besuchten (Position, Richtung)-Paare.
-- **Gesehene Agenten:** Speichert alle Agenten, die auf dem Pfad begegnet wurden (wichtig für Konfliktlösung).
-
-**Ablauf:**
-- Die DFS läuft ab der Startposition und prüft rekursiv alle möglichen Weiterführungen (Transitions).
-- An jedem Switch werden alle Alternativen ausprobiert (Backtracking), um Deadlocks zu vermeiden.
-- Bei Deadlocks, Zielerreichung, Zyklen oder Abbruch wird die Suche beendet und die Ergebnisse zurückgegeben.
-- Die Ergebnisse werden für die Feature-Berechnung verwendet.
-
-**Warum ist das gut für Flatland?**
-- **Realistische Konflikterkennung:** Die DFS erkennt echte Deadlocks und Konflikte mit anderen Agenten, was für Multi-Agenten-Planung essenziell ist.
-- **Flexible Pfadanalyse:** Durch Backtracking an Weichen werden alle Alternativen geprüft, was eine robuste Entscheidungsgrundlage schafft.
-- **Effizient:** Die maximale Suchtiefe verhindert endlose Rekursionen und hält die Berechnung effizient.
-- **RL-tauglich:** Die so gewonnenen Features sind direkt für Reinforcement Learning nutzbar und ermöglichen Policies, auf komplexe Situationen zu reagieren.
-
----
-
-## 2.1 Ausführliche Beschreibung: DecisionPointObservation
-
-Die `DecisionPointObservation` ist ein spezialisierter Beobachtungs-Builder für Multi-Agenten-Umgebungen im Flatland-Railway-Setting. Ihr Ziel ist es, für jeden Agenten einen Feature-Vektor zu erzeugen, der die wichtigsten Entscheidungssituationen im Bahnnetz abbildet. Sie ist darauf ausgelegt, die Entscheidungslogik an den drei zentralen Punkten im Flatland-Setting zu unterstützen:
-
-1. **Startpunkt (READY_TO_DEPART):** Soll der Agent das Spielfeld betreten?
-2. **Weiche (Switch):** Der Agent steht auf einer Weiche und kann abzweigen – hier ist eine Richtungsentscheidung nötig.
-3. **Merge/Crossing (vor einer Weiche):** Der Agent steht eine Zelle vor einer Weiche, kann nicht abzweigen, aber es besteht Konfliktpotenzial (z.B. Überholen, Vorrang).
-
-### Feature-Vektor und Entscheidungslogik
-
-Die Beobachtung besteht aus einem 42-dimensionalen Feature-Vektor (im Code: `self.feature_len`). Die ersten Features kodieren den Entscheidungstyp und geben einen Hinweis auf die beste Richtung (one-hot für links, geradeaus, rechts) entlang des kürzesten Pfads zum Ziel. Die weiteren Features sind in Blöcke für die verschiedenen Entscheidungssituationen unterteilt und werden nur befüllt, wenn die jeweilige Situation vorliegt.
-
-- **decision_type (Feature 0):** Gibt an, in welcher Entscheidungssituation sich der Agent befindet (0 = normal, 1 = Start, 2 = Switch, 4 = Merge/Crossing, 8 = DONE).
-- **Richtungshinweis (Features 1-3):** One-hot-Vektor, der die beste Richtung (links, geradeaus, rechts) zum Ziel markiert.
-- **Switch-Block (Features 4-21):** Für jede mögliche Richtung (links, geradeaus, rechts, rückwärts) werden Distanz zum Ziel, Deadlock-Flag, Anzahl durchlaufener Weichen, Zielerreichung und Abbruch-Flag berechnet.
-- **Merge/Crossing-Block (Features 22-29):** Betrachtet speziell die Situation vor einer Weiche, sowohl vorwärts als auch rückwärts.
-- **Agentenstatus (Features 30-36):** One-hot-Kodierung des aktuellen Agentenstatus (READY_TO_DEPART, MALFUNCTION_OFF_MAP, MOVING, STOPPED, MALFUNCTION, DONE).
-- **Letzte Aktion (Features 37-41):** One-hot-Kodierung der zuletzt gespeicherten Aktion des Agenten.
-
-### Entscheidungsfindung im Detail
-
-- **Entscheidungstyp-Bestimmung:** Der Code prüft, ob der Agent am Start steht, auf einer Weiche ist oder sich vor einer Weiche befindet. Je nach Situation werden die entsprechenden Feature-Blöcke befüllt.
-- **Pfadbewertung:** Für jede relevante Richtung wird per rekursiver Tiefensuche (DFS) der Pfad zum Ziel analysiert. Dabei werden Deadlocks, Zyklen und andere Agenten erkannt. Die DFS ist so gestaltet, dass sie an jedem Switch alle Alternativen ausprobiert, um Deadlocks zu vermeiden.
-- **Konflikt- und Deadlockerkennung:** Trifft der Agent auf einen entgegenkommenden Agenten, wird dies als potenzieller Deadlock erkannt und im Feature-Vektor kodiert.
-- **Abbruch-Flag:** Wird die maximale Schritttiefe der Suche überschritten, wird ein Abbruch-Flag gesetzt.
-- **Zielerreichung:** Wird das Ziel auf dem Pfad gefunden, wird dies ebenfalls im Feature-Vektor markiert.
-
-### Multi-Agenten-Logik
-
-Die Klasse speichert für jeden Agenten, welche gegnerischen Agenten auf dem Pfad begegnet wurden. Diese Information kann für Konfliktlösung und Prioritätsentscheidungen genutzt werden.
+- Die DecisionPointObservation abstrahiert die komplexen Entscheidungssituationen im Flatland-Setting in einen RL-tauglichen, disjunkten Feature-Vektor.
+- Sie erkennt und kodiert alle relevanten Entscheidungs- und Konfliktpunkte, sodass Policies gezielt auf diese Situationen reagieren können.
+- Die Beobachtung ist effizient, flexibel und für Einzel- wie Multi-Agenten-Szenarien geeignet.
 
 ### Methodenüberblick
 
-- **`get(handle)`**: Erzeugt den Feature-Vektor für einen einzelnen Agenten.
-- **`get_many(handles)`**: Erzeugt die Beobachtungen für mehrere Agenten gleichzeitig.
-- **`_shortest_path_action_hint(...)`**: Berechnet, welche Richtung (links, geradeaus, rechts) entlang des kürzesten Pfads zum Ziel optimal ist.
-- **`_navigate_direction(...)`**: Führt die rekursive Tiefensuche durch, um Pfadmetriken, Deadlocks und Zielerreichung zu bestimmen.
-
-### Besonderheiten
-
-- Die Features sind so angeordnet, dass sie für RL-Algorithmen direkt nutzbar sind.
-- Die Beobachtung ist disjunkt: Nur die für die aktuelle Entscheidungssituation relevanten Features werden befüllt, alle anderen bleiben 0.
-- Die Klasse ist darauf ausgelegt, sowohl Einzelagenten- als auch Multi-Agenten-Szenarien effizient zu unterstützen.
-
----
-
-**Fazit:**  
-Die `DecisionPointObservation` abstrahiert die komplexen Entscheidungssituationen im Flatland-Railway-Setting in einen strukturierten, RL-tauglichen Feature-Vektor. Sie erkennt und kodiert alle relevanten Entscheidungs- und Konfliktpunkte, sodass Policies gezielt auf diese Situationen reagieren können.
+- `get(handle)`: Erzeugt den Feature-Vektor für einen einzelnen Agenten.
+- `get_many(handles)`: Erzeugt die Beobachtungen für mehrere Agenten gleichzeitig.
+- `_shortest_path_action_hint(...)`: Berechnet, welche Richtung (links, geradeaus, rechts) entlang des kürzesten Pfads zum Ziel optimal ist.
+- `_navigate_direction(...)`: Führt die rekursive Tiefensuche durch, um Pfadmetriken, Deadlocks und Zielerreichung zu bestimmen.
 
 ---
 
