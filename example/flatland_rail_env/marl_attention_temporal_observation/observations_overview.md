@@ -1,28 +1,225 @@
 # Flatland Multi-Agent Observations – Übersicht & Feature-Design
 
-Diese Dokumentation beschreibt alle wichtigen Beobachtungsklassen (Observations) für Multi-Agenten-Umgebungen im Flatland-Railway-Setting. Sie legt besonderen Fokus auf die Feature-Struktur, Entscheidungslogik und die Unterschiede zwischen den Klassen.
+> **Klassen im Überblick**
+> | Klasse | Größe | Zweck |
+> |---|---|---|
+> | `ExperimentalObservation` | 30D | Basisbeobachtung für jeden Agenten |
+> | `SimplifiedPathThreeTierObservation` | 57D | Drei Pfad-Tiers (links/geradeaus/rechts) |
+> | `DecisionPointObservation` | 42D | Entscheidungsbasierte Beobachtung an Weichen/Merges |
+> | `TemporalMultiAgentObservation` | T × 42D | Zeitfenster über `DecisionPointObservation` |
 
 ---
 
 ## 1. ExperimentalObservation
 
-**Beschreibung:**
-Die `ExperimentalObservation` ist eine generische, 30-dimensionale Beobachtung für jeden Agenten. Sie kombiniert Agenten-Status (Position, Richtung, Ziel, Status) mit einer Analyse der Umgebung und anderer Agenten. Sie ist die Basisklasse für komplexere, temporale oder multi-agentenfähige Beobachtungen.
+**Klasse:** `ExperimentalObservation(ObservationBuilder)`  
+**Feature-Größe:** 30D  
+**Abhängigkeiten:** `RailroadSwitchAnalyser`, `WalkToNextDecisionPoint`
 
-**Feature-Design:**
-- 30-dimensionale Feature-Vektoren (Details siehe Code)
-- Enthält keine explizite Entscheidungslogik für Weichen/Merges, sondern gibt eine allgemeine Zustandsbeschreibung zurück.
+Basisbeobachtung je Agent. Liefert einen 30-dimensionalen Feature-Vektor mit Positionsinformationen, Richtung, Ziel und Agentenstatus. Wird von `TemporalMultiAgentObservation` und `SimplifiedPathThreeTierObservation` verwendet.
 
-**Einsatz:**
-- Basis für temporale und multi-agentenfähige Observations
-- Gut geeignet für klassische RL-Algorithmen
+**Wichtige Methoden:**
+- `get_pos_dir(agent)` – Gibt aktuelle Position und Richtung zurück (fallback auf `initial_position/direction`)
+- `get_decision_point_observation(...)` – Berechnet die 30 Features für einen Agenten
 
 ---
 
+## 2. SimplifiedPathThreeTierObservation
 
-## 2. DecisionPointObservation
+**Klasse:** `SimplifiedPathThreeTierObservation(ObservationBuilder)`  
+**Feature-Größe:** 9 (Header) + 3 × 16 (Pfad-Tiers) = **57D**
 
-Die `DecisionPointObservation` ist ein spezialisierter Beobachtungs-Builder für Multi-Agenten-Umgebungen im Flatland-Railway-Setting. Sie liefert für jeden Agenten einen 42-dimensionalen Feature-Vektor, der die wichtigsten Entscheidungssituationen im Bahnnetz abbildet: **Start**, **Weiche (Switch)**, **Merge/Crossing**. Die Features sind disjunkt angeordnet und werden nur für die jeweils relevante Situation befüllt, alle anderen Felder bleiben 0. Die Feature-Logik und -Befüllung ist eng an die Flatland-rl-API und die reale Entscheidungsstruktur im Schienennetz angelehnt.
+Teilt die Umgebung in drei Pfadsegmente auf: links, geradeaus, rechts. Jedes Segment hat identische 16D Feature-Blöcke. Nur bei tatsächlich vorhandenen Pfaden (Transitions) werden die Blöcke befüllt – sonst Nullvektor.
+
+**Struktur:**
+- **Header [0–8]:** Agentenstatus, Richtung, one-hot Best-Path-Hinweis, Anzahl Agenten
+- **Links [9–24]:** 16 Features für den linken Pfad (nur bei Switch aktiv)
+- **Geradeaus [25–40]:** 16 Features für den Vorwärtspfad (immer aktiv)
+- **Rechts [41–56]:** 16 Features für den rechten Pfad (nur bei Switch aktiv)
+
+---
+
+## 3. DecisionPointObservation
+
+**Klasse:** `DecisionPointObservation(ObservationBuilder)`  
+**Feature-Größe:** **42D**  
+**Rückgabe von `get(handle)`:** `(features: np.array[42], opp_agent_handles: list[int])`
+
+Spezialisierte Beobachtung für die drei zentralen Entscheidungssituationen im Flatland:
+
+| `decision_type` | Wert (Bit) | Situation |
+|---|---|---|
+| Normal / immer geradeaus | `0` | Kein Entscheidungspunkt |
+| Start | `1` | Agent ist `READY_TO_DEPART` |
+| Switch | `2` (Bit) | Agent steht auf einer Weiche (mehrere Transitionen möglich) |
+| Merge/Crossing | `4` (Bit) | Agent ist **eine Zelle vor** einer Einmündungs-Weiche |
+| Switch + Merge | `6` | Beide Bits gesetzt |
+| Done | `8` | Agent hat Ziel erreicht |
+
+> Bits sind kombinierbar: `decision_type & 2` prüft Switch, `decision_type & 4` prüft Merge.
+
+---
+
+### Feature-Tabelle (42 Features)
+
+#### Block A – Allgemein (immer befüllt)
+
+| Index | Name | Beschreibung |
+|---|---|---|
+| 0 | `decision_type` | Entscheidungstyp (siehe Tabelle oben) |
+| 1 | `hint_left` | One-hot: linke Richtung ist optimal (kürzester Pfad via `distance_map`) |
+| 2 | `hint_forward` | One-hot: Geradeaus ist optimal |
+| 3 | `hint_right` | One-hot: rechte Richtung ist optimal |
+
+#### Block B – Switch-Analyse (nur wenn `decision_type & 2`)
+
+Für jede der drei Richtungen (links/geradeaus/rechts) ein 6er-Block. Nicht erreichbare Richtung → alle Werte `-1`.
+
+| Index | rel_dir | Name | Beschreibung |
+|---|---|---|---|
+| 4 | links | `left_curr_dist` | Aktuelle Distanz zum Ziel **vor** dem Schritt |
+| 5 | links | `left_deadlock` | Deadlock-Flag aus DFS (0=frei, 1=Gegenverkehr, 2=Selbst-Block) |
+| 6 | links | `left_switches` | Anzahl Weichen auf dem DFS-Pfad |
+| 7 | links | `left_dist` | Maximale DFS-Distanz entlang des Pfades |
+| 8 | links | `left_target_found` | 1 wenn Ziel auf diesem Pfad erreicht |
+| 9 | links | `left_abort` | 1 wenn DFS wegen `max_steps` abgebrochen |
+| 10 | gerade | `fwd_curr_dist` | Aktuelle Distanz zum Ziel |
+| 11 | gerade | `fwd_deadlock` | Deadlock-Flag |
+| 12 | gerade | `fwd_switches` | Anzahl Weichen |
+| 13 | gerade | `fwd_dist` | Maximale DFS-Distanz |
+| 14 | gerade | `fwd_target_found` | Ziel gefunden |
+| 15 | gerade | `fwd_abort` | DFS abgebrochen |
+| 16 | rechts | `right_curr_dist` | Aktuelle Distanz zum Ziel |
+| 17 | rechts | `right_deadlock` | Deadlock-Flag |
+| 18 | rechts | `right_switches` | Anzahl Weichen |
+| 19 | rechts | `right_dist` | Maximale DFS-Distanz |
+| 20 | rechts | `right_target_found` | Ziel gefunden |
+| 21 | rechts | `right_abort` | DFS abgebrochen |
+
+#### Block C – Merge/Crossing-Analyse (nur wenn `decision_type & 4`)
+
+| Index | Name | Beschreibung |
+|---|---|---|
+| 22 | `merge_deadlock_fwd` | Deadlock vorwärts (nächste Zelle Richtung Weiche) |
+| 23 | `merge_switches_fwd` | Anzahl Weichen vorwärts |
+| 24 | `merge_target_fwd` | Ziel auf Vorwärtspfad erreicht |
+| 25 | `merge_abort_fwd` | DFS abgebrochen (vorwärts) |
+| 26 | `merge_deadlock_bwd` | Deadlock rückwärts (Pfad des einmündenden Agenten) |
+| 27 | `merge_switches_bwd` | Anzahl Weichen rückwärts |
+| 28 | `merge_target_bwd` | Ziel auf Rückwärtspfad (immer 0 bei backward_trace) |
+| 29 | `merge_abort_bwd` | DFS abgebrochen (rückwärts) |
+
+> **Hinweis Merge-Rückwärts:** Die rückwärtige DFS (`backward_trace=True`) mittelt die Ergebnisse **aller Alternativen** an Weichen (statt die beste zu nehmen). Dies modelliert die Unsicherheit, welchen Weg ein anderer Agent nehmen wird.
+
+#### Block D – Agentenstatus (immer befüllt, One-hot via `agent.state.value`)
+
+| Index | State-Wert | Name |
+|---|---|---|
+| 30 | 0 | `state_WAITING` |
+| 31 | 1 | `state_READY_TO_DEPART` |
+| 32 | 2 | `state_MALFUNCTION_OFF_MAP` |
+| 33 | 3 | `state_MOVING` |
+| 34 | 4 | `state_STOPPED` |
+| 35 | 5 | `state_MALFUNCTION` |
+| 36 | 6 | `state_DONE` |
+
+#### Block E – Letzte Aktion (One-hot via `agent.action_saver.saved_action`)
+
+| Index | Action-Wert | Name |
+|---|---|---|
+| 37 | 0 | `action_DO_NOTHING` |
+| 38 | 1 | `action_MOVE_LEFT` |
+| 39 | 2 | `action_MOVE_FORWARD` |
+| 40 | 3 | `action_MOVE_RIGHT` |
+| 41 | 4 | `action_STOP_MOVING` ⚠️ |
+
+> ⚠️ **Index 41 Konflikt:** Feature [41] wird zuerst mit dem lokalen Deadlock-Flag (`_detect_deadlock`) beschrieben und danach ggf. durch `STOP_MOVING` (action=4) überschrieben. Effektiv enthält [41] entweder `1.0` (Aktion war STOP) oder den Deadlock-Wert (wenn Aktion nicht gespeichert oder nicht STOP).
+
+---
+
+### DFS-Logik: `_navigate_direction`
+
+Das Herzstück der Observation. Führt eine rekursive Tiefensuche (DFS) ab einer Startposition durch.
+
+**Signatur:**
+```python
+_navigate_direction(handle, start_pos, start_dir, target, backward_trace, max_steps=100)
+-> (dist, deadlock_flag, num_switches, seen_agents, abort_flag, target_found_flag, visited)
+```
+
+**Globaler DFS-Controller (pro Aufruf geteilt über alle Rekursionen):**
+| Feld | Bedeutung |
+|---|---|
+| `count` | Gesamtzahl besuchter Zellen (Abbruch bei ≥ `max_steps`) |
+| `visited` | Menge aller `(pos, dir)` Paare (Zyklenerkennung) |
+| `seen_agents` | Alle auf dem Pfad gesehenen Agenten-Handles |
+
+**Abbruchbedingungen (in Reihenfolge):**
+1. `count >= max_steps` → `abort=1`
+2. `pos == target` (nur forward) → `target_found=1`
+3. `(pos, dir) in visited` → Zyklus, `deadlock=-1, abort=1`
+4. `curr_dist == inf` (nur forward) → kein Pfad, `deadlock=-1, abort=1`
+
+**Deadlock-Erkennung im DFS:**
+- Agent auf nächster Zelle fährt **entgegengesetzt** → `deadlock=1` (Gegenverkehr, Stopp)
+- Agent auf nächster Zelle ist **derselbe Agent** (handle==self) → `deadlock=2` (Selbst-Block bei Rückwärtssuche)
+
+**Switch-Verhalten (mehrere Transitionen):**
+- **Forward-Modus:** Alternativen werden nach `distance_map` sortiert, die **beste nicht-deadlockende** wird gewählt (Backtracking)
+- **Backward-Modus:** **Alle** Alternativen werden verfolgt und die Ergebnisse **gemittelt** (modelliert Unsicherheit über fremde Entscheidungen)
+
+**Lokale Deadlock-Erkennung (`_detect_deadlock`):**  
+Wird separat aufgerufen (unabhängig von DFS). Prüft ob ein direkt benachbarter Agent entgegenkommt **und** beide Agenten nur vorwärts können (`forward_only`). Schreibt Ergebnis in `features[41]`.
+
+---
+
+### Methoden-Übersicht
+
+| Methode | Beschreibung |
+|---|---|
+| `get(handle)` | 42D Feature-Vektor + Liste gegnerischer Agent-Handles |
+| `get_many(handles)` | Ruft `get()` für alle Handles, aktualisiert `agent_map` und `opp_agent_handles` |
+| `_shortest_path_action_hint(...)` | One-hot [links, geradeaus, rechts] für optimale Richtung via `distance_map` |
+| `_navigate_direction(...)` | Rekursive DFS für Pfadmetriken |
+| `_detect_deadlock(...)` | Lokale Deadlock-Prüfung (direkte Nachbarn, forward-only) |
+
+---
+
+## 4. TemporalMultiAgentObservation
+
+**Klasse:** `TemporalMultiAgentObservation(ObservationBuilder)`  
+**Feature-Größe:** T × 42D (default T=3, konfigurierbar via `temporal_window`)  
+**Rückgabe von `get_many(handles)`:** Liste pro Agent, je T Einträge `(obs_42D, [list of opp_obs_42D])`
+
+Hüllt eine beliebige Basis-Observation (Standard: `DecisionPointObservation`) in ein Zeitfenster. Pro Zeitschritt wird die aktuelle Beobachtung gespeichert und eine Sequenz der letzten T Schritte zurückgegeben. Fehlende History wird durch Wiederholen des ältesten Eintrags aufgefüllt.
+
+```
+Zeitschritt t:   seq = [(obs_t-2, opp_t-2), (obs_t-1, opp_t-1), (obs_t, opp_t)]
+                         ↑ ältester                               ↑ aktuellster
+```
+
+**Gegner-Beobachtungen (`obs_others`):**  
+Für jeden in `opp_agent_handles` gelisteten Agenten wird dessen 42D Basisobservation direkt aus dem aktuellen `get_many`-Ergebnis gelesen (kein separater Aufruf).
+
+**Basis-Observation konfigurierbar:**
+```python
+TemporalMultiAgentObservation(temporal_window=3, base_obs='DecisionPointObservation')
+# oder: base_obs=ExperimentalObservation()
+# oder: base_obs=SimplifiedPathThreeTierObservation
+```
+
+---
+
+## Zusammenfassung: Klassen-Vergleich
+
+| Eigenschaft | `ExperimentalObservation` | `DecisionPointObservation` | `TemporalMultiAgentObservation` |
+|---|---|---|---|
+| Größe | 30D | 42D | T × 42D |
+| Entscheidungslogik | Keine | DFS an Weichen/Merges | via Basis-Obs |
+| Gegner-Info | Nein | Handles in Rückgabe | Obs-Vektoren aller Gegner |
+| Zeitliche Tiefe | Nein | Nein | Ja (T Schritte) |
+| Velocity-Features | Nein | Nein | Nein |
+
 
 ### Kontext & Zielsetzung
 
@@ -133,48 +330,3 @@ Die rekursive DFS-Logik in `_navigate_direction` bildet die reale Entscheidungss
 - `get_many(handles)`: Erzeugt die Beobachtungen für mehrere Agenten gleichzeitig.
 - `_shortest_path_action_hint(...)`: Berechnet, welche Richtung (links, geradeaus, rechts) entlang des kürzesten Pfads zum Ziel optimal ist.
 - `_navigate_direction(...)`: Führt die rekursive Tiefensuche durch, um Pfadmetriken, Deadlocks und Zielerreichung zu bestimmen.
-
----
-
-## 3. SimplifiedPathThreeTierObservation
-
-**Beschreibung:**
-Die `SimplifiedPathThreeTierObservation` teilt die Umgebung eines Agenten in drei Pfadsegmente ("Tiers"): links, geradeaus, rechts. Für jede Richtung werden identische Feature-Blöcke berechnet (z.B. Distanz, Deadlock, Zielrichtung). Ein Header enthält State-Informationen und einen one-hot-Hinweis auf den besten Pfad.
-
-**Feature-Design:**
-- Header (z.B. State, Richtung, Position, Ziel, Agentenzahl, one-hot best path)
-- Drei Blöcke à N Features (z.B. 16) für [links, geradeaus, rechts]
-
-**Einsatz:**
-- Gut geeignet für Policies, die explizit zwischen Alternativen wählen
-- Übersichtliche, strukturierte Feature-Vektoren
-
----
-
-## 4. Temporale Multi-Agenten-Observations
-
-### 4.1 TemporalMultiAgentObservation
-**Beschreibung:**
-Kombiniert die Beobachtungen mehrerer Agenten über mehrere Zeitschritte (z.B. T=3). Jeder Agent erhält eine Historie seiner eigenen Beobachtungen (und ggf. Velocity-Features). Besonders nützlich für Algorithmen mit zeitlichen Abhängigkeiten (z.B. RNNs).
-
-**Feature-Design:**
-- Pro Zeitschritt: 30D Basis-Features + 3D Velocity (velocity_x, velocity_y, angular_velocity)
-- Rückgabeformat: Liste von (obs_t-2, obs_t-1, obs_t) pro Agent
-
-### 4.2 TemporalMultiAgentSwitchObservation
-**Beschreibung:**
-Fokussiert auf Weichen (Switches) im Schienennetz. Enthält explizite Informationen über Weichenpositionen und -zustände über mehrere Zeitschritte.
-
-### 4.3 TemporalMultiAgentSwitchCellObservation
-**Beschreibung:**
-Erweitert die vorherige um Informationen zu Zellen, die zu Weichen führen oder in deren Nähe liegen. Unterstützt Überholen und Konfliktlösung.
-
-### 4.4 TemporalMultiAgentSwitchCellWithDirectionObservation
-**Beschreibung:**
-Ergänzt die SwitchCellObservation um Richtungsinformationen. Agenten wissen, in welche Richtung sie sich bewegen und welche Abzweigungen möglich sind.
-
----
-
-## Zusammenfassung
-
-Alle Observations sind darauf ausgelegt, die Entscheidungsfindung der Agenten in komplexen, dynamischen Schienennetzen zu verbessern. Die DecisionPointObservation bietet dabei die fortschrittlichste Entscheidungslogik mit disjunkten, klar nummerierten Feature-Blöcken für alle relevanten Entscheidungstypen.
