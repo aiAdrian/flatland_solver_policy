@@ -1,5 +1,72 @@
 # Flatland Multi-Agent Observations – Übersicht & Feature-Design
 
+## Update April 2026 (aktueller Stand)
+
+Dieses Dokument wurde auf den aktuellen Trainingsstand erweitert.
+
+### Was wurde neu eingebaut?
+
+1. **Optionaler LSTM-Encoder im MAPPO-Stack (Python-only)**
+     - In `marl_attention_temporal_mappo.py` gibt es jetzt zwei Encoder-Varianten mit gleicher Schnittstelle:
+         - `TemporalTransformerEncoder`
+         - `TemporalLSTMEncoder` (neu)
+     - Beide unterstützen:
+         - `forward_agent(temporal_seq, handle)`
+         - `forward_batch(temporal_sequences)`
+
+2. **Encoder-Auswahl über Parameter**
+     - Der Parameter-Tuple `MARL_ATTENTION_TEMPORAL_MAPPO_Param` enthält jetzt zusätzlich:
+         - `encoder_type`
+     - Gültige Werte:
+         - `'transformer'`
+         - `'lstm'`
+
+3. **Aktive Konfiguration im Experiment**
+     - In `marl_attention_temporal.py` ist aktuell gesetzt:
+         - `encoder_type='lstm'`
+     - Damit läuft das Training derzeit **aktiv mit LSTM**.
+
+### Warum ist das relevant für die Observation?
+
+- `TemporalMultiAgentObservation` liefert eine zeitliche Sequenz pro Agent:
+    - `[(obs_t-2, opp_t-2), (obs_t-1, opp_t-1), (obs_t, opp_t)]`
+- Der neue LSTM-Encoder verarbeitet genau diese Sequenz und bildet daraus einen robusteren Zeitkontext.
+- Dadurch werden aufeinanderfolgende Situationen (Annähern, Warten, Konfliktaufbau) besser nutzbar als bei rein statischer Einzelbeobachtung.
+
+### Technische Integration (Kurz)
+
+- **Keine C++-Abhängigkeit**: vollständig Python/PyTorch-basiert.
+- **Kein API-Bruch**:
+    - Actor/Critic-Trainingspfad bleibt gleich.
+    - Nur die Encoder-Instanz wird je nach `encoder_type` gewählt.
+- **Fallback-Verhalten**:
+    - Wenn `encoder_type` nicht gesetzt ist, bleibt Standard auf `'transformer'`.
+
+### Konfigurationsbeispiel
+
+```python
+ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
+        hidden_size=128,
+        batch_size=512,
+        learning_rate=3e-4,
+        discount=0.99,
+        gae_lambda=0.97,
+        use_gpu=True,
+        max_episodes_in_training_memory=50,
+        k_epochs=3,
+        batch_fraction=0.4,
+        max_batches_per_training=12,
+        temporal_window=3,
+        encoder_type='lstm',
+)
+```
+
+### Erwartete Wirkung im Training
+
+- Besseres Ausnutzen zeitlicher Muster in Entscheidungspunkten.
+- Stabilere lokale Entscheidungen bei 4-5 Agenten (weniger chaotische Umschaltungen).
+- Solider Kompromiss aus Einfachheit und Effektivität ohne zusätzliche Over-Engineering-Schichten.
+
 > **Klassen im Überblick**
 > | Klasse | Größe | Zweck |
 > |---|---|---|

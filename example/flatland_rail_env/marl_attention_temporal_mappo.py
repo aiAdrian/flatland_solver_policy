@@ -46,6 +46,20 @@ class EpisodeBuffers:
 
 # =============================================================================
 # NEW: TEMPORAL TRANSFORMER ENCODER - 2-Level Attention!
+# -----------------------------------------------------------------------------
+# Architektur basiert auf:
+#   Vaswani et al. (2017) "Attention Is All You Need", arXiv:1706.03762
+#       -> Multi-Head Self-Attention, Positional Encoding
+#   Ba, Kiros, Hinton (2016) "Layer Normalization", arXiv:1607.06450
+#       -> stabilisiert Training tiefer Encoder ohne Batch-Statistik
+#   He et al. (2015) "Delving Deep into Rectifiers", arXiv:1502.01852
+#       -> Kaiming-Init für (Leaky)ReLU-Netze
+#
+# Multi-Agent-Anwendung mit Attention zwischen Agenten:
+#   Iqbal & Sha (2019) "Actor-Attention-Critic for Multi-Agent RL",
+#       arXiv:1810.02912 (MAAC) -- Spatial-Attention zwischen Agenten
+#   Yu et al. (2022) "The Surprising Effectiveness of PPO in Cooperative
+#       Multi-Agent Games" (MAPPO), arXiv:2103.01955
 # =============================================================================
 
 class TemporalTransformerEncoder(nn.Module):
@@ -344,6 +358,170 @@ class TemporalTransformerEncoder(nn.Module):
             self.load_state_dict(torch.load(state_file, map_location=self.device))
 
 
+class TemporalLSTMEncoder(nn.Module):
+    """Lightweight temporal encoder with LSTM over self-history.
+
+    It keeps the same interface as TemporalTransformerEncoder so it can be
+    swapped without changing the PPO training loop.
+    """
+
+    def __init__(self,
+                 obs_dim: int,
+                 hidden_dim: int,
+                 num_heads: int = 4,
+                 temporal_window: int = 3,
+                 device="cpu"):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.hidden_dim = hidden_dim
+        self.temporal_window = temporal_window
+        self.device = torch.device(device)
+
+        self.obs_encoder = nn.Sequential(
+            nn.Linear(obs_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.LeakyReLU(0.01)
+        )
+
+        self.temporal_lstm = nn.LSTM(
+            input_size=hidden_dim,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.spatial_attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            batch_first=True
+        )
+
+        self.output_proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.LeakyReLU(0.01)
+        )
+
+        self._init_weights()
+        self.to(self.device)
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, a=0.01, nonlinearity='leaky_relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def _to_1d_tensor(self, x):
+        if x is None:
+            raise ValueError("_to_1d_tensor received None")
+        if isinstance(x, torch.Tensor):
+            t = x.to(self.device)
+        else:
+            t = torch.as_tensor(x, dtype=torch.float32, device=self.device)
+
+        t = t.view(-1).to(self.device)
+        if torch.isnan(t).any() or torch.isinf(t).any():
+            t = torch.nan_to_num(t, nan=0.0, posinf=1.0, neginf=-1.0)
+        t = torch.clamp(t, min=-10.0, max=10.0)
+        return t
+
+    def forward_agent(self, temporal_seq: List, handle: int = 0):
+        self_obs_sequence = []
+        for obs_self, _ in temporal_seq:
+            obs_t = self._to_1d_tensor(obs_self)
+            emb_t = self.obs_encoder(obs_t)
+            self_obs_sequence.append(emb_t)
+
+        self_seq_tensor = torch.stack(self_obs_sequence, dim=0).unsqueeze(0)
+        temporal_output, _ = self.temporal_lstm(self_seq_tensor)
+        self_temporal_context = temporal_output[0, -1, :]
+
+        _, current_opponents = temporal_seq[-1]
+        opp_embeddings = []
+        for opp_obs in current_opponents:
+            opp_t = self._to_1d_tensor(opp_obs)
+            if opp_t.shape[0] > self.obs_dim:
+                opp_t = opp_t[:self.obs_dim]
+            opp_embeddings.append(self.obs_encoder(opp_t))
+
+        if len(opp_embeddings) > 0:
+            all_agents = [self_temporal_context] + opp_embeddings
+            all_agents_tensor = torch.stack(all_agents, dim=0).unsqueeze(0)
+            query = self_temporal_context.unsqueeze(0).unsqueeze(0)
+            spatial_output, _ = self.spatial_attention(
+                query=query,
+                key=all_agents_tensor,
+                value=all_agents_tensor
+            )
+            context = spatial_output.squeeze(0).squeeze(0) + self_temporal_context
+        else:
+            context = self_temporal_context
+
+        return self.output_proj(context)
+
+    def forward_batch(self, temporal_sequences: List):
+        if len(temporal_sequences) == 0:
+            return torch.empty(0, self.hidden_dim, device=self.device)
+        if len(temporal_sequences) == 1:
+            return self.forward_agent(temporal_sequences[0], 0).unsqueeze(0)
+
+        batch_size = len(temporal_sequences)
+        all_self_obs = []
+        all_opponents = []
+
+        for temp_seq in temporal_sequences:
+            self_seq = [obs_self for obs_self, _ in temp_seq]
+            all_self_obs.append(torch.stack([self._to_1d_tensor(obs) for obs in self_seq]))
+            _, current_opps = temp_seq[-1]
+            all_opponents.append(current_opps)
+
+        all_self_obs_tensor = torch.stack(all_self_obs, dim=0)
+        flat_obs = all_self_obs_tensor.view(-1, self.obs_dim)
+        flat_embeddings = self.obs_encoder(flat_obs)
+        self_embeddings = flat_embeddings.view(batch_size, self.temporal_window, self.hidden_dim)
+
+        temporal_output, _ = self.temporal_lstm(self_embeddings)
+        self_temporal_contexts = temporal_output[:, -1, :]
+
+        final_embeddings = []
+        for i in range(batch_size):
+            self_ctx = self_temporal_contexts[i]
+            opps = all_opponents[i]
+
+            if len(opps) > 0:
+                opp_embs = []
+                for opp_obs in opps:
+                    opp_t = self._to_1d_tensor(opp_obs)
+                    if opp_t.shape[0] > self.obs_dim:
+                        opp_t = opp_t[:self.obs_dim]
+                    opp_embs.append(self.obs_encoder(opp_t))
+
+                all_agents = [self_ctx] + opp_embs
+                all_agents_tensor = torch.stack(all_agents, dim=0).unsqueeze(0)
+                query = self_ctx.unsqueeze(0).unsqueeze(0)
+                spatial_out, _ = self.spatial_attention(
+                    query=query,
+                    key=all_agents_tensor,
+                    value=all_agents_tensor
+                )
+                context = spatial_out.squeeze(0).squeeze(0) + self_ctx
+            else:
+                context = self_ctx
+
+            final_embeddings.append(self.output_proj(context))
+
+        return torch.stack(final_embeddings, dim=0)
+
+    def save(self, filename: str):
+        torch.save(self.state_dict(), filename + ".temporal_encoder")
+
+    def load(self, filename: str):
+        state_file = filename + ".temporal_encoder"
+        if os.path.exists(state_file):
+            self.load_state_dict(torch.load(state_file, map_location=self.device))
+
+
 # =============================================================================
 # ACTOR-CRITIC MODEL  
 # =============================================================================
@@ -418,7 +596,7 @@ MARL_ATTENTION_TEMPORAL_MAPPO_Param = namedtuple('MARL_ATTENTION_TEMPORAL_MAPPO_
                             ['hidden_size', 'batch_size', 'learning_rate',
                              'discount', 'gae_lambda', 'use_gpu',
                              'max_episodes_in_training_memory', 'batch_fraction', 'k_epochs',
-                             'max_batches_per_training', 'temporal_window'])
+                             'max_batches_per_training', 'temporal_window', 'encoder_type'])
 
 
 # =============================================================================
@@ -460,12 +638,14 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             self.learning_rate = self.ppo_parameters.learning_rate
             self.discount = self.ppo_parameters.discount
             self.temporal_window = getattr(self.ppo_parameters, 'temporal_window', 3)
+            self.encoder_type = getattr(self.ppo_parameters, 'encoder_type', 'transformer')
         else:
             self.hidden_size = 256
             self.learning_rate = 5.0e-3
             self.discount = 0.99
             self.batch_size = 128  # Back to baseline
             self.temporal_window = 3
+            self.encoder_type = 'transformer'
 
         # Device
         if self.ppo_parameters is not None and getattr(self.ppo_parameters, 'use_gpu', False) and torch.cuda.is_available():
@@ -481,9 +661,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         else:
             self.K_epoch = 3  # Back to baseline
             
-        self.surrogate_eps_clip = 0.15  # Etwas mehr Flexibilität für Policy-Updates
-        self.weight_loss = 0.4  # Weniger Fokus auf Value Loss
-        self.weight_entropy = 0.02  # Mehr Exploration
+        self.surrogate_eps_clip = 0.2  # Standard PPO clip
+        self.weight_loss = 0.5  # Standard
+        self.weight_entropy = 0.01  # Lower entropy pressure for late-stage policy stability
         self.weight_policy = 1.0
         self.gae_lambda = self.ppo_parameters.gae_lambda if self.ppo_parameters else 0.95 
 
@@ -506,21 +686,24 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # ========================================================================
         # NEW: TEMPORAL TRANSFORMER ENCODERS (separate for Actor and Critic)
         # ========================================================================
-        print("\n🚀 Creating Temporal Transformer Encoders:")
+        print("\n🚀 Creating Temporal Encoders:")
         print(f"   - obs_dim: {state_size}")
         print(f"   - hidden_dim: {self.hidden_size}")
         print(f"   - temporal_window: {self.temporal_window}")
         print(f"   - num_heads: {self.num_heads}")
-        
-        self.encoder_actor = TemporalTransformerEncoder(
+        print(f"   - encoder_type: {self.encoder_type}")
+
+        encoder_cls = TemporalLSTMEncoder if str(self.encoder_type).lower() == 'lstm' else TemporalTransformerEncoder
+
+        self.encoder_actor = encoder_cls(
             obs_dim=state_size,
             hidden_dim=self.hidden_size,
             num_heads=self.num_heads,
             temporal_window=self.temporal_window,
             device=self.device
         )
-        
-        self.encoder_critic = TemporalTransformerEncoder(
+
+        self.encoder_critic = encoder_cls(
             obs_dim=state_size,
             hidden_dim=self.hidden_size,
             num_heads=self.num_heads,
@@ -540,22 +723,22 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         
         self.optimizer_encoder_actor = optim.AdamW(
             self.encoder_actor.parameters(),
-            lr=base_lr * 2.5  # ⚡ Reduced from 3.0 for smoother updates
+            lr=base_lr * 1.5
         )
         
         self.optimizer_actor_head = optim.AdamW(
             self.actor_critic_model.actor.parameters(),
-            lr=base_lr * 2.5  # ⚡ Reduced from 3.0
+            lr=base_lr * 1.5
         )
         
         self.optimizer_encoder_critic = optim.AdamW(
             self.encoder_critic.parameters(),
-            lr=base_lr * 1.25  # ⚡ Reduced from 1.5
+            lr=base_lr * 1.0
         )
         
         self.optimizer_critic_head = optim.AdamW(
             self.actor_critic_model.critic.parameters(),
-            lr=base_lr * 0.65  # ⚡ Reduced from 0.75
+            lr=base_lr * 0.5
         )
         
         self.optimizer_actor = self.optimizer_actor_head
@@ -608,7 +791,15 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         return state_list, actions, rewards, state_next_list, dones
     
     def _compute_gae(self, rewards, values, dones, next_values):
-        """Compute Generalized Advantage Estimation (GAE)"""
+        """Generalized Advantage Estimation (GAE).
+
+        Schulman, Moritz, Levine, Jordan, Abbeel (2016)
+        "High-Dimensional Continuous Control Using Generalized Advantage
+        Estimation", ICLR. arXiv:1506.02438
+
+        delta_t = r_t + gamma * V(s_{t+1}) * (1 - done_t) - V(s_t)
+        A_t     = delta_t + gamma * lambda * A_{t+1} * (1 - done_t)
+        """
         advantages = torch.zeros_like(rewards)
         gae = 0
         
@@ -664,11 +855,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 with torch.no_grad():
                     states_critic = self.encoder_critic.forward_batch(state_tuples)
                     values = torch.squeeze(self.actor_critic_model.critic(states_critic), dim=-1)
-                    values = torch.clamp(values, -10, 10)  # ⚡ Clip values!
+                    values = torch.clamp(values, -50, 50)  # weiter Bereich, nur extreme NaN-Schutz
                     
                     next_states_critic = self.encoder_critic.forward_batch(state_next_tuples)
                     next_values = torch.squeeze(self.actor_critic_model.critic(next_states_critic), dim=-1)
-                    next_values = torch.clamp(next_values, -10, 10)  # ⚡ Clip values!
+                    next_values = torch.clamp(next_values, -50, 50)
                     
                     traj_gae_advantages, traj_gae_returns = self._compute_gae(
                         rewards, values, dones, next_values
@@ -701,29 +892,14 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         episode_sample_weights = []
         
         for ep_idx, (ep_states, ep_actions, ep_advantages, ep_returns) in enumerate(episode_data):
-            # Get episode memory to check done status
-            episode_memory = self.accumulated_episodes[ep_idx]
-            
-            # Check if episode has successful completion (any agent done=True)
-            episode_has_success = False
-            for handle in range(len(episode_memory)):
-                agent_history = episode_memory.get_transitions(handle)
-                if len(agent_history) > 0:
-                    # Check last transition
-                    _, _, _, _, done = agent_history[-1]
-                    if done:
-                        episode_has_success = True
-                        break
-            
             all_state_tuples.extend(ep_states)
             all_actions.append(ep_actions)
             all_gae_advantages.append(ep_advantages)
             all_gae_returns.append(ep_returns)
             
-            # Combined weight: recency + success bonus
-            recency_weight = (ep_idx + 1) / len(episode_data)
-            success_bonus = 5.0 if episode_has_success else 1.0  # 5× weight for successful episodes!
-            combined_weight = recency_weight * success_bonus
+            # Uniform sampling across the sliding window avoids forgetting older
+            # but still relevant traffic patterns and stabilizes long runs.
+            combined_weight = 1.0
             
             episode_sample_weights.extend([combined_weight] * len(ep_states))
         
@@ -798,26 +974,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         
         # Training epochs
         for k_loop in range(int(self.K_epoch)):
-            # 🎯 STANDARD PPO: Update old_logprobs nach jedem Epoch (außer dem ersten)
-            if k_loop > 0:
-                if self.show_pre_train_debug_msg:
-                    print(f"\n🔄 Re-computing old_logprobs for Epoch {k_loop+1}...")
-                
-                with torch.no_grad():
-                    all_old_logprobs = []
-                    for i in range(0, len(all_state_tuples), batch_size_encoding):
-                        batch_states = all_state_tuples[i:i+batch_size_encoding]
-                        batch_acts = all_actions[i:i+batch_size_encoding]
-                        
-                        states_enc = self.encoder_actor.forward_batch(batch_states)
-                        logits = self.actor_critic_model.actor(states_enc)
-                        old_lp = Categorical(logits=logits).log_prob(batch_acts)
-                        all_old_logprobs.append(old_lp)
-                    
-                    all_old_logprobs = torch.cat(all_old_logprobs, dim=0)
-                
-                if self.show_pre_train_debug_msg:
-                    print(f"✅ Updated (mean={all_old_logprobs.mean().item():.4f})")
+            # Keep old_logprobs fixed for the whole PPO update cycle.
+            # Recomputing them after policy updates weakens PPO's trust-region effect.
             
             # Shuffle data each epoch for better training
             indices = torch.randperm(samples_to_use)
@@ -870,9 +1028,20 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 
                 state_values = torch.squeeze(self.actor_critic_model.critic(states_critic), dim=-1)
                 
-                # PPO ratios with AGGRESSIVE clipping to prevent explosion
+                # ------------------------------------------------------------
+                # PPO Clipped Surrogate Objective
+                # Schulman et al. (2017) "Proximal Policy Optimization Algorithms",
+                # arXiv:1707.06347 -- L^CLIP = E[ min(r_t * A_t,
+                #                                 clip(r_t, 1-eps, 1+eps) * A_t) ]
+                #
+                # Wichtig: NICHT zusätzlich r_t selbst hart clampen, sonst
+                # entfernt man genau die seltenen großen Lernsignale, die
+                # man eigentlich braucht (z.B. STOP-vor-Merge -> +Done-Bonus).
+                # Hier nur ein WEITER NaN-Schutz [0.05, 20] -- der eigentliche
+                # Trust-Region-Mechanismus passiert über min(surr1, surr2).
+                # ------------------------------------------------------------
                 ratios = torch.exp(logprobs - batch_old_logprobs)
-                ratios = torch.clamp(ratios, 0.5, 2.0)  # ⚡ Limit ratio range BEFORE advantage multiplication
+                ratios = torch.clamp(ratios, 0.05, 20.0)
                 
                 # Normalize advantages
                 advantages = batch_gae_advantages
@@ -883,8 +1052,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 raw_adv_std = advantages.std().item()
                 
                 advantages_normalized = (advantages - advantages.mean()) / (advantages.std() + eps)
-                advantage_scale_factor = 0.3  # ⚡ REDUZIERT: Sanftere Updates → verhindert Catastrophic Forgetting!
-                advantages = advantages_normalized * advantage_scale_factor
+                # Standard PPO: Advantage-Normalisierung pro Mini-Batch
+                # (Andrychowicz et al. 2021 "What Matters in On-Policy RL?",
+                # arXiv:2006.05990 -- Empfehlung #4). Eine zusätzliche
+                # Skalierung (vorher *0.3) drosselt alle Updates und hat das
+                # Lernen in einem 60%-Lokal-Optimum gefangen gehalten.
+                advantages = advantages_normalized
 
                 # PPO loss
                 surr1 = ratios * advantages
@@ -914,17 +1087,17 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 
                 loss.backward()
                 
-                # Gradient clipping - ausbalanciert für Stabilität und Lernen
+                # Gradient clipping (Standard PPO: max_norm=0.5..1.0 ist üblich).
                 grad_norm_actor = torch.nn.utils.clip_grad_norm_(
                     list(self.encoder_actor.parameters()) + 
                     list(self.actor_critic_model.actor.parameters()),
-                    max_norm=0.5  # ⚡ Erhöht: Erlaubt größere Updates ohne Explosion
+                    max_norm=1.0
                 )
                 
                 grad_norm_critic = torch.nn.utils.clip_grad_norm_(
                     list(self.encoder_critic.parameters()) + 
                     list(self.actor_critic_model.critic.parameters()),
-                    max_norm=0.5  # ⚡ Erhöht: Erlaubt größere Updates ohne Explosion
+                    max_norm=1.0
                 )
                 
                 grad_norm = max(grad_norm_actor.item(), grad_norm_critic.item())
