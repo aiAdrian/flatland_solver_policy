@@ -124,7 +124,29 @@ class DecisionPointObservation(ObservationBuilder):
         features[0] = self._encode_decision_type(decision_type)
         features[1:4] = self._shortest_path_action_hint(handle, pos, direction, transitions, distance_map)
         features[5] = self._detect_deadlock(handle, pos, direction)
-        features[6] = 0.0
+        
+        all_distance = []
+        for idx, a in enumerate(self.env.agents):
+            apos = a.position if a.position is not None else a.initial_position
+            adir = a.direction if a.direction is not None else a.initial_direction
+            if apos is None or adir is None:
+                adist = np.inf
+            else:
+                adist = float(distance_map[a.handle, apos[0], apos[1], adir])
+            all_distance.append((a.handle, adist, idx))
+
+        # Stable sort by value. For ties, first occurrence in the original list wins.
+        all_distance.sort(key=lambda x: (x[1], x[2]))
+        value_to_rank = {}
+        next_rank = 1
+        handle_to_rank = {}
+        for h, dist, _ in all_distance:
+            if dist not in value_to_rank:
+                value_to_rank[dist] = next_rank
+                next_rank += 1
+            handle_to_rank[h] = value_to_rank[dist]
+
+        features[6] = float(handle_to_rank.get(handle, next_rank))/next_rank
 
         opp_agents = set()
         visited_type_2: set = set()
