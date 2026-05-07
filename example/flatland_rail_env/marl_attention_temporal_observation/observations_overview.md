@@ -4,6 +4,26 @@
 
 Dieses Dokument wurde auf den aktuellen Trainingsstand erweitert.
 
+### Update April 2026 (Decision-Point Oberversion)
+
+Neu im aktuellen Stand:
+
+1. `DecisionPointObservation` liefert jetzt **48D** mit klareren, NN-freundlichen Signalen:
+    - `decision_type` wird auf `[0,1]` normalisiert (`raw/8`).
+    - Branch-Feature `*_curr_dist` wurde auf **branch-spezifischen Progress-Gain** umgestellt:
+      - `progress_gain = max(curr_dist_norm - branch_dist_norm, 0)`.
+    - DFS-Deadlockflags werden auf ein eindeutiges **Risikosignal in `[0,1]`** gemappt.
+    - Neu: 5 Koordinationsfeatures (`wait_intent`, `go_intent`, `priority`, `conflict_pressure`, `yield_hint`) als weiche Kommunikationshinweise.
+
+2. `TemporalMultiAgentObservation` wurde robuster gemacht:
+    - Handle-sicheres Mapping (kein Index/Handle-Mismatch mehr).
+    - Gegnerlisten werden optional auf `max_opponents` begrenzt (Top-K nach Konfliktrelevanz).
+
+3. Ziel der Änderung:
+    - Weniger Rauschen durch irrelevante Gegner.
+    - Mehr eindeutige Konflikt-/Fortschrittssignale an Entscheidungspunkten.
+    - Stabilere Attention-Nutzung bei mehreren Agenten.
+
 ### Was wurde neu eingebaut?
 
 1. **Optionaler LSTM-Encoder im MAPPO-Stack (Python-only)**
@@ -285,7 +305,7 @@ TemporalMultiAgentObservation(temporal_window=3, base_obs='DecisionPointObservat
 | Entscheidungslogik | Keine | DFS an Weichen/Merges | via Basis-Obs |
 | Gegner-Info | Nein | Handles in Rückgabe | Obs-Vektoren aller Gegner |
 | Zeitliche Tiefe | Nein | Nein | Ja (T Schritte) |
-| Velocity-Features | Nein | Nein | Nein |
+| Velocity-Features | Nein (statisch) | Nein (statisch) | Emergent (LSTM lernt aus Sequenz) |
 
 
 ### Kontext & Zielsetzung

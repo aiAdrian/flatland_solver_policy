@@ -33,6 +33,7 @@
 
 from typing import Any, Callable, Optional, Type, List, Union, Tuple, Set, Dict
 from collections import namedtuple, deque
+import os
 import numpy as np
 import torch
 from torch.distributions import Categorical
@@ -56,6 +57,8 @@ from utils.training_evaluation_pipeline import create_random_policy
 from marl_attention_temporal_mappo import MARL_ATTENTION_TEMPORAL_PPOPolicy, MARL_ATTENTION_TEMPORAL_MAPPO_Param
 from marl_attention_temporal_observation.experimental_observation import ExperimentalObservation
 from marl_attention_temporal_observation.temporal_multi_agent_observation import TemporalMultiAgentObservation
+from marl_attention_temporal_observation.hierarchical_routes_observation import HierarchicalRoutesObservation
+from decider_policy import DeciderPPOPolicy
 from marl_attention_temporal_observation.simplified_path_three_tier_observation import SimplifiedPathThreeTierObservation
 
 # Enforce disable GPU
@@ -175,8 +178,13 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         is not yet available (defensive)."""
         agent: EnvAgent = self._env.raw_env.agents[handle]
         mask = self._legal_action_mask(agent)
-        if mask.sum() == 0:
+        legal_actions = np.flatnonzero(mask > 0.5)
+        if legal_actions.size == 0:
             return int(super(MARL_ATT_DecisionPointPolicy, self).act(handle, state, eps))
+        # Make solver epsilon meaningful: random among legal rail actions.
+        eps_val = float(eps) if eps is not None else 0.0
+        if eps_val > 0.0 and np.random.rand() < eps_val:
+            return int(np.random.choice(legal_actions))
         try:
             with torch.no_grad():
                 emb = self.encoder_actor.forward_agent(state, handle)
@@ -188,7 +196,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
                 action = Categorical(logits=logits).sample().item()
             return int(action)
         except Exception:
-            return int(super(MARL_ATT_DecisionPointPolicy, self).act(handle, state, eps))
+            return int(np.random.choice(legal_actions))
 
     def act(self, handle: int, state, eps=0.):
         agent: EnvAgent = self._env.raw_env.agents[handle]
@@ -240,22 +248,100 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 # Globale Variable für die temporale Fenstergröße
 TEMPORAL_WINDOW = 3  # 3 Frames -> Bewegung/Velocity wird durch Temporal-Attention nutzbar
 
+# High-success curriculum: bias training toward hard coordination cases
+# while keeping a small share of easy cases for stability.
+PURE_MARL_AGENT_COUNTS = [5]
+PURE_MARL_MAX_AGENTS = max(PURE_MARL_AGENT_COUNTS)
+PURE_MARL_GRID_WIDTH = 30
+PURE_MARL_GRID_HEIGHT = 40
+PURE_MARL_N_CITIES = 3
+PURE_MARL_NUM_ENVS = 18
+
+# Curriculum with isolated scene caches per phase. This avoids mixing stale
+# scenes and gives explicit control over increasing task complexity.
+USE_CURRICULUM_PHASES = True
+CURRICULUM_BASE_PATH = 'generated_envs'
+# Targeting high done-ratio runs: keep phase5 focused on solvable coordination
+# regimes by default. 5-agent traffic remains available as an optional stress
+# test once policy quality is high and stable.
+INCLUDE_5_AGENTS_IN_FINAL = False
+# Pure MARL Curriculum: startet mit 1 Agent (reine Navigation, kein Koordinationsdruck),
+# dann schrittweise Erhöhung. Erst wenn 1 Agent zuverlässig sein Ziel findet,
+# macht Multi-Agent-Koordination Sinn.
+CURRICULUM_PHASES = [
+    {'name': 'phase0_nav',   'agent_counts': [1],          'num_envs': 10, 'episodes': 100},
+    {'name': 'phase1_solo',  'agent_counts': [1, 2],        'num_envs': 12, 'episodes': 100},
+    {'name': 'phase2_easy',  'agent_counts': [2, 3, 4],     'num_envs': 16, 'episodes': 100},
+    {'name': 'phase3_mid',   'agent_counts': [3, 4, 5],     'num_envs': 18, 'episodes': 100},
+    {'name': 'phase4_hard',  'agent_counts': [4, 5],        'num_envs': 22, 'episodes': 100},
+    {'name': 'phase5_final', 'agent_counts': [5], 'num_envs': 50, 'episodes': 8000},
+]
+
+if INCLUDE_5_AGENTS_IN_FINAL:
+    CURRICULUM_PHASES[-1]['agent_counts'] = [1, 2, 3, 4, 5]
+    CURRICULUM_PHASES[-1]['episodes'] = 10000
+
+# Toggle: when True, the temporal wrapper uses HierarchicalRoutesObservation
+# (72D = 48 base + 24 sparse-neighbor block) as base. The decider policy expects
+# this. The legacy 48D DecisionPointObservation works too, but the decider
+# performs best with the extended layout.
+USE_HIERARCHICAL_OBS = True
+
 def create_temporal_obs_builder_object():
     """Factory for TemporalMultiAgentObservation"""
+    if USE_HIERARCHICAL_OBS:
+        base = HierarchicalRoutesObservation()
+        return TemporalMultiAgentObservation(
+            temporal_window=TEMPORAL_WINDOW,
+            base_obs=base,
+        )
     return TemporalMultiAgentObservation(temporal_window=TEMPORAL_WINDOW)
+
+
+def create_decider_agent(observation_space: int, action_space: int) -> LearningPolicy:
+    """Hierarchical Decider policy with Specialist sub-modules + PPO + 1-step
+    deadlock BCE aux-loss. See HIERARCHICAL_DECIDER_ARCHITECTURE.md."""
+    print('>> DeciderPPOPolicy (Hierarchical Specialists + Decider)')
+    print('   - observation_space:', observation_space)
+    print('   - action_space:', action_space)
+    print('   - temporal_window:', TEMPORAL_WINDOW)
+    return DeciderPPOPolicy(
+        state_size=observation_space,
+        action_size=action_space,
+        learning_rate=5.0e-5,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_eps=0.10,
+        k_epochs=1,
+        batch_size=512,
+        max_episodes_in_memory=20,
+        # Conservative entropy pressure to keep exploration while reducing
+        # destructive policy oscillations after BC warm-start.
+        weight_entropy=0.04,
+        weight_value=0.5,
+        # Keep auxiliary signal active but avoid overpowering PPO objective.
+        weight_aux_dl=0.035,
+        temporal_window=TEMPORAL_WINDOW,
+        train_frequency=10,
+        reward_scale=0.005,
+        aux_pos_weight=4.0,
+        target_kl=0.04,
+        max_eps_random=0.0,
+        clear_buffer_after_update=True,
+    )
 
 
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     hidden_size=128,
-    batch_size=512,  # Größere Batches für stabileres Training
-    learning_rate=3e-4,  # Höhere Lernrate für schnellere Konvergenz
+    batch_size=256,
+    learning_rate=1.5e-4,
     discount=0.99,  # Längere Belohnungsketten
     gae_lambda=0.97,  # Weniger Bias
     use_gpu=True,
-    max_episodes_in_training_memory=50,  # Mehr Diversität
-    k_epochs=3,  # Stabilere Updates
-    batch_fraction=0.4,  # Mehr Daten pro Training
-    max_batches_per_training=12,
+    max_episodes_in_training_memory=30,
+    k_epochs=1,
+    batch_fraction=0.8,
+    max_batches_per_training=10,
     temporal_window=TEMPORAL_WINDOW, # ⚡ MUST MATCH create_temporal_obs_builder_object()!
     encoder_type='lstm'
 )
@@ -272,7 +358,7 @@ def create_ma_ppo_agent(observation_space: int, action_space: int) -> LearningPo
     print('   - temporal_window:', TEMPORAL_WINDOW)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
         
-    return MARL_ATTENTION_TEMPORAL_PPOPolicy(
+    policy = MARL_ATTENTION_TEMPORAL_PPOPolicy(
         observation_space,
         action_space,
         ppo_param,
@@ -280,6 +366,12 @@ def create_ma_ppo_agent(observation_space: int, action_space: int) -> LearningPo
         show_progress_bar=True,
         train_frequency=10
     )
+    # Avoid late-stage over-conservative clipping that caused the 0.54-0.57 plateau.
+    policy.surrogate_eps_clip = 0.15
+    policy.weight_entropy = 0.012
+    policy.stability_guard_start_episode = 2600
+    policy.stability_guard_hard_episode = 3800
+    return policy
 
 def create_ma_ppo_agent_dp(observation_space: int, action_space: int) -> LearningPolicy:
     """
@@ -293,7 +385,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int) -> Learnin
     print('   - temporal_window:', TEMPORAL_WINDOW)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
         
-    return MARL_ATT_DecisionPointPolicy(
+    policy = MARL_ATT_DecisionPointPolicy(
         observation_space,
         action_space,
         ppo_param,
@@ -302,6 +394,25 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int) -> Learnin
         train_frequency=10,
         use_deadlock_avoidance_policy=False
     )
+    # Stable late-phase settings: keep learning without policy collapse.
+    policy.surrogate_eps_clip = 0.16
+    policy.weight_entropy = 0.045
+    policy.stability_guard_start_episode = 1200
+    policy.stability_guard_hard_episode = 2600
+    policy.ppo_target_kl = 0.07
+    policy.ppo_max_kl = 0.14
+    policy.ppo_emergency_kl = 0.24
+    policy.ppo_emergency_kl_hard = 0.32
+    policy.ratio_guard_soft = 1.12
+    policy.ratio_guard_soft_low = 0.88
+    policy.ratio_guard_hard = 1.28
+    policy.ratio_guard_hard_low = 0.72
+    policy.max_hard_batches_before_lr_decay = 10
+    policy.hard_spike_streak_limit = 4
+    policy.actor_lr_min_factor = 0.45
+    policy.actor_lr_decay_on_instability = 0.85
+    policy.max_eps_random = 0.10
+    return policy
 
  
 def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int) -> LearningPolicy:
@@ -316,7 +427,7 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int) -> Lea
     print('   - temporal_window:', TEMPORAL_WINDOW)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
     
-    return MARL_ATT_DecisionPointPolicy(
+    policy = MARL_ATT_DecisionPointPolicy(
         observation_space,
         action_space,
         ppo_param,
@@ -325,6 +436,25 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int) -> Lea
         train_frequency=10,
         use_deadlock_avoidance_policy=True
     )
+    policy.surrogate_eps_clip = 0.15
+    policy.weight_entropy = 0.012
+    policy.stability_guard_start_episode = 2600
+    policy.stability_guard_hard_episode = 3800
+    # Same anti-stall settings for shielded training.
+    policy.ppo_target_kl = 0.05
+    policy.ppo_max_kl = 0.10
+    policy.ppo_emergency_kl = 0.16
+    policy.ppo_emergency_kl_hard = 0.24
+    policy.ratio_guard_soft = 1.10
+    policy.ratio_guard_soft_low = 0.90
+    policy.ratio_guard_hard = 1.20
+    policy.ratio_guard_hard_low = 0.80
+    policy.max_hard_batches_before_lr_decay = 8
+    policy.hard_spike_streak_limit = 3
+    policy.actor_lr_min_factor = 0.35
+    policy.actor_lr_decay_on_instability = 0.85
+    policy.max_eps_random = 0.03
+    return policy
 
 def create_deadlock_avoidance_policy(environment: Environment,
                                      action_space: int,
@@ -366,18 +496,28 @@ class FlatlandPBRSShaper:
     """
 
     GAMMA = 0.99
-    DONE_BONUS = 10.0
+    # ⚡ AGGRESSIVE shaping to break 0.136 plateau: more weight on potential-based signals
+    SHAPING_WEIGHT = 0.40              # ⬆️ (was 0.20) - double influence of shaping
+    # Incremental progress: small per-agent bonus + big team bonus
+    # This prevents "one agent out" plateau while still incentivizing team completion
+    INDIVIDUAL_DONE_BONUS = 1.5        # ✨ NEW: small bonus when agent reaches goal
+    ALL_DONE_BONUS = 18.0              # ⬆️ (was 12.0) - stronger team incentive
     # Penalty wird einmalig pro Agent ausgelöst, sobald der Deadlock zum
     # ersten Mal in der Episode erkannt wird. Per-Step-Strafen blasen Returns
     # auf O(1000) auf und der Critic verbringt seine Kapazität damit, die
     # Penalty-Höhe zu schätzen statt feine Routing-Unterschiede zu lernen.
-    DEADLOCK_PENALTY = -2.0
-    STEP_PENALTY = -0.005
+    DEADLOCK_PENALTY = -5.0            # ⬆️ (was -4.0) - stronger deadlock signal
+    STEP_PENALTY = -0.0005             # ⬇️ (was -0.001) - less time pressure
+    # Einmalige Team-Strafe, wenn die Episode nahe Timeout endet und nicht
+    # alle Agenten im Ziel sind. So wird "stehen bleiben bis Ende" unattraktiv.
+    NOT_ALL_DONE_TIMEOUT_PENALTY = -4.0  # ⬆️ (was -3.0) - stronger timeout penalty
 
     def __init__(self):
         self._prev_phi: Dict[int, np.ndarray] = {}
         self._deadlock_charged: Dict[int, np.ndarray] = {}
         self._done_charged: Dict[int, np.ndarray] = {}
+        self._team_bonus_charged: Dict[int, bool] = {}
+        self._team_fail_charged: Dict[int, bool] = {}
 
     def _potential(self, agent, distance_map, max_dist: float) -> float:
         if agent.state == TrainState.DONE:
@@ -409,6 +549,7 @@ class FlatlandPBRSShaper:
         agents = raw_env.agents
         num_agents = len(agents)
         env_id = id(raw_env)
+        episode_done = bool(terminal.get('__all__', False)) if isinstance(terminal, dict) else False
 
         distance_map = raw_env.distance_map.get()
         finite = distance_map[np.isfinite(distance_map)]
@@ -424,6 +565,8 @@ class FlatlandPBRSShaper:
             prev_phi = new_phi.copy()
             self._deadlock_charged[env_id] = np.zeros(num_agents, dtype=bool)
             self._done_charged[env_id] = np.zeros(num_agents, dtype=bool)
+            self._team_bonus_charged[env_id] = False
+            self._team_fail_charged[env_id] = False
         else:
             prev_phi = self._prev_phi.get(env_id)
             if prev_phi is None or prev_phi.shape[0] != num_agents:
@@ -434,24 +577,27 @@ class FlatlandPBRSShaper:
             if self._done_charged.get(env_id) is None or \
                     self._done_charged[env_id].shape[0] != num_agents:
                 self._done_charged[env_id] = np.zeros(num_agents, dtype=bool)
+            if self._team_bonus_charged.get(env_id) is None:
+                self._team_bonus_charged[env_id] = False
+            if self._team_fail_charged.get(env_id) is None:
+                self._team_fail_charged[env_id] = False
 
         deadlock_charged = self._deadlock_charged[env_id]
         done_charged = self._done_charged[env_id]
 
         shaped = list(reward)
         for i, agent in enumerate(agents):
-            r = self.STEP_PENALTY
-            r += self.GAMMA * float(new_phi[i]) - float(prev_phi[i])
+            # Always preserve the original environment reward for fair
+            # cross-method comparison.
+            base_reward = float(reward[i])
+            shaping = self.STEP_PENALTY
+            shaping += self.GAMMA * float(new_phi[i]) - float(prev_phi[i])
 
-            # DONE-Bonus EINMALIG bei Flanke (Eintritt in DONE). Sonst bekommt
-            # ein Agent, der in Step 50 ankommt, +10 * 450 über den Rest der
-            # Episode "gratis" -- das verzerrt den Optimalitaetsbeweis von
-            # PBRS (Ng et al. 1999) nicht, weil DONE absorbierender Zustand
-            # ist, vergiftet aber das Lernen: "einer reicht, andere dürfen
-            # blockieren" -> typisches Multi-Agent-Plateau.
+            # ⚡ NEW: Individual progress bonus (small) + team bonus (large)
+            # Prevents "one agent out" plateau while still incentivizing team completion
             if agent.state == TrainState.DONE and not done_charged[i]:
-                r += self.DONE_BONUS
                 done_charged[i] = True
+                shaping += self.INDIVIDUAL_DONE_BONUS  # Each agent reaching goal gets bonus
 
             # Einmaliger Deadlock-Penalty: Lernsignal "ich bin in einem
             # Deadlock gelandet", nicht eine kontinuierliche Strafe über alle
@@ -461,10 +607,28 @@ class FlatlandPBRSShaper:
                 and agent.position is not None
                 and self._is_local_deadlock(raw_env, agent)
             ):
-                r += self.DEADLOCK_PENALTY
+                shaping += self.DEADLOCK_PENALTY
                 deadlock_charged[i] = True
 
-            shaped[i] = float(r)
+            shaped[i] = float(base_reward + self.SHAPING_WEIGHT * shaping)
+
+        # Team-Bonus: NUR wenn ALLE Agenten im Ziel sind UND die Episode noch
+        # nicht ausgelaufen ist (mind. 10 Schritte vor max_steps).
+        # Sonst würde ein zufälliges "Alle-DONE-durch-Timeout" belohnt werden.
+        all_done = all(a.state == TrainState.DONE for a in agents)      
+        early_enough = raw_env._elapsed_steps < raw_env._max_episode_steps - 10
+        if episode_done and all_done and early_enough and not self._team_bonus_charged[env_id]:
+            self._team_bonus_charged[env_id] = True
+            for i in range(num_agents):
+                shaped[i] += self.ALL_DONE_BONUS
+
+        # Team-Strafe kurz vor Episode-Ende, falls nicht alle im Ziel sind.
+        # Nur einmal pro Episode, damit Returns stabil bleiben.
+        if episode_done and (not all_done) and (not early_enough) and (not self._team_fail_charged[env_id]):
+            self._team_fail_charged[env_id] = True
+            for i, agent in enumerate(agents):
+                if agent.state != TrainState.DONE:
+                    shaped[i] += self.NOT_ALL_DONE_TIMEOUT_PENALTY
 
         self._prev_phi[env_id] = new_phi
         self._deadlock_charged[env_id] = deadlock_charged
@@ -497,21 +661,55 @@ class FlatlandPBRSShaper:
 flatland_reward_shaper = FlatlandPBRSShaper()
 
 
-policy_creator_list: List[Callable[[int, int], Policy]] = [
-    # create_random_policy,
-    # create_ma_ppo_agent,            # plain MAPPO (Yu et al. 2022, arXiv:2103.01955)
-    create_ma_ppo_agent_dp,           # decision-point reduction (Laurent et al. 2021,
-                                      #   arXiv:2103.16511) + invalid-action masking
-                                      #   (Huang & Ontañón 2022, arXiv:2006.14171)
-                                      #   -- pure MARL, no DLA shield
-    # create_ma_ppo_agent_dp_DLA,     # + DLA safety shield (Alshiekh et al. 2018)
-]
+_policy_mode = os.environ.get('FLATLAND_POLICY_MODE', 'pure_marl_dla').strip().lower()
+if _policy_mode == 'decider':
+    policy_creator_list: List[Callable[[int, int], Policy]] = [
+        create_decider_agent,
+    ]
+elif _policy_mode == 'pure_marl':
+    policy_creator_list: List[Callable[[int, int], Policy]] = [
+        create_ma_ppo_agent_dp,
+    ]
+else:
+    # Default: shielded pure MARL for high completion and low deadlock risk.
+    policy_creator_list: List[Callable[[int, int], Policy]] = [
+        create_ma_ppo_agent_dp,#_DLA,
+    ]
 
 
 if __name__ == "__main__":
+    import sys
+    
+    # Simple mode selection via command line
+    # Usage: python marl_attention_temporal.py [phase5|continue|eval|dla_eval]
+    mode = sys.argv[1].lower() if len(sys.argv) > 1 else 'final'
+    
     do_rendering = False
-    do_training = True
-    test_with_deadlock_avoidance_policy = False
+    if mode == 'final':
+        do_training = True
+        test_with_deadlock_avoidance_policy = False
+        start_from_phase = len(CURRICULUM_PHASES) - 1  # Only run last phase (dynamic index)
+    elif mode == 'final_continue':
+        do_training = True
+        test_with_deadlock_avoidance_policy = False
+        start_from_phase = len(CURRICULUM_PHASES) - 1  # Only run last phase (dynamic index)
+    elif mode == 'continue':
+        do_training = True
+        test_with_deadlock_avoidance_policy = False
+        start_from_phase = 0  # Full curriculum
+    elif mode == 'eval':
+        do_training = False
+        test_with_deadlock_avoidance_policy = False
+    elif mode == 'dla_eval':
+        do_training = True
+        test_with_deadlock_avoidance_policy = True
+    elif mode == 'dla':
+        do_training = False
+        test_with_deadlock_avoidance_policy = True
+        start_from_phase = len(CURRICULUM_PHASES) - 1  # Only run last phase (dynamic index)
+    else:
+        print(f"Unknown mode '{mode}'. Choose: final, continue, eval, dla_eval")
+        sys.exit(1)
 
     print("\n" + "="*80)
     print("🚀 Temporal Multi-Agent Transformer")
@@ -524,18 +722,30 @@ if __name__ == "__main__":
 
     environment = RailEnvironmentPersistable(
         obs_builder_object_creator=create_temporal_obs_builder_object,
-        grid_width=30,
-        grid_height=40,
+        n_cities=PURE_MARL_N_CITIES,
+        grid_width=PURE_MARL_GRID_WIDTH,
+        grid_height=PURE_MARL_GRID_HEIGHT,
         grid_mode=True,
-        number_of_agents=10
+        number_of_agents=PURE_MARL_MAX_AGENTS,
+        disable_mal_functions=True,
     )
     
-    environment.generate_and_persist_environments(
-        generate_nbr_env=10,
-        generate_agents_per_env=[1, 2, 3, 4, 5],#[1, 2, 5, 10], 
-        overwrite_existing=False
-    )
-    environment.load_environments_from_path()
+    default_env_path = CURRICULUM_BASE_PATH
+    # Only regenerate if missing (dont overwrite on each run for reproducibility)
+    if (not os.path.exists(default_env_path)) or \
+       len(os.listdir(default_env_path)) < PURE_MARL_NUM_ENVS:
+        print(f"[Env] Generating {PURE_MARL_NUM_ENVS} environments...")
+        environment.generate_and_persist_environments(
+            generate_nbr_env=PURE_MARL_NUM_ENVS,
+            generate_agents_per_env=PURE_MARL_AGENT_COUNTS,
+            path=default_env_path,
+            overwrite_existing=False  # Preserve existing
+        )
+    else:
+        print(f"[Env] Using existing {default_env_path}")
+    environment._loaded_env = []
+    environment._loaded_env_itr = 0
+    environment.load_environments_from_path(path=default_env_path)
 
     if test_with_deadlock_avoidance_policy:
         solver_deadlock = FlatlandSolver(
@@ -548,14 +758,49 @@ if __name__ == "__main__":
         else:
             solver_deadlock.perform_evaluation(max_episodes=1000)
     else:
+        # Use the actual base-obs size so the policy gets a matching state_size
+        # (48D for legacy DecisionPointObservation, 72D for HierarchicalRoutesObservation).
+        _obs_builder_for_size = create_temporal_obs_builder_object()
+        if hasattr(_obs_builder_for_size, 'get_observation_size'):
+            _state_size = _obs_builder_for_size.get_observation_size()
+        else:
+            _state_size = TemporalMultiAgentObservation.getObservationSize()
         for pcl in policy_creator_list:
             policy = pcl(
-                TemporalMultiAgentObservation.getObservationSize(),
+                _state_size,
                 environment.get_action_space()
             )
             if hasattr(policy, 'get_training_summary'):
                 policy.get_training_summary()
-            
+
+            # ----------------------------------------------------------------
+            # IL pre-train checkpoint loading (Behavior Cloning warm-start).
+            # Activate via environment variable, e.g.
+            #     IL_LOAD_CHECKPOINT=il_bc_checkpoint.pt python marl_attention_temporal.py
+            # The checkpoint is produced by il_pretrain.py and contains the
+            # DeciderNetwork.state_dict() trained on DeadLockAvoidancePolicy
+            # demonstrations. Loading it before PPO bypasses the cold-start
+            # plateau where credit-assignment with N>=4 agents is intractable
+            # (Sartoretti et al. 2019, "PRIMAL"; arXiv:1809.03531).
+            # ----------------------------------------------------------------
+            import os as _os_il
+            _il_ckpt = _os_il.environ.get('IL_LOAD_CHECKPOINT', '').strip()
+            if not _il_ckpt:
+                # Safe default: if a local BC checkpoint exists next to this script,
+                # use it automatically to avoid accidental pure PPO cold-start runs.
+                _candidate = _os_il.path.join(_os_il.path.dirname(__file__), 'il_bc_checkpoint.pt')
+                if _os_il.path.exists(_candidate):
+                    _il_ckpt = _candidate
+                    print(f"\n[IL] Auto-detected BC checkpoint: {_il_ckpt}")
+
+            if _il_ckpt and _os_il.path.exists(_il_ckpt) and hasattr(policy, 'load'):
+                print(f"[IL] Loading BC pre-train checkpoint: {_il_ckpt}")
+                policy.load(_il_ckpt)
+                print("[IL] Checkpoint loaded — PPO will fine-tune from BC weights.")
+            elif _il_ckpt:
+                print(f"\n[IL] WARNING: IL_LOAD_CHECKPOINT={_il_ckpt!r} not found, "
+                      f"falling back to random initialisation.")
+
             solver = FlatlandSolver(
                 environment,
                 policy,
@@ -564,8 +809,35 @@ if __name__ == "__main__":
             
             solver.set_reward_shaper(flatland_reward_shaper)
             if do_training:
-                # solver.load_policy()  # Uncomment to continue training
-                solver.perform_training(max_episodes=2000)
+                if mode == 'continue' or mode == 'final_continue':
+                    solver.load_policy()  # Load trained weights and continue
+                if USE_CURRICULUM_PHASES:
+                    phases_to_run = CURRICULUM_PHASES[start_from_phase:]
+                    for phase in phases_to_run:
+                        phase_path = f"{CURRICULUM_BASE_PATH}/{phase['name']}"
+                        phase_agents = phase['agent_counts']
+                        phase_num_envs = phase['num_envs']
+                        phase_episodes = phase['episodes']
+
+                        print("\n" + "=" * 80)
+                        print(f"🎯 Curriculum {phase['name']}: agents={phase_agents}, envs={phase_num_envs}, episodes={phase_episodes}")
+                        print("=" * 80)
+
+                        if (not os.path.exists(phase_path)) or mode == 'continue':
+                            environment.generate_and_persist_environments(
+                                generate_nbr_env=phase_num_envs,
+                                generate_agents_per_env=phase_agents,
+                                path=phase_path,
+                                overwrite_existing=False
+                            )
+                        environment._loaded_env = []
+                        environment._loaded_env_itr = 0
+                        environment.load_environments_from_path(path=phase_path)
+
+                        print(f"[Train] {phase['name']}: {phase_episodes} episodes, agents={phase_agents}")
+                        solver.perform_training(max_episodes=phase_episodes)
+                else:
+                    solver.perform_training(max_episodes=10000)
             else:
                 solver.load_policy()   
                 solver.perform_evaluation(max_episodes=1000)

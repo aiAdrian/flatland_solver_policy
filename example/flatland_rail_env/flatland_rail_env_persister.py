@@ -170,9 +170,8 @@ class RailEnvironmentPersistable(RailEnvironment):
     def _cached_reset(self, filename):
         env = self._clone(filename)
         RailEnvPersister.load(env.raw_env, filename)
-
-        if not self._silent:
-            print(filename)
+        # Intentionally no per-reset filename print here.
+        # Path logs are already emitted during environment generation.
         if self._disable_mal_functions:
             env.raw_env.malfunction_generator =  mal_gen.NoMalfunctionGen()
             env.raw_env.malfunction_process_data = env.raw_env.malfunction_generator.get_process_data()

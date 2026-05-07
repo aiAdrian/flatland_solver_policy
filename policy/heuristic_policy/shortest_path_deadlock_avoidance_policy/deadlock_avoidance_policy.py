@@ -133,6 +133,7 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
     def act(self, handle, state, eps=0.):
         # Epsilon-greedy action selection
         if self.enable_eps:
+            print("sssss")
             if np.random.random() < eps:
                 return np.random.choice(np.arange(self.action_size))
 
@@ -154,7 +155,7 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
     def start_step(self, train):
         self._build_agent_position_map()
         self._shortest_distance_mapper()
-        self._extract_agent_can_move()
+        self._extract_agent_can_move() 
 
     def _build_agent_position_map(self):
         # build map with agent positions (only active agents)
