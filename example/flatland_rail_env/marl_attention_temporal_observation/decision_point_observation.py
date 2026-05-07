@@ -5,25 +5,25 @@ DecisionPointObservation
 Observation builder focused on Flatland's decision points on the directed rail
 graph (nodes = (row, col, dir), edges = legal transitions).
 
-Feature layout (length = 48, all values normalised to roughly [0, 1]):
+Feature layout (length = 54, all values normalised to roughly [0, 1]):
 
-    [ 0]      decision_type
+    [ 0]      decision_type (1=initial, 2=switch, 4=merge, 8=done)
     [ 1- 3]   shortest_path_hint (one-hot left/fwd/right)
-    [ 4- 9]   switch left block   (progress_gain, deadlock, switches_norm,
-                                   branch_dist_norm, target_found, abort)
-    [10-15]   switch forward block (same layout)
-    [16-21]   switch right block   (same layout)
-    [22-25]   merge forward sub-block (deadlock, switches_norm,
-                                       target_found, abort)
-    [26-29]   merge backward sub-block (same layout)
-    [30-36]   one-hot of agent.state.value (TrainState 0..6)
-    [37-41]   one-hot of last saved action (DO_NOTHING/L/F/R/STOP)
-    [42]      local_deadlock flag
-    [43]      coordination_wait_intent (includes time-to-conflict signal)
-    [44]      coordination_go_intent
-    [45]      coordination_priority / right-of-way hint
-    [46]      coordination_conflict_pressure (includes cycle risk)
-    [47]      coordination_yield_hint
+    [ 4]      padding
+    [ 5]      local_deadlock flag (100% head-on collision detected)
+    [ 6-13]   switch left block   (progress_gain, deadlock, switches_norm,
+                                   branch_dist_norm, target_found, abort, deadlock_ahead, padding)
+    [14-21]   switch forward block (same layout)
+    [22-29]   switch right block   (same layout)
+    [30]      padding
+    [31-35]   merge forward sub-block (deadlock, switches_norm, target_found, abort, deadlock_ahead)
+    [36-40]   merge backward sub-block (same layout)
+    [41-47]   one-hot of agent.state.value (TrainState 0..6)
+    [48-52]   one-hot of last saved action (DO_NOTHING/L/F/R/STOP)
+    [53]      local_deadlock_flag (duplicate of [5])
+
+NOTE: Coordination signals (wait_intent, go_intent, etc.) are computed in the
+Policy Network using LSTM, not in the observation.
 """
 
 from typing import List
@@ -39,7 +39,7 @@ _UNREACHABLE = -1.0
 
 
 class DecisionPointObservation(ObservationBuilder):
-    OBS_SIZE = 57
+    OBS_SIZE = 54
 
     def __init__(self):
         super().__init__()
@@ -82,12 +82,13 @@ class DecisionPointObservation(ObservationBuilder):
         target = agent.target
 
         if pos is None or target is None:
+            # should never happen, bust just in case to ensure no crashes
             return (features, [])
 
         distance_map = self.env.distance_map.get()
         curr_dist_raw = distance_map[handle, pos[0], pos[1], direction]
         if curr_dist_raw == np.inf:
-            return (features, [])
+            return (features-1, [])
 
         max_dist = self._max_dist
         curr_dist_norm = float(curr_dist_raw) / max_dist
@@ -99,11 +100,13 @@ class DecisionPointObservation(ObservationBuilder):
             if not transitions[ndir]:
                 continue
             next_pos = get_new_position(pos, ndir)
-            for d in range(4):
-                next_transitions = self.env.rail.get_transitions(*next_pos, d)
-                if fast_count_nonzero(next_transitions) > 1 and d != ndir:
-                    merge_switch = True
-                    break
+            ntransitions = self.env.rail.get_transitions(*next_pos, ndir)
+            if fast_count_nonzero(ntransitions) == 1:
+                for d in range(4):
+                    next_transitions = self.env.rail.get_transitions(*next_pos, d)
+                    if fast_count_nonzero(next_transitions) > 1:
+                        merge_switch = True
+                        break
             if merge_switch:
                 break
 
@@ -159,7 +162,7 @@ class DecisionPointObservation(ObservationBuilder):
                     features[base + 7] = 0.0
 
         if decision_type & 4:
-            forward_dir = int(np.argmax(transitions))
+            forward_dir = fast_argmax(transitions)
             npos_fwd = get_new_position(pos, forward_dir)
 
             _, deadlock_fwd, switches_fwd, seen_fwd, abort_fwd, target_found_fwd, visited_type_3_fwd = \
@@ -169,6 +172,7 @@ class DecisionPointObservation(ObservationBuilder):
             features[32] = self._normalise_count(switches_fwd)
             features[33] = target_found_fwd
             features[34] = abort_fwd
+            features[35] = self._detect_deadlock(handle, npos_fwd, forward_dir) 
 
             bwd_pos = None
             bwd_dir = None
@@ -190,49 +194,28 @@ class DecisionPointObservation(ObservationBuilder):
                 _, deadlock_bwd, switches_bwd, seen_bwd, abort_bwd, target_found_bwd, visited_type_3_bwd = \
                     self._navigate_direction(handle, bwd_pos, bwd_dir, target, True)
                 opp_agents.update(seen_bwd)
-                features[35] = self._encode_deadlock_signal(deadlock_bwd)
-                features[36] = self._normalise_count(switches_bwd)
-                features[37] = target_found_bwd
-                features[38] = abort_bwd
+                features[36] = self._encode_deadlock_signal(deadlock_bwd)
+                features[37] = self._normalise_count(switches_bwd)
+                features[38] = target_found_bwd
+                features[39] = abort_bwd
+                features[40] = self._detect_deadlock(handle, bwd_pos, bwd_dir)
 
-        features[39] = 0.0 
-        
+        # State one-hot: features[41-47]
         state_value = int(agent.state.value)
         if 0 <= state_value <= 6:
-            features[40 + state_value] = 1.0
+            features[41 + state_value] = 1.0
 
+        # Action one-hot: features[48-52]
         if agent.action_saver.is_action_saved:
             sa = int(agent.action_saver.saved_action)
             if 0 <= sa <= 4:
-                features[47 + sa] = 1.0
+                features[48 + sa] = 1.0
 
-        # Coordination broadcast features: soft signals for learned agreements.
-        branch_risk = float(max(features[5], features[11], features[17]))
-        merge_risk = float(max(features[22], features[26]))
-        ttc_risk = self._estimate_ttc_conflict_risk(handle, pos, direction)
-        cycle_risk = self._estimate_cycle_risk(handle, pos, direction)
-        conflict_pressure = float(np.clip(0.45 * branch_risk + 0.20 * merge_risk + 0.20 * ttc_risk + 0.15 * cycle_risk, 0.0, 1.0))
-        progress_best = float(max(features[4], features[10], features[16]))
-        right_of_way = self._estimate_right_of_way(handle, curr_dist_norm, opp_agents)
+        # Feature[53]: local_deadlock (use real deadlock detection from features[5])
+        features[53] = float(features[5])
 
-        wait_intent = float(np.clip(
-            0.45 * float(features[42]) +
-            0.30 * conflict_pressure +
-            0.20 * ttc_risk +
-            0.10 * cycle_risk +
-            0.10 * (1.0 - progress_best),
-            0.0,
-            1.0
-        ))
-        go_intent = float(np.clip(progress_best * right_of_way * (1.0 - 0.75 * wait_intent), 0.0, 1.0))
-        priority = right_of_way
-        yield_hint = float(np.clip(wait_intent * (1.0 - priority) * (0.7 + 0.3 * cycle_risk), 0.0, 1.0))
-
-        features[52] = wait_intent
-        features[53] = go_intent
-        features[54] = priority
-        features[55] = conflict_pressure
-        features[56] = yield_hint
+        # NOTE: Coordination signals are computed in Policy Network via LSTM
+        # Do NOT compute them here in observation
 
         visited: List = []
         for a in visited_type_2:
@@ -397,26 +380,39 @@ class DecisionPointObservation(ObservationBuilder):
         return dist, deadlock_flag, num_switches, seen_agents, abort_flag, target_found_flag, controller['visited']
 
     def _detect_deadlock(self, handle, pos, direction):
-        isSwitch = False
+        """Test if agent will have 100% certain deadlock by following best path until next switch.
+        Returns: step distance to confirmed head-on deadlock, or 0 if safe/unclear."""
         max_steps = 16
         s = 0
-        while not isSwitch and s < max_steps:
+        
+        while s < max_steps:
             s += 1
             transitions = self.env.rail.get_transitions(*pos, direction)
             ndir = fast_argmax(transitions)
+            
+            # Can we continue in best direction?
             if not transitions[ndir]:
                 return -1
+            
+            # Check if we've reached a switch
+            num_trans = fast_count_nonzero(transitions)
+            if num_trans > 1:
+                # Reached a switch/junction - stop here, not a 100% deadlock
+                return -1
+            
             npos = get_new_position(pos, ndir)
+            
+            # Check for agent in next position
             agent_idx = self.agent_map[npos]
             if agent_idx != -1 and agent_idx != handle:
                 other = self.env.agents[agent_idx]
-                other_options = self.env.rail.get_transitions(*npos, other.direction)
-                if ndir != other.direction and fast_count_nonzero(other_options) <= 1:
+                # 100% deadlock ONLY if head-on collision (opposite direction)
+                if self._is_opposite_direction(ndir, other.direction):
                     return s
-            isSwitch = fast_count_nonzero(transitions) > 1
+            
             pos = npos
             direction = ndir
-            transitions = self.env.rail.get_transitions(*pos, direction)
+        
         return 0
 
     def _estimate_ttc_conflict_risk(self, handle, pos, direction, horizon: int = 6) -> float:
