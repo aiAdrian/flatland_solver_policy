@@ -871,3 +871,52 @@ Update 07.05.2026
 #   • Done-Ratio: 0.136 → 0.20-0.30 (inkrementeller Progress)
 #   • Grad_Norm: 0.86 → weiterhin ~0.8-0.9 (Gradienten fließen)
 #   • Episode 2040+: done-ratio sollte kontinuierlich steigen
+
+
+
+# Log-Out description während dem lernen
+Hier ist eine klare Lesehilfe zu deinem PPO-Log.
+
+Was bedeutet jede Spalte?
+
+Loss: Gesamtziel, das minimiert wird. Mischung aus Policy, Value, Entropy, Aux, Comm.
+P_Loss: Policy-Update-Term (Clipped PPO). Klein und wechselnd um 0 ist normal.
+V_Loss: Critic-Fehler (Wertfunktion). Je kleiner/stabiler, desto besser kann PPO lernen.
+E_Loss: Entropie-Term (negativ, weil als -entropy geloggt). Mehr negativ = mehr Exploration.
+Adiv: Action-Diversity-Term. Bei dir 0.0000, weil deaktiviert (korrekt bei Forward-dominanter Domain).
+AuxDL: Aux-Deadlock-Loss (BCE). Sinkend ist gut, zeigt besseres Deadlock-Signal-Lernen.
+C_Loss: Communication-Regularizer/aux-Komponente. Sollte stabil bleiben, nicht explodieren.
+Adv: mean±std: rohe Advantages vor Normierung. Wichtig ist, dass std nicht kollabiert.
+Ratio: PPO-Wichtigkeit ( r_t = \exp(\log \pi_\theta - \log \pi_{\theta_{old}}) ). Ideal nahe 1.
+KL: Distanz alte vs neue Policy. Zentrale Stabilitätsmetrik.
+Clip: PPO-Clip-Epsilon.
+Pw: effektives Policy-Gewicht nach Stabilitäts-Guards (wenn sehr niedrig, lernt Actor kaum).
+H: Entropie (wenn geloggt). Bei 5 Aktionen ist Maximum ( \log(5)\approx1.61 ).
+Was ist „gut“ (Faustwerte für dein Setup)?
+
+Ratio: meist in etwa 0.9–1.1, kurze Ausreißer okay.
+KL: grob < 0.03–0.05 stabil; > 0.08 häufig ist kritisch.
+V_Loss: sollte über Zeit sinken oder wenigstens nicht trendmäßig steigen.
+AuxDL: sollte langsam sinken.
+Pw: nicht dauerhaft stark gedrosselt (sonst kaum Policy-Fortschritt).
+Done-Ratio: der wichtigste KPI auf Episode-Ebene, muss langfristig steigen.
+Was sieht man in deinem konkreten Log?
+
+Adiv=0.0000: passt zur Entscheidung, Forward nicht global zu bestrafen.
+V_Loss liegt oft bei ~0.67–0.90: nicht katastrophal, aber noch recht hoch.
+Ratio hat mehrere harte Peaks (bis ~1.47): zu große Policy-Sprünge in einzelnen Batches.
+KL hat öfter hohe Peaks (~0.10–0.14): klares Stabilitätsproblem in Teilen des Updates.
+P_Loss bleibt klein: normal, aber mit hohem KL/Ratio heißt das eher „sprunghaft statt sauber“.
+AuxDL ~0.34–0.53: okay, aber noch nicht „satt“ gelernt.
+Wo liegen aktuell die Probleme?
+
+Hauptproblem ist Update-Stabilität (KL/Ratio-Spikes), nicht Entropie.
+Wenn diese Spikes oft kommen, wird der Actor durch Guards gedrosselt und kommt schwer aus lokalen Optima.
+Das passt zu deinem beobachteten Verhalten: zeitweise Fortschritt, dann wieder Plateau.
+Kurzregel zum schnellen Lesen künftig
+
+Erst Done-Ratio und Action stats.
+Dann KL + Ratio checken.
+Wenn KL häufig >0.08 oder Ratio oft >1.25/<0.8, ist Stabilität das Bottleneck.
+Danach V_Loss-Trend prüfen (Critic gut genug?).
+Wenn du willst, mache ich dir als nächsten Schritt ein kompaktes Ampel-Schema direkt im Logformat (GRÜN/GELB/ROT pro Batch), damit du beim Laufen sofort siehst, ob ein Update gesund ist.

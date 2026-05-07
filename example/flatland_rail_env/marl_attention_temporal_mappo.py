@@ -834,6 +834,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.weight_entropy = 0.01  # Lower entropy pressure for late-stage policy stability
         self.weight_policy = 1.0
         self.weight_aux_deadlock = 0.08
+        # Forward dominance is expected globally in rail domains; keep this
+        # disabled by default to avoid penalizing valid straight-driving behavior.
+        self.weight_action_diversity = 0.0
+        self.forward_prob_soft_max = 0.52
+        self.lr_prob_soft_min = 0.22
         self.aux_deadlock_pos_weight = 4.0
         self.weight_comm = 3.0e-4  # weak communication sparsity regularizer
         self.comm_reg_start_episode = 300
@@ -1334,6 +1339,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 
                 dist_entropy = dist.entropy()
                 entropy_mean = dist_entropy.mean().item()
+                probs = torch.softmax(logits, dim=-1)
 
                 # 🔍 DEBUG: Verify old_logprobs are different from new ones (NUR Epoch 1)
                 if self.show_debug_msg:
@@ -1384,6 +1390,17 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 policy_loss_component = -torch.min(surr1, surr2).mean()
                 value_loss_component = self.loss_function(state_values, batch_gae_returns)
                 entropy_loss_component = -dist_entropy.mean()
+                action_diversity_loss_component = torch.tensor(0.0, device=self.device)
+                if self.action_size == 5:
+                    # Soft constraints via squared hinge losses:
+                    # 1) keep forward probability below a soft cap
+                    # 2) keep combined left+right probability above a soft floor
+                    mean_probs = probs.mean(dim=0)
+                    forward_prob = mean_probs[2]
+                    lr_prob = mean_probs[1] + mean_probs[3]
+                    forward_excess = torch.relu(forward_prob - self.forward_prob_soft_max)
+                    lr_shortfall = torch.relu(self.lr_prob_soft_min - lr_prob)
+                    action_diversity_loss_component = forward_excess.pow(2) + 0.5 * lr_shortfall.pow(2)
                 deadlock_logits = torch.squeeze(self.actor_critic_model.deadlock_head(states_actor), dim=-1)
                 aux_targets = torch.clamp(batch_aux_deadlock, 0.0, 1.0)
                 pos_weight = torch.full_like(aux_targets, self.aux_deadlock_pos_weight)
@@ -1416,7 +1433,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 if approx_kl > self.ppo_max_kl or ratio_hard_viol:
                     # Keep small actor updates alive during hard spikes to avoid
                     # long Pw=0 plateaus where policy stops improving.
-                    policy_weight_eff = max(policy_weight_eff * 0.35, 0.15)
+                    policy_weight_eff = max(policy_weight_eff * 0.45, 0.22)
                     entropy_weight_eff *= 0.4
                     comm_weight_eff *= 1.35
                     hard_spike_batches_total += 1
@@ -1427,7 +1444,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     hard_spike_streak = 0
 
                 if approx_kl > self.ppo_emergency_kl_hard:
-                    policy_weight_eff = max(policy_weight_eff * 0.25, 0.10)
+                    policy_weight_eff = max(policy_weight_eff * 0.35, 0.18)
                     entropy_weight_eff *= 0.25
                     comm_weight_eff *= 1.45
                     hard_spike_batches_total += 1
@@ -1437,6 +1454,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     policy_weight_eff * policy_loss_component \
                     + self.weight_loss * value_loss_component \
                     + entropy_weight_eff * entropy_loss_component \
+                    + self.weight_action_diversity * action_diversity_loss_component \
                     + self.weight_aux_deadlock * aux_deadlock_loss_component \
                     + comm_weight_eff * comm_loss_component
 
@@ -1514,6 +1532,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     print(f"| P_Loss: {policy_loss_component.item():.4f}", end='')
                     print(f"| V_Loss: {value_loss_component.item():.4f}", end='')
                     print(f"| E_Loss: {entropy_loss_component.item():.4f}", end='')
+                    print(f"| Adiv: {action_diversity_loss_component.item():.4f}", end='')
                     print(f"| AuxDL: {aux_deadlock_loss_component.item():.4f}", end='')
                     print(f"| C_Loss: {comm_loss_component.item():.4f}", end='')
                     print(f"| Adv: {adv_mean:.2f}±{adv_std:.2f}", end='')  # ⚡ RAW advantage (mean±std BEFORE norm)

@@ -234,6 +234,11 @@ class BaseSolver:
         tot_steps_window.extend([0] * checkpoint_interval)
 
         writer = SummaryWriter(comment="_" + self.get_name() + "_training_" + self.policy.get_name())
+        
+        # ==Pass writer to reward shaper if it supports it==
+        if hasattr(self, '_reward_shaper') and self._reward_shaper is not None:
+            if hasattr(self._reward_shaper, 'set_tensorboard_writer'):
+                self._reward_shaper.set_tensorboard_writer(writer)
 
         while True:
             episode += 1

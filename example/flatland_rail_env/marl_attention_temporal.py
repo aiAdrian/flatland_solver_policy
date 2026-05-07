@@ -37,6 +37,7 @@ import os
 import numpy as np
 import torch
 from torch.distributions import Categorical
+from torch.utils.tensorboard import SummaryWriter
 from flatland.core.env_observation_builder import ObservationBuilder
 from flatland.envs.rail_env import RailEnv, RailEnvActions
 from flatland.core.grid.grid4_utils import get_new_position
@@ -183,6 +184,10 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
             return int(super(MARL_ATT_DecisionPointPolicy, self).act(handle, state, eps))
         # Make solver epsilon meaningful: random among legal rail actions.
         eps_val = float(eps) if eps is not None else 0.0
+        # Keep a small exploration floor at decision points to avoid late-stage
+        # deterministic lock-in at suboptimal switch behaviors.
+        eps_floor = float(getattr(self, 'decision_eps_floor', 0.0))
+        eps_val = max(eps_val, eps_floor)
         if eps_val > 0.0 and np.random.rand() < eps_val:
             return int(np.random.choice(legal_actions))
         try:
@@ -322,7 +327,7 @@ def create_decider_agent(observation_space: int, action_space: int) -> LearningP
         # Keep auxiliary signal active but avoid overpowering PPO objective.
         weight_aux_dl=0.035,
         temporal_window=TEMPORAL_WINDOW,
-        train_frequency=20,     # ⬆️ Train every 20 episodes (matches max_episodes_in_training_memory)
+        train_frequency=10,     # ⬆️ Train every 10 episodes (faster feedback)
         reward_scale=0.005,
         aux_pos_weight=4.0,
         target_kl=0.04,
@@ -339,7 +344,7 @@ ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     gae_lambda=0.97,  # Weniger Bias
     use_gpu=True,
     max_episodes_in_training_memory=20,   # ⬆️ Train after every 20 episodes
-    k_epochs=1,
+    k_epochs=3,
     batch_fraction=0.8,
     max_batches_per_training=10,          # ⬆️ Normal batch training (10 batches per update)
     temporal_window=TEMPORAL_WINDOW, # ⚡ MUST MATCH create_temporal_obs_builder_object()!
@@ -364,7 +369,7 @@ def create_ma_ppo_agent(observation_space: int, action_space: int) -> LearningPo
         ppo_param,
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
-        train_frequency=20    # ⬆️ Train every 20 episodes (matches max_episodes_in_training_memory)
+        train_frequency=10    # ⬆️ Train every 10 episodes (faster feedback)
     )
     # Avoid late-stage over-conservative clipping that caused the 0.54-0.57 plateau.
     policy.surrogate_eps_clip = 0.15
@@ -391,12 +396,12 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int) -> Learnin
         ppo_param,
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
-        train_frequency=20,   # ⬆️ Train every 20 episodes
+        train_frequency=10,   # ⬆️ Train every 10 episodes (faster feedback)
         use_deadlock_avoidance_policy=False
     )
     # Stable late-phase settings: keep learning without policy collapse.
     policy.surrogate_eps_clip = 0.16
-    policy.weight_entropy = 0.045
+    policy.weight_entropy = 0.065  # ⬆️ Increased entropy to encourage Left/Right
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600
     policy.ppo_target_kl = 0.07
@@ -412,6 +417,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int) -> Learnin
     policy.actor_lr_min_factor = 0.45
     policy.actor_lr_decay_on_instability = 0.85
     policy.max_eps_random = 0.10
+    policy.decision_eps_floor = 0.01
     return policy
 
  
@@ -433,11 +439,11 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int) -> Lea
         ppo_param,
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
-        train_frequency=20,   # ⬆️ Train every 20 episodes
+        train_frequency=10,   # ⬆️ Train every 10 episodes (faster feedback)
         use_deadlock_avoidance_policy=True
     )
     policy.surrogate_eps_clip = 0.15
-    policy.weight_entropy = 0.012
+    policy.weight_entropy = 0.030  # ⬆️ Increased entropy
     policy.stability_guard_start_episode = 2600
     policy.stability_guard_hard_episode = 3800
     # Same anti-stall settings for shielded training.
@@ -454,6 +460,7 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int) -> Lea
     policy.actor_lr_min_factor = 0.35
     policy.actor_lr_decay_on_instability = 0.85
     policy.max_eps_random = 0.03
+    policy.decision_eps_floor = 0.005
     return policy
 
 def create_deadlock_avoidance_policy(environment: Environment,
@@ -495,29 +502,52 @@ class FlatlandPBRSShaper:
     re-initialise the cache. We also key by id(env) so multiple envs are safe.
     """
 
-    GAMMA = 0.99
+    # For shaping, use pure potential difference so that unchanged states
+    # (same distance to goal) do not get a positive reward drift.
+    GAMMA = 1.0
     # ⚡ AGGRESSIVE shaping to break 0.136 plateau: more weight on potential-based signals
     SHAPING_WEIGHT = 0.40              # ⬆️ (was 0.20) - double influence of shaping
     # Incremental progress: small per-agent bonus + big team bonus
     # This prevents "one agent out" plateau while still incentivizing team completion
-    INDIVIDUAL_DONE_BONUS = 1.5        # ✨ NEW: small bonus when agent reaches goal
-    ALL_DONE_BONUS = 18.0              # ⬆️ (was 12.0) - stronger team incentive
+    INDIVIDUAL_DONE_BONUS = 5.0        # Very strong: each reached target is highly valuable
+    ALL_DONE_BONUS = 80.0              # Gigantic team signal: all agents done is best by far
     # Penalty wird einmalig pro Agent ausgelöst, sobald der Deadlock zum
     # ersten Mal in der Episode erkannt wird. Per-Step-Strafen blasen Returns
     # auf O(1000) auf und der Critic verbringt seine Kapazität damit, die
     # Penalty-Höhe zu schätzen statt feine Routing-Unterschiede zu lernen.
-    DEADLOCK_PENALTY = -5.0            # ⬆️ (was -4.0) - stronger deadlock signal
+    DEADLOCK_PENALTY = -15.0           # Deadlock is catastrophic
+    # One-time penalty when an agent is on a cell/direction with no path to goal
+    # (distance_map == inf). Keep this as event penalty, not via potential level.
+    UNREACHABLE_PENALTY = -10.0
+    # Coordination shaping: waiting is good only when it prevents conflicts.
+    SAFE_WAIT_BONUS = 0.20
+    UNNECESSARY_WAIT_PENALTY = -0.60
+    FLAT_NO_CONFLICT_PENALTY = -0.12
     STEP_PENALTY = -0.0005             # ⬇️ (was -0.001) - less time pressure
     # Einmalige Team-Strafe, wenn die Episode nahe Timeout endet und nicht
     # alle Agenten im Ziel sind. So wird "stehen bleiben bis Ende" unattraktiv.
-    NOT_ALL_DONE_TIMEOUT_PENALTY = -4.0  # ⬆️ (was -3.0) - stronger timeout penalty
+    NOT_ALL_DONE_TIMEOUT_PENALTY = -8.0  # Strong team failure signal at timeout
 
     def __init__(self):
         self._prev_phi: Dict[int, np.ndarray] = {}
+        self._prev_pos: Dict[int, List[Optional[Tuple[int, int]]]] = {}
+        self._prev_dist: Dict[int, np.ndarray] = {}
         self._deadlock_charged: Dict[int, np.ndarray] = {}
+        self._unreachable_charged: Dict[int, np.ndarray] = {}
         self._done_charged: Dict[int, np.ndarray] = {}
         self._team_bonus_charged: Dict[int, bool] = {}
         self._team_fail_charged: Dict[int, bool] = {}
+        self._diag_counts: Dict[int, Dict[str, int]] = {}
+        self._episode_rewards: Dict[int, List[float]] = {}  # Track rewards per episode
+        
+        # No local writer - will use the solver's writer
+        # (Solver creates: SummaryWriter(comment="_training_POLICYNAME"))
+        self.writer = None
+        self.global_episode_count = 0
+    
+    def set_tensorboard_writer(self, writer):
+        """Called by solver to set the shared TensorBoard writer"""
+        self.writer = writer
 
     def _potential(self, agent, distance_map, max_dist: float) -> float:
         if agent.state == TrainState.DONE:
@@ -527,8 +557,13 @@ class FlatlandPBRSShaper:
         if pos is None or direction is None:
             return -1.0
         d = distance_map[agent.handle, pos[0], pos[1], direction]
+        
+        # Keep potential bounded (PBRS level term). Additional punishment for
+        # unreachable states is handled as a one-time event penalty in __call__.
         if not np.isfinite(d):
             return -1.0
+        
+        # Only use finite distances for normalization
         return -float(d) / max(max_dist, 1.0)
 
     def _is_episode_start(self, env, num_agents: int) -> bool:       
@@ -544,6 +579,70 @@ class FlatlandPBRSShaper:
             for agent in env.raw_env.agents
         )
 
+    def _is_unreachable(self, agent, distance_map) -> bool:
+        pos = agent.position if agent.position is not None else agent.initial_position
+        direction = agent.direction if agent.direction is not None else agent.initial_direction
+        if pos is None or direction is None:
+            return False
+        d = distance_map[agent.handle, pos[0], pos[1], direction]
+        return not np.isfinite(d)
+
+    def _distance(self, agent, distance_map) -> float:
+        pos = agent.position if agent.position is not None else agent.initial_position
+        direction = agent.direction if agent.direction is not None else agent.initial_direction
+        if pos is None or direction is None:
+            return float('inf')
+        d = distance_map[agent.handle, pos[0], pos[1], direction]
+        return float(d)
+
+    def _is_waiting(self, agent, prev_pos: Optional[Tuple[int, int]]) -> bool:
+        if prev_pos is None:
+            return False
+        if agent.position is None:
+            return False
+        return agent.position == prev_pos
+
+    def _has_conflict_ahead(self, raw_env, agent, lookahead_steps: int = 5) -> bool:
+        """
+        Check if there's a conflict ahead within lookahead_steps.
+        Looks further than just next cell to catch approaching agents.
+        """
+        if agent.position is None or agent.direction is None:
+            return False
+        
+        # Get all other agent positions for quick lookup
+        other_positions = {a.position for a in raw_env.agents 
+                          if a.position is not None and a.handle != agent.handle}
+        if not other_positions:
+            return False
+        
+        # Check multiple steps ahead in current direction
+        current_pos = agent.position
+        current_dir = agent.direction
+        
+        for step in range(1, lookahead_steps + 1):
+            # Try to move forward in current direction
+            transitions = raw_env.rail.get_transitions(*current_pos, current_dir)
+            if transitions[current_dir]:
+                current_pos = get_new_position(current_pos, current_dir)
+                # Check if any agent occupies this position
+                if current_pos in other_positions:
+                    return True
+            else:
+                # Dead end, can't go further
+                break
+        
+        # Also check next possible moves for immediate obstacles
+        transitions = raw_env.rail.get_transitions(*agent.position, agent.direction)
+        for ndir in range(4):
+            if not transitions[ndir]:
+                continue
+            npos = get_new_position(agent.position, ndir)
+            if npos in other_positions:
+                return True
+        
+        return False
+
     def __call__(self, reward, terminal, info, env):
         raw_env = env.raw_env
         agents = raw_env.agents
@@ -552,28 +651,53 @@ class FlatlandPBRSShaper:
         episode_done = bool(terminal.get('__all__', False)) if isinstance(terminal, dict) else False
 
         distance_map = raw_env.distance_map.get()
-        finite = distance_map[np.isfinite(distance_map)]
-        max_dist = float(np.max(finite)) if finite.size > 0 else 1.0
-        max_dist = max(max_dist, 1.0)
+        # 🔧 FIX: Filter out infinity values properly; don't normalize by 1.0 if all inf
+        finite_distances = distance_map[np.isfinite(distance_map)]
+        if finite_distances.size > 0:
+            max_dist = float(np.max(finite_distances))
+        else:
+            max_dist = 500.0  # Fallback for worst case: no reachable cells
+        max_dist = max(max_dist, 10.0)  # Minimum distance scale
 
         new_phi = np.array(
             [self._potential(a, distance_map, max_dist) for a in agents],
             dtype=np.float32,
         )
+        new_dist = np.array([self._distance(a, distance_map) for a in agents], dtype=np.float32)
 
         if self._is_episode_start(env, num_agents):
             prev_phi = new_phi.copy()
+            self._prev_pos[env_id] = [a.position for a in agents]
+            self._prev_dist[env_id] = new_dist.copy()
             self._deadlock_charged[env_id] = np.zeros(num_agents, dtype=bool)
+            self._unreachable_charged[env_id] = np.zeros(num_agents, dtype=bool)
             self._done_charged[env_id] = np.zeros(num_agents, dtype=bool)
             self._team_bonus_charged[env_id] = False
             self._team_fail_charged[env_id] = False
+            self._diag_counts[env_id] = {
+                'steps': 0,
+                'progress': 0,
+                'regress': 0,
+                'flat': 0,
+                'wait_safe': 0,
+                'wait_bad': 0,
+            }
         else:
             prev_phi = self._prev_phi.get(env_id)
             if prev_phi is None or prev_phi.shape[0] != num_agents:
                 prev_phi = new_phi.copy()
+            prev_pos = self._prev_pos.get(env_id)
+            if prev_pos is None or len(prev_pos) != num_agents:
+                self._prev_pos[env_id] = [a.position for a in agents]
+            prev_dist = self._prev_dist.get(env_id)
+            if prev_dist is None or prev_dist.shape[0] != num_agents:
+                self._prev_dist[env_id] = new_dist.copy()
             if self._deadlock_charged.get(env_id) is None or \
                     self._deadlock_charged[env_id].shape[0] != num_agents:
                 self._deadlock_charged[env_id] = np.zeros(num_agents, dtype=bool)
+            if self._unreachable_charged.get(env_id) is None or \
+                    self._unreachable_charged[env_id].shape[0] != num_agents:
+                self._unreachable_charged[env_id] = np.zeros(num_agents, dtype=bool)
             if self._done_charged.get(env_id) is None or \
                     self._done_charged[env_id].shape[0] != num_agents:
                 self._done_charged[env_id] = np.zeros(num_agents, dtype=bool)
@@ -581,27 +705,50 @@ class FlatlandPBRSShaper:
                 self._team_bonus_charged[env_id] = False
             if self._team_fail_charged.get(env_id) is None:
                 self._team_fail_charged[env_id] = False
+            if self._diag_counts.get(env_id) is None:
+                self._diag_counts[env_id] = {
+                    'steps': 0,
+                    'progress': 0,
+                    'regress': 0,
+                    'flat': 0,
+                    'wait_safe': 0,
+                    'wait_bad': 0,
+                }
+
+        prev_positions = self._prev_pos.get(env_id)
+        if prev_positions is None or len(prev_positions) != num_agents:
+            prev_positions = [a.position for a in agents]
+            self._prev_pos[env_id] = prev_positions
+        prev_distances = self._prev_dist.get(env_id)
+        if prev_distances is None or prev_distances.shape[0] != num_agents:
+            prev_distances = new_dist.copy()
+            self._prev_dist[env_id] = prev_distances
 
         deadlock_charged = self._deadlock_charged[env_id]
+        unreachable_charged = self._unreachable_charged[env_id]
         done_charged = self._done_charged[env_id]
+        diag = self._diag_counts[env_id]
 
         shaped = list(reward)
         for i, agent in enumerate(agents):
-            # Always preserve the original environment reward for fair
-            # cross-method comparison.
             base_reward = float(reward[i])
-            shaping = self.STEP_PENALTY
-            shaping += self.GAMMA * float(new_phi[i]) - float(prev_phi[i])
-
-            # ⚡ NEW: Individual progress bonus (small) + team bonus (large)
-            # Prevents "one agent out" plateau while still incentivizing team completion
+            
+            # ==SIMPLIFIED REWARD SHAPING==
+            # Only 3 things matter:
+            # 1. Individual agent reaches goal
+            # 2. ALL agents reach goal (team success)
+            # 3. Agent enters deadlock (disaster)
+            # 4. Tiny time cost (discourage dragging)
+            
+            shaping = self.STEP_PENALTY  # Minimal time cost
+            shaping += self.GAMMA * float(new_phi[i]) - float(prev_phi[i])  # Distance to goal signal
+            
+            # 1️⃣ GOOD: Individual agent reaches destination
             if agent.state == TrainState.DONE and not done_charged[i]:
                 done_charged[i] = True
-                shaping += self.INDIVIDUAL_DONE_BONUS  # Each agent reaching goal gets bonus
+                shaping += self.INDIVIDUAL_DONE_BONUS
 
-            # Einmaliger Deadlock-Penalty: Lernsignal "ich bin in einem
-            # Deadlock gelandet", nicht eine kontinuierliche Strafe über alle
-            # Folgesteps (die bläst V_Loss auf O(1000) auf).
+            # 3️⃣ VERY BAD: Agent stuck in deadlock
             if (
                 not deadlock_charged[i]
                 and agent.position is not None
@@ -609,6 +756,30 @@ class FlatlandPBRSShaper:
             ):
                 shaping += self.DEADLOCK_PENALTY
                 deadlock_charged[i] = True
+
+            # Track diagnostics for monitoring (but don't use for reward)
+            if agent.state.is_on_map_state():
+                prev_d = float(prev_distances[i])
+                cur_d = float(new_dist[i])
+                if np.isfinite(prev_d) and np.isfinite(cur_d):
+                    diag['steps'] += 1
+                    delta_d = cur_d - prev_d
+                    if delta_d < -1e-6:
+                        diag['progress'] += 1
+                    elif delta_d > 1e-6:
+                        diag['regress'] += 1
+                    else:
+                        diag['flat'] += 1
+            
+            # Track waiting for diagnostics
+            was_waiting = self._is_waiting(agent, prev_positions[i])
+            if was_waiting and agent.state.is_on_map_state():
+                if self._has_conflict_ahead(raw_env, agent):
+                    diag['wait_safe'] += 1
+                else:
+                    # Continuous penalty: every step of unnecessary waiting is penalized
+                    shaping -= 0.15  # ==FIX== Penalize every unnecessary wait step
+                    diag['wait_bad'] += 1
 
             shaped[i] = float(base_reward + self.SHAPING_WEIGHT * shaping)
 
@@ -630,13 +801,51 @@ class FlatlandPBRSShaper:
                 if agent.state != TrainState.DONE:
                     shaped[i] += self.NOT_ALL_DONE_TIMEOUT_PENALTY
 
+        if episode_done:
+            denom = max(1, diag['steps'])
+            prog = 100.0 * diag['progress'] / denom
+            reg = 100.0 * diag['regress'] / denom
+            flat = 100.0 * diag['flat'] / denom
+            wait_ratio = diag['wait_bad'] / max(1, diag['wait_safe'] + diag['wait_bad']) if (diag['wait_safe'] + diag['wait_bad']) > 0 else 0.0
+            
+            # ==DEBUG== Only 3 lines per episode
+            print(
+                f"\t==ShaperDiag==\t prog/reg/flat={prog:.1f}/{reg:.1f}/{flat:.1f}% "
+                f"wait_safe={diag['wait_safe']} wait_bad={diag['wait_bad']} ratio={wait_ratio:.1%}"
+            )
+            print(f"\t==DEBUG_EPISODE==\t steps={diag['steps']} progress={diag['progress']} regress={diag['regress']} flat={diag['flat']}")
+            if diag['wait_bad'] > 50:  # Only alert if many unnecessary waits
+                print(f"\t==DEBUG_WAIT_ALERT==\t unnecessary_waits={diag['wait_bad']} avg_per_agent={diag['wait_bad']/max(1,num_agents):.1f}")
+            
+            # ==TENSORBOARD== Log diagnostics to TensorBoard
+            if self.writer is not None:
+                self.writer.add_scalar("reward_shaper/progress_percent", prog, self.global_episode_count)
+                self.writer.add_scalar("reward_shaper/regress_percent", reg, self.global_episode_count)
+                self.writer.add_scalar("reward_shaper/flat_percent", flat, self.global_episode_count)
+                self.writer.add_scalar("reward_shaper/wait_safe_count", diag['wait_safe'], self.global_episode_count)
+                self.writer.add_scalar("reward_shaper/wait_bad_count", diag['wait_bad'], self.global_episode_count)
+                self.writer.add_scalar("reward_shaper/wait_bad_ratio", wait_ratio, self.global_episode_count)
+                self.writer.add_scalar("reward_shaper/total_steps", diag['steps'], self.global_episode_count)
+            self.global_episode_count += 1
+            
+            self._diag_counts[env_id] = {
+                'steps': 0,
+                'progress': 0,
+                'regress': 0,
+                'flat': 0,
+                'wait_safe': 0,
+                'wait_bad': 0,
+            }
+
         self._prev_phi[env_id] = new_phi
+        self._prev_pos[env_id] = [a.position for a in agents]
+        self._prev_dist[env_id] = new_dist
         self._deadlock_charged[env_id] = deadlock_charged
+        self._unreachable_charged[env_id] = unreachable_charged
         self._done_charged[env_id] = done_charged
         return shaped
 
-    @staticmethod
-    def _is_local_deadlock(raw_env, agent) -> bool:
+    def _is_local_deadlock(self, raw_env, agent) -> bool:
         if agent.position is None:
             return False
         from flatland.envs.fast_methods import fast_count_nonzero
