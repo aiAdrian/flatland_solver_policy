@@ -322,7 +322,7 @@ def create_decider_agent(observation_space: int, action_space: int) -> LearningP
         # Keep auxiliary signal active but avoid overpowering PPO objective.
         weight_aux_dl=0.035,
         temporal_window=TEMPORAL_WINDOW,
-        train_frequency=10,
+        train_frequency=20,     # ⬆️ Train every 20 episodes (matches max_episodes_in_training_memory)
         reward_scale=0.005,
         aux_pos_weight=4.0,
         target_kl=0.04,
@@ -332,16 +332,16 @@ def create_decider_agent(observation_space: int, action_space: int) -> LearningP
 
 
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
-    hidden_size=128,
+    hidden_size=64,         # ⬇️ Reduced for 4x faster LSTM (was 128)
     batch_size=256,
     learning_rate=1.5e-4,
     discount=0.99,  # Längere Belohnungsketten
     gae_lambda=0.97,  # Weniger Bias
     use_gpu=True,
-    max_episodes_in_training_memory=30,
+    max_episodes_in_training_memory=20,   # ⬆️ Train after every 20 episodes
     k_epochs=1,
     batch_fraction=0.8,
-    max_batches_per_training=10,
+    max_batches_per_training=10,          # ⬆️ Normal batch training (10 batches per update)
     temporal_window=TEMPORAL_WINDOW, # ⚡ MUST MATCH create_temporal_obs_builder_object()!
     encoder_type='lstm'
 )
@@ -364,7 +364,7 @@ def create_ma_ppo_agent(observation_space: int, action_space: int) -> LearningPo
         ppo_param,
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
-        train_frequency=10
+        train_frequency=20    # ⬆️ Train every 20 episodes (matches max_episodes_in_training_memory)
     )
     # Avoid late-stage over-conservative clipping that caused the 0.54-0.57 plateau.
     policy.surrogate_eps_clip = 0.15
@@ -391,7 +391,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int) -> Learnin
         ppo_param,
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
-        train_frequency=10,
+        train_frequency=20,   # ⬆️ Train every 20 episodes
         use_deadlock_avoidance_policy=False
     )
     # Stable late-phase settings: keep learning without policy collapse.
@@ -433,7 +433,7 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int) -> Lea
         ppo_param,
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
-        train_frequency=10,
+        train_frequency=20,   # ⬆️ Train every 20 episodes
         use_deadlock_avoidance_policy=True
     )
     policy.surrogate_eps_clip = 0.15
@@ -685,6 +685,7 @@ if __name__ == "__main__":
     mode = sys.argv[1].lower() if len(sys.argv) > 1 else 'final'
     
     do_rendering = False
+    checkpoint_interval = 100  # Default: every 100 episodes
     if mode == 'final':
         do_training = True
         test_with_deadlock_avoidance_policy = False
@@ -693,6 +694,7 @@ if __name__ == "__main__":
         do_training = True
         test_with_deadlock_avoidance_policy = False
         start_from_phase = len(CURRICULUM_PHASES) - 1  # Only run last phase (dynamic index)
+        checkpoint_interval = 100  # Save checkpoint every 100 episodes for easy recovery
     elif mode == 'continue':
         do_training = True
         test_with_deadlock_avoidance_policy = False
@@ -810,7 +812,12 @@ if __name__ == "__main__":
             solver.set_reward_shaper(flatland_reward_shaper)
             if do_training:
                 if mode == 'continue' or mode == 'final_continue':
-                    solver.load_policy()  # Load trained weights and continue
+                    if mode == 'final_continue':
+                        # Load from training_output/last_checkpoint/ for automatic recovery
+                        solver.load_policy(filename=f"training_output/last_checkpoint/{solver.get_name()}_{solver.policy.get_name()}")
+                        print("✅ Loaded last checkpoint from training_output/last_checkpoint/")
+                    else:
+                        solver.load_policy()  # Load trained weights and continue
                 if USE_CURRICULUM_PHASES:
                     phases_to_run = CURRICULUM_PHASES[start_from_phase:]
                     for phase in phases_to_run:
@@ -835,9 +842,9 @@ if __name__ == "__main__":
                         environment.load_environments_from_path(path=phase_path)
 
                         print(f"[Train] {phase['name']}: {phase_episodes} episodes, agents={phase_agents}")
-                        solver.perform_training(max_episodes=phase_episodes)
+                        solver.perform_training(max_episodes=phase_episodes, checkpoint_interval=checkpoint_interval)
                 else:
-                    solver.perform_training(max_episodes=10000)
+                    solver.perform_training(max_episodes=10000, checkpoint_interval=checkpoint_interval)
             else:
                 solver.load_policy()   
                 solver.perform_evaluation(max_episodes=1000)

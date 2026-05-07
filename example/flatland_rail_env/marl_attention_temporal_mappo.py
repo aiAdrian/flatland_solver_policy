@@ -947,9 +947,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.base_lr_actor_head = base_lr * 1.0
         self.actor_lr_factor = 1.0
         # Entropy rescue prevents late deterministic collapse around local minima.
-        self.entropy_rescue_start_episode = 1200
-        self.entropy_floor = 0.35
-        self.entropy_recovery_scale = 1.8
+        self.entropy_rescue_start_episode = 350      # ⬆️ Activate VERY early (was 700, now immediately!)
+        self.entropy_floor = 0.55       # ⬆️ Raise threshold (34% of max)
+        self.entropy_recovery_scale = 2.5  # ⬆️ Stronger recovery kick
 
         self.loss_function = nn.SmoothL1Loss(beta=1.0)
         self.training_step_count = 0

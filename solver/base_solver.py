@@ -272,16 +272,31 @@ class BaseSolver:
             writer.flush()
 
             if episode % checkpoint_interval == 0 or episode >= max_episodes:
-                self.save_policy(filename="{}/{}_{}_{}".format(writer.get_logdir(),
-                                                               self.get_name(), self.policy.get_name(),
-                                                               episode))
+                checkpoint_path = "{}/{}_{}_{}".format(writer.get_logdir(),
+                                                       self.get_name(), self.policy.get_name(),
+                                                       episode)
+                self.save_policy(filename=checkpoint_path)
+                
+                # Also save to training_output/last_checkpoint/ for easy access
+                last_checkpoint_dir = "training_output/last_checkpoint"
+                if not os.path.exists(last_checkpoint_dir):
+                    os.makedirs(last_checkpoint_dir)
+                last_checkpoint_path = f"{last_checkpoint_dir}/{self.get_name()}_{self.policy.get_name()}"
+                self.save_policy(filename=last_checkpoint_path)
+                
+                if episode % checkpoint_interval == 0:
+                    print(f"\n💾 Checkpoint saved: Episode {episode}")
+                    print(f"   Path: {checkpoint_path}")
+                    print(f"   Last: {last_checkpoint_path}")
+                    print(f"   Recover with: python marl_attention_temporal.py final_continue\n", end='')
 
             if episode >= max_episodes:
                 break
 
         # --- end training --------------------------------------------------------------------------
         self.save_policy(None)
-        print('\ndone.')
+        print('\n✅ Training complete. Final checkpoint saved.')
+        print(f'   Checkpoint directory: {writer.get_logdir()}')
 
     def save_policy(self,
                     filename: Union[str, None] = None):
