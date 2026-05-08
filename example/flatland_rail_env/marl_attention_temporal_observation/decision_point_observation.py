@@ -5,23 +5,34 @@ DecisionPointObservation
 Observation builder focused on Flatland's decision points on the directed rail
 graph (nodes = (row, col, dir), edges = legal transitions).
 
-Feature layout (length = 54, all values normalised to roughly [0, 1]):
+Feature layout (length = 54, all values in [0, 1]):
 
-    [ 0]      decision_type (1=initial, 2=switch, 4=merge, 8=done)
+    [ 0]      is_switch  — 1.0 if agent is at a diverging switch, else 0
     [ 1- 3]   shortest_path_hint (one-hot left/fwd/right)
-    [ 4]      padding
-    [ 5]      local_deadlock flag (100% head-on collision detected)
-    [ 6-13]   switch left block   (progress_gain, deadlock, switches_norm,
-                                   branch_dist_norm, target_found, abort, deadlock_ahead, padding)
+    [ 4]      is_merge   — 1.0 if agent is approaching a merge, else 0
+    [ 5]      local_deadlock — 1.0 if confirmed head-on deadlock detected ahead
+    [ 6-13]   switch left  block (progress_gain, deadlock_signal, switches_norm,
+                                  branch_dist_norm, target_found, abort,
+                                  deadlock_ahead_binary, padding)
     [14-21]   switch forward block (same layout)
-    [22-29]   switch right block   (same layout)
+    [22-29]   switch right  block (same layout)
     [30]      padding
-    [31-35]   merge forward sub-block (deadlock, switches_norm, target_found, abort, deadlock_ahead)
+    [31-35]   merge forward sub-block (deadlock_signal, switches_norm,
+                                       target_found, abort, deadlock_ahead_binary)
     [36-40]   merge backward sub-block (same layout)
     [41-47]   one-hot of agent.state.value (TrainState 0..6)
     [48-52]   one-hot of last saved action (DO_NOTHING/L/F/R/STOP)
-    [53]      local_deadlock_flag (duplicate of [5])
+    [53]      priority_rank — normalised rank by remaining path distance in [0,1]
 
+Fixes vs. old layout:
+  - [0] was scalar dt/8 (bitfield as float) → now binary is_switch flag.
+  - [4] was unused padding → now binary is_merge flag.
+  - [5] was raw _detect_deadlock() return (-1/0/1..16) → now binary 0/1.
+  - [6] was priority_rank (immediately overwritten by switch-left progress_gain
+        when decision_type & 2) → rank moved to [53].
+  - [53] was explicit duplicate of [5] → now priority_rank.
+  - Branch deadlock_ahead slots [12/20/28/35/40]: raw _detect_deadlock() output
+        → now binary via _encode_detect_deadlock().
 NOTE: Coordination signals (wait_intent, go_intent, etc.) are computed in the
 Policy Network using LSTM, not in the observation.
 """
@@ -62,8 +73,15 @@ class DecisionPointObservation(ObservationBuilder):
         return DecisionPointObservation.OBS_SIZE
 
     @staticmethod
-    def _encode_decision_type(decision_type: int) -> float:
-        return float(np.clip(decision_type / 8.0, 0.0, 1.0))
+    def _encode_detect_deadlock(raw: float) -> float:
+        """Normalise _detect_deadlock() raw return value to binary [0, 1].
+
+        _detect_deadlock returns:
+          -1  →  safe / no corridor ahead (treat as no deadlock)
+           0  →  unknown / timeout       (treat as no deadlock)
+          >0  →  step-distance to confirmed head-on deadlock → 1.0
+        """
+        return 1.0 if raw > 0 else 0.0
 
     @staticmethod
     def _encode_deadlock_signal(deadlock_flag: float) -> float:
@@ -121,10 +139,14 @@ class DecisionPointObservation(ObservationBuilder):
         if agent.state.name == "DONE":
             decision_type = 8
 
-        features[0] = self._encode_decision_type(decision_type)
+        # [0] is_switch binary (was: scalar dt/8 — a bitfield as float, unlearnable)
+        features[0] = 1.0 if (decision_type & 2) else 0.0
         features[1:4] = self._shortest_path_action_hint(handle, pos, direction, transitions, distance_map)
-        features[5] = self._detect_deadlock(handle, pos, direction)
-        
+        # [4] is_merge binary (was: unused padding)
+        features[4] = 1.0 if (decision_type & 4) else 0.0
+        # [5] local_deadlock binary (was: raw _detect_deadlock return, range -1..16)
+        features[5] = self._encode_detect_deadlock(self._detect_deadlock(handle, pos, direction))
+
         all_distance = []
         for idx, a in enumerate(self.env.agents):
             apos = a.position if a.position is not None else a.initial_position
@@ -146,7 +168,9 @@ class DecisionPointObservation(ObservationBuilder):
                 next_rank += 1
             handle_to_rank[h] = value_to_rank[dist]
 
-        features[6] = float(handle_to_rank.get(handle, next_rank))/next_rank
+        # priority_rank moved to [53] — feature [6] is the start of the
+        # switch-left block and was silently overwritten whenever decision_type & 2.
+        priority_rank = float(handle_to_rank.get(handle, next_rank)) / next_rank
 
         opp_agents = set()
         visited_type_2: set = set()
@@ -171,7 +195,9 @@ class DecisionPointObservation(ObservationBuilder):
                     features[base + 3] = branch_dist_norm
                     features[base + 4] = target_found
                     features[base + 5] = abort
-                    features[base + 6] = self._detect_deadlock(handle, npos, abs_dir)
+                    # deadlock_ahead: normalized binary (was: raw _detect_deadlock range -1..16)
+                    features[base + 6] = self._encode_detect_deadlock(
+                        self._detect_deadlock(handle, npos, abs_dir))
                     features[base + 7] = 0.0
                 else:
                     features[base + 0] = 0.0
@@ -194,7 +220,8 @@ class DecisionPointObservation(ObservationBuilder):
             features[32] = self._normalise_count(switches_fwd)
             features[33] = target_found_fwd
             features[34] = abort_fwd
-            features[35] = self._detect_deadlock(handle, npos_fwd, forward_dir) 
+            features[35] = self._encode_detect_deadlock(
+                self._detect_deadlock(handle, npos_fwd, forward_dir))
 
             bwd_pos = None
             bwd_dir = None
@@ -220,7 +247,8 @@ class DecisionPointObservation(ObservationBuilder):
                 features[37] = self._normalise_count(switches_bwd)
                 features[38] = target_found_bwd
                 features[39] = abort_bwd
-                features[40] = self._detect_deadlock(handle, bwd_pos, bwd_dir)
+                features[40] = self._encode_detect_deadlock(
+                    self._detect_deadlock(handle, bwd_pos, bwd_dir))
 
         # State one-hot: features[41-47]
         state_value = int(agent.state.value)
@@ -233,8 +261,8 @@ class DecisionPointObservation(ObservationBuilder):
             if 0 <= sa <= 4:
                 features[48 + sa] = 1.0
 
-        # Feature[53]: local_deadlock (use real deadlock detection from features[5])
-        features[53] = float(features[5])
+        # [53] priority_rank (was: explicit duplicate of [5] — wasted dimension)
+        features[53] = priority_rank
 
         # NOTE: Coordination signals are computed in Policy Network via LSTM
         # Do NOT compute them here in observation

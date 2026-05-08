@@ -959,6 +959,20 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.loss_function = nn.SmoothL1Loss(beta=1.0)
         self.training_step_count = 0
 
+        # Observation sanity statistics (gesammelt über 100 Episoden)
+        self._obs_stat_buffer: list = []   # rohe Feature-Vektoren der letzten 100 Ep.
+        self._obs_stat_interval = 100
+
+        # Training-Kennzahlen je Batch (alle _obs_stat_interval Episoden geleert)
+        self._stat_buf: dict = {
+            'v_loss': [], 'p_loss': [], 'e_loss': [], 'aux_dl': [],
+            'kl': [], 'ratio': [], 'entropy': [],
+            'adv_mean': [], 'adv_std': [], 'grad_norm': [],
+            'ret_min': [], 'ret_max': [],
+        }
+        # Episode-Kennzahlen (Reward + Done-Rate)
+        self._ep_stat_buf: dict = {'reward': [], 'done_frac': []}
+
     def _comm_progress(self) -> float:
         start_ep = int(self.comm_reg_start_episode)
         full_ep = int(self.comm_reg_full_episode)
@@ -1026,6 +1040,13 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         aux_deadlock = self._extract_deadlock_label_from_temporal_state(next_state)
         transition = (state, action, reward, next_state, done, aux_deadlock)
         self.current_episode_memory.push_transition(handle, transition)
+        # Observation-Statistik: letzten Frame des temporalen Fensters sammeln
+        try:
+            last_frame = np.asarray(state[-1][0], dtype=np.float32).reshape(-1)
+            if last_frame.shape[0] > 0:
+                self._obs_stat_buffer.append(last_frame)
+        except Exception:
+            pass
 
     @staticmethod
     def _extract_deadlock_label_from_temporal_state(temporal_state) -> float:
@@ -1047,10 +1068,20 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 return float(last_obs[idx])
             return 0.0
 
-        # Base deadlock cues from DecisionPointObservation layout.
-        branch_deadlock = _safe(5) + _safe(11) + _safe(17)
-        merge_deadlock = _safe(22) + _safe(26)
-        local_deadlock = _safe(42)
+        # Deadlock cues — indices match the FIXED DecisionPointObservation layout:
+        #   [5]        local_deadlock binary (confirmed head-on ahead)
+        #   [7]        left-branch  deadlock_signal  (DFS, normalised {0, 0.85, 1})
+        #   [12]       left-branch  deadlock_ahead binary
+        #   [15]       fwd-branch   deadlock_signal
+        #   [20]       fwd-branch   deadlock_ahead binary
+        #   [23]       right-branch deadlock_signal
+        #   [28]       right-branch deadlock_ahead binary
+        #   [31]       merge-fwd    deadlock_signal
+        #   [36]       merge-bwd    deadlock_signal
+        local_deadlock  = _safe(5)
+        branch_deadlock = _safe(7) + _safe(15) + _safe(23)    # DFS-based signals
+        deadlock_ahead  = max(_safe(12), _safe(20), _safe(28)) # direct binary flags
+        merge_deadlock  = _safe(31) + _safe(36)
 
         # Optional extra cues in 72D hierarchical sparse-neighbor block.
         # Per-neighbor 6D block starts at 48; index +3 == local conflict flag.
@@ -1060,6 +1091,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         risk = max(
             local_deadlock,
+            deadlock_ahead,
             min(1.0, 0.5 * branch_deadlock),
             min(1.0, 0.5 * merge_deadlock),
             sparse_local,
@@ -1507,7 +1539,21 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 self.optimizer_critic_head.step()
                 
                 self.loss = loss.detach().cpu().numpy()
-                
+
+                # Accumulate for 100-episode master report
+                self._stat_buf['v_loss'].append(value_loss_component.item())
+                self._stat_buf['p_loss'].append(policy_loss_component.item())
+                self._stat_buf['e_loss'].append(entropy_loss_component.item())
+                self._stat_buf['aux_dl'].append(aux_deadlock_loss_component.item())
+                self._stat_buf['kl'].append(approx_kl)
+                self._stat_buf['ratio'].append(ratio_mean)
+                self._stat_buf['entropy'].append(entropy_mean)
+                self._stat_buf['adv_mean'].append(raw_adv_mean)
+                self._stat_buf['adv_std'].append(raw_adv_std)
+                self._stat_buf['grad_norm'].append(grad_norm)
+                self._stat_buf['ret_min'].append(batch_gae_returns.min().item())
+                self._stat_buf['ret_max'].append(batch_gae_returns.max().item())
+
                 # 📊 Log metrics for this iteration
                 adv_mean = raw_adv_mean  # ⚡ RAW advantage mean (BEFORE normalization)
                 adv_std = raw_adv_std    # ⚡ RAW advantage std (BEFORE normalization)
@@ -1626,15 +1672,418 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         print("\n" + "="*80 + "\n")
 
+    # Feature-Namen für das feste 54D DecisionPointObservation-Layout
+    _OBS_FEATURE_NAMES = [
+        "is_switch",   "hint_L",      "hint_F",      "hint_R",      "is_merge",
+        "local_dl",
+        "swL_progress","swL_dl_sig",  "swL_switches","swL_dist",
+        "swL_target",  "swL_abort",   "swL_dl_ahead","swL_pad",
+        "swF_progress","swF_dl_sig",  "swF_switches","swF_dist",
+        "swF_target",  "swF_abort",   "swF_dl_ahead","swF_pad",
+        "swR_progress","swR_dl_sig",  "swR_switches","swR_dist",
+        "swR_target",  "swR_abort",   "swR_dl_ahead","swR_pad",
+        "pad",
+        "mgF_dl_sig",  "mgF_switches","mgF_target",  "mgF_abort",  "mgF_dl_ahead",
+        "mgB_dl_sig",  "mgB_switches","mgB_target",  "mgB_abort",  "mgB_dl_ahead",
+        "st_0","st_1","st_2","st_3","st_4","st_5","st_6",
+        "act_DN","act_L","act_F","act_R","act_S",
+        "priority_rank",
+    ]
+
+    def _print_obs_statistics(self):
+        """Master-Diagnostik-Report alle 100 Episoden — LLM-paste-ready."""
+        W = "=" * 80
+        n_names = len(self._OBS_FEATURE_NAMES)
+
+        def fname(i):
+            return self._OBS_FEATURE_NAMES[i] if i < n_names else f"feat_{i}"
+
+        def row(label, value, unit="", status="", note=""):
+            """Fixed-width table row: label | value | unit | status | note"""
+            return (f"  | {label:<22s} | {value:>12s} | {unit:<6s} | "
+                    f"{status:<4s} | {note}")
+
+        def hdr(title):
+            print(f"\n  +{'─'*78}+")
+            print(f"  | {title:<78s}|")
+            print(f"  +{'─'*22}+{'─'*14}+{'─'*8}+{'─'*6}+{'─'*26}+")
+            print(f"  | {'Metric':<22s} | {'Value':>12s} | {'Unit':<6s} | "
+                  f"{'St':<4s} | {'Interpretation':<24s} |")
+            print(f"  +{'─'*22}+{'─'*14}+{'─'*8}+{'─'*6}+{'─'*26}+")
+
+        def end_table():
+            print(f"  +{'─'*22}+{'─'*14}+{'─'*8}+{'─'*6}+{'─'*26}+")
+
+        print(f"\n{W}")
+        print(f"  MAPPO DIAGNOSTIC REPORT")
+        print(f"  Episode : {self.episode_count}")
+        print(f"  Interval: {self._obs_stat_interval} episodes")
+        print(f"  Context : Flatland 5-agent rail scheduling, DecisionPoint obs 54D")
+        print(W)
+
+        # ── 1) Episoden-Kennzahlen ─────────────────────────────────────────────
+        r_list = self._ep_stat_buf['reward']
+        d_list = self._ep_stat_buf['done_frac']
+        if r_list:
+            r_arr = np.array(r_list, dtype=np.float32)
+            d_arr = np.array(d_list, dtype=np.float32)
+
+            hdr(f"SECTION 1 — EPISODE PERFORMANCE  (n={len(r_arr)} episodes)")
+            def ep_row(lbl, val, unit, lo_ok, hi_ok, note_ok, note_warn):
+                st = "OK" if lo_ok <= val <= hi_ok else "WARN"
+                note = note_ok if lo_ok <= val <= hi_ok else note_warn
+                print(row(lbl, f"{val:+.3f}", unit, st, note) + " |")
+            ep_row("Reward mean",     float(r_arr.mean()),  "scaled", -200,  200,
+                   "normal range", "check reward shaping")
+            ep_row("Reward std",      float(r_arr.std()),   "scaled",    0,  150,
+                   "acceptable",   "high variance → unstable")
+            ep_row("Reward min",      float(r_arr.min()),   "scaled", -500,    0,
+                   "ok",           "extreme penalty episodes")
+            ep_row("Reward max",      float(r_arr.max()),   "scaled",    0,  500,
+                   "ok",           "check if reached")
+            ep_row("Done-Rate mean",  float(d_arr.mean()),  "frac",   0.3,  1.0,
+                   "learning",     "too low → deadlocks dominate")
+            ep_row("Done-Rate std",   float(d_arr.std()),   "frac",   0.0,  0.15,
+                   "stable",       "high variance → unstable policy")
+            ep_row("Done-Rate min",   float(d_arr.min()),   "frac",   0.0,  1.0,
+                   "ok",           "zero-done episodes present")
+            ep_row("Done-Rate max",   float(d_arr.max()),   "frac",   0.0,  1.0,
+                   "ok",           "best episodes ok")
+            end_table()
+
+            issues = []
+            if d_arr.mean() < 0.3:
+                issues.append(f"Done-Rate {d_arr.mean():.3f} < 0.30: agents stuck in deadlocks")
+            if d_arr.std() > 0.15:
+                issues.append(f"Done-Rate std {d_arr.std():.3f} > 0.15: policy oscillates, "
+                               "no stable equilibrium reached yet")
+            if r_arr.std() > 150:
+                issues.append(f"Reward std {r_arr.std():.1f} very high: "
+                               "environment outcomes highly stochastic or policy random")
+            if issues:
+                print(f"\n  EPISODE ISSUES:")
+                for iss in issues:
+                    print(f"    WARN  {iss}")
+            else:
+                print(f"\n    OK  No episode-level issues.")
+
+        self._ep_stat_buf['reward'].clear()
+        self._ep_stat_buf['done_frac'].clear()
+
+        # ── 2) Training-Kennzahlen ─────────────────────────────────────────────
+        sb = self._stat_buf
+        n_b = len(sb['v_loss'])
+        issues = []
+        if n_b > 0:
+            def _ms(key):
+                a = np.array(sb[key], dtype=np.float32)
+                return float(a.mean()), float(a.std())
+
+            vl_m, vl_s = _ms('v_loss')
+            pl_m, pl_s = _ms('p_loss')
+            el_m, el_s = _ms('e_loss')
+            kl_m, kl_s = _ms('kl')
+            rt_m, rt_s = _ms('ratio')
+            en_m, en_s = _ms('entropy')
+            am_m, _    = _ms('adv_mean')
+            as_m, _    = _ms('adv_std')
+            gn_m, gn_s = _ms('grad_norm')
+            ret_min    = float(np.array(sb['ret_min']).min())
+            ret_max    = float(np.array(sb['ret_max']).max())
+            aux_m      = float(np.array(sb['aux_dl']).mean())
+
+            hdr(f"SECTION 2 — PPO TRAINING METRICS  ({n_b} batches, "
+                f"lr_factor={self.actor_lr_factor:.3f})")
+
+            def tr_row(lbl, val, pm, unit, lo_ok, hi_ok, note_ok, note_warn):
+                st   = "OK" if lo_ok <= val <= hi_ok else "WARN"
+                note = note_ok if lo_ok <= val <= hi_ok else note_warn
+                vs   = f"{val:.4f} ±{pm:.4f}"
+                print(row(lbl, vs, unit, st, note) + " |")
+
+            tr_row("V_Loss (critic)",    vl_m, vl_s, "",    0.0, 0.30,
+                   "critic fits returns",
+                   "critic not converging")
+            tr_row("P_Loss (policy)",    pl_m, pl_s, "",   -0.5, 0.5,
+                   "policy improving",
+                   "gradient signal weak")
+            tr_row("Entropy",            en_m, en_s, "nat", self.entropy_floor, 2.0,
+                   "exploration ok",
+                   f"below floor={self.entropy_floor:.2f}, collapse risk")
+            tr_row("KL divergence",      kl_m, kl_s, "",    0.0, self.ppo_target_kl * 1.5,
+                   "trust region ok",
+                   f"exceeds target={self.ppo_target_kl:.3f}")
+            tr_row("PPO ratio mean",     rt_m, rt_s, "",    0.90, 1.15,
+                   "ratios stable",
+                   "policy update too large/small")
+            tr_row("Advantage mean",     am_m, 0.0,  "",   -2.0, 2.0,
+                   "centered ok",
+                   "advantages heavily biased")
+            tr_row("Advantage std",      as_m, 0.0,  "",    0.5, 5.0,
+                   "signal present",
+                   "signal too weak or exploding")
+            tr_row("GradNorm",           gn_m, gn_s, "",    0.0, 4.0,
+                   "gradients stable",
+                   "gradient instability")
+            tr_row("AuxDL loss",         aux_m, 0.0, "",    0.0, 0.8,
+                   "deadlock head ok",
+                   "deadlock head not converging")
+            print(row("Returns range",
+                       f"{ret_min:+.2f}…{ret_max:+.2f}", "", "", "") + " |")
+            end_table()
+
+            # Diagnose
+            if vl_m > 0.30:
+                issues.append(
+                    f"V_Loss={vl_m:.4f} > 0.30: Critic cannot fit the return targets. "
+                    f"Returns span [{ret_min:+.2f},{ret_max:+.2f}]. "
+                    + ("Returns exceed value-clamp [-5,5] → GAE advantages are truncated "
+                       "→ value targets are inconsistent with what critic can predict. "
+                       "Fix: remove or widen the values = torch.clamp(values,-5,5) call."
+                       if ret_min < -5.0 or ret_max > 5.0 else
+                       "Check reward_scale and discount."))
+            if abs(pl_m) < 0.005:
+                issues.append(
+                    f"P_Loss={pl_m:+.5f} ≈ 0: Policy gradient is nearly zero. "
+                    f"Adv_mean={am_m:+.3f}, Adv_std={as_m:.3f}, Ratio={rt_m:.4f}. "
+                    "Likely cause: advantages too small (critic overfit or reward variance "
+                    "low) OR ratio stuck near 1 (policy not changing).")
+            if en_m < self.entropy_floor:
+                issues.append(
+                    f"Entropy={en_m:.4f} below floor={self.entropy_floor:.2f}: "
+                    "Policy is collapsing to a deterministic mode prematurely. "
+                    "Increase weight_entropy or entropy_recovery_scale.")
+            if kl_m > self.ppo_target_kl * 2.0:
+                issues.append(
+                    f"KL={kl_m:.4f} >> target={self.ppo_target_kl:.3f}: "
+                    "Trust region violated. Reduce learning rate or k_epochs.")
+            if abs(rt_m - 1.0) > 0.20:
+                issues.append(
+                    f"Ratio={rt_m:.4f} far from 1.0: "
+                    "Either policy changes too fast (ratio>1.2) or old/new policy "
+                    "diverge already at batch start (ratio<0.8). Check clip_eps.")
+            if as_m < 0.3:
+                issues.append(
+                    f"Advantage std={as_m:.3f} very low: almost no gradient signal. "
+                    "Critic may be over-fitting, or all returns are nearly identical "
+                    "(deadlock-dominated constant negative rewards).")
+            if gn_m > 5.0:
+                issues.append(
+                    f"GradNorm={gn_m:.2f}: gradient explosion. "
+                    "Reduce LR or add gradient clipping.")
+
+            if issues:
+                print(f"\n  TRAINING ISSUES ({len(issues)}):")
+                for iss in issues:
+                    print(f"    WARN  {iss}")
+            else:
+                print(f"\n    OK  No training-level issues.")
+
+        for key in self._stat_buf:
+            self._stat_buf[key].clear()
+
+        # ── 3) Feature Importance ──────────────────────────────────────────────
+        print(f"\n{W}")
+        try:
+            W_mat = self.encoder_actor.obs_encoder[0].weight.detach().cpu().numpy()
+            sens   = np.abs(W_mat).mean(axis=0)
+            obs_dim   = sens.shape[0]
+            max_s     = sens.max() if sens.max() > 0 else 1.0
+            order     = np.argsort(sens)[::-1]
+            sens_norm = sens / max_s          # relative importance in [0,1]
+
+            print(f"  SECTION 3 — FEATURE IMPORTANCE  "
+                  f"(mean |weight| first encoder layer, {obs_dim}D input)")
+            print(f"  Interpretation guide:")
+            print(f"    rel_imp = mean|W_col| / max(mean|W_col|)")
+            print(f"    >0.50 = highly used  |  0.10-0.50 = moderate  "
+                  f"|  <0.05 = nearly ignored  |  <0.01 = dead")
+            print()
+            print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+")
+            print(f"  | {'Rk':>2} | {'[i]':>3} | {'Name':<20s} | {'abs_sens':>7} "
+                  f"| {'rel_imp':>7} | {'Bar (24-wide)':<24s} | {'Interpretation':<24s} |")
+            print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+")
+
+            def imp_note(rel):
+                if rel > 0.50: return "highly used by network"
+                if rel > 0.20: return "moderately used"
+                if rel > 0.05: return "low usage"
+                if rel > 0.01: return "nearly ignored"
+                return "DEAD — no gradient signal"
+
+            for rank in range(obs_dim):
+                i    = order[rank]
+                s    = sens[i]
+                r    = sens_norm[i]
+                bar  = ('█' * int(r * 24)).ljust(24)
+                note = imp_note(r)
+                print(f"  | {rank+1:2d} | [{i:2d}] | {fname(i):<20s} | "
+                      f"{s:7.5f} | {r:7.4f} | {bar} | {note:<24s} |")
+
+            print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+")
+
+            dead_thresh = max_s * 0.01
+            dead_feats  = [i for i in range(obs_dim) if sens[i] < dead_thresh]
+            top3        = [fname(order[k]) for k in range(min(3, obs_dim))]
+            print(f"\n  Top-3 most used : {', '.join(top3)}")
+            if dead_feats:
+                print(f"  Dead features   : {len(dead_feats)} ignored "
+                      f"({', '.join(fname(i) for i in dead_feats[:8])}"
+                      f"{'…' if len(dead_feats) > 8 else ''})")
+                print(f"  WARN  Dead features waste network capacity and may indicate "
+                      f"structural issues in the observation.")
+            else:
+                print(f"  OK  All features contribute to network (>=1% sensitivity).")
+
+        except Exception as exc:
+            print(f"  (Feature importance not available: {exc})")
+
+        # ── 4) Obs-Sanity ──────────────────────────────────────────────────────
+        if self._obs_stat_buffer:
+            data  = np.array(self._obs_stat_buffer, dtype=np.float32)
+            self._obs_stat_buffer.clear()
+            N, D  = data.shape
+            mins  = data.min(axis=0)
+            maxs  = data.max(axis=0)
+            means = data.mean(axis=0)
+            stds  = data.std(axis=0)
+            RANGE_TOL = 0.05
+
+            print(f"\n{W}")
+            print(f"  SECTION 4 — OBSERVATION SANITY  (N={N} frames, D={D} features)")
+            print()
+
+            oor  = [(i, mins[i], maxs[i]) for i in range(D)
+                    if mins[i] < -RANGE_TOL or maxs[i] > 1.0 + RANGE_TOL]
+            dead = [(i, means[i]) for i in range(D) if stds[i] < 1e-4]
+
+            valid_idx = [i for i in range(D) if stds[i] > 1e-6]
+            dups = []
+            if len(valid_idx) >= 2:
+                corr = np.corrcoef(data[:, valid_idx].T)
+                dups = [(valid_idx[ii], valid_idx[jj], corr[ii, jj])
+                        for ii in range(len(valid_idx))
+                        for jj in range(ii + 1, len(valid_idx))
+                        if abs(corr[ii, jj]) > 0.99]
+
+            obs_issues = []
+            if oor:
+                obs_issues.append(
+                    f"{len(oor)} feature(s) outside [0,1]: "
+                    + ", ".join(f"[{i}]{fname(i)}(min={lo:+.3f},max={hi:+.3f})"
+                                for i, lo, hi in oor[:5]))
+            if dead:
+                obs_issues.append(
+                    f"{len(dead)} constant feature(s) (zero variance): "
+                    + ", ".join(f"[{i}]{fname(i)}" for i, _ in dead[:8]))
+            if dups:
+                obs_issues.append(
+                    f"{len(dups)} duplicate feature pair(s) (|corr|>0.99): "
+                    + ", ".join(f"[{a}]{fname(a)}↔[{b}]{fname(b)}"
+                                for a, b, _ in dups[:4]))
+
+            print(f"  +{'─'*30}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*6}+")
+            print(f"  | {'Feature':<28s} | {'mean':>5} | {'std':>5} | "
+                  f"{'min':>5} | {'max':>5} | {'oor':>5} | {'dead':>4} |")
+            print(f"  +{'─'*30}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*6}+")
+            for i in range(D):
+                is_oor  = mins[i] < -RANGE_TOL or maxs[i] > 1.0 + RANGE_TOL
+                is_dead = stds[i] < 1e-4
+                if not is_oor and not is_dead:
+                    continue   # only print notable features
+                oor_tag  = "YES" if is_oor  else ""
+                dead_tag = "YES" if is_dead else ""
+                print(f"  | [{i:2d}] {fname(i):<24s} | {means[i]:5.3f} | {stds[i]:5.3f} | "
+                      f"{mins[i]:+5.3f} | {maxs[i]:5.3f} | {oor_tag:>5} | {dead_tag:>4} |")
+            print(f"  +{'─'*30}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*6}+")
+
+            if not oor and not dead:
+                print(f"  OK  All features in [0,1], none constant.")
+            if dups:
+                print(f"\n  Duplicate pairs (|corr|>0.99):")
+                for a, b, c in dups:
+                    print(f"    [{a}]{fname(a):<20s} <-> [{b}]{fname(b):<20s}  corr={c:+.4f}")
+
+            # Key feature means
+            if D > 53:
+                print(f"\n  Key feature means:")
+                print(f"    is_switch={means[0]:.3f}  is_merge={means[4]:.3f}  "
+                      f"local_dl={means[5]:.3f}  priority_rank={means[53]:.3f}")
+
+            if obs_issues:
+                print(f"\n  OBS ISSUES:")
+                for iss in obs_issues:
+                    print(f"    WARN  {iss}")
+            else:
+                print(f"  OK  No observation sanity issues.")
+        else:
+            self._obs_stat_buffer.clear()
+
+        # ── 5) LLM summary block ───────────────────────────────────────────────
+        print(f"\n{W}")
+        print(f"  SECTION 5 — LLM ANALYSIS PROMPT")
+        print(f"  Copy the text below into an LLM for deeper analysis:")
+        print(f"  {'─'*76}")
+
+        all_issues = issues + (obs_issues if self._obs_stat_buffer == [] else [])
+        issue_text = (("\n".join(f"  - {x}" for x in all_issues))
+                      if all_issues else "  - None detected.")
+        print(
+            f"  Context:\n"
+            f"  MAPPO training on Flatland 5-agent rail scheduling.\n"
+            f"  Episode {self.episode_count}, "
+            f"DecisionPoint observation 54D, LSTM encoder, PPO clip.\n"
+            f"\n"
+            f"  Training metrics (mean over {n_b} batches):\n"
+            f"  V_Loss={vl_m:.4f}  P_Loss={pl_m:+.4f}  Entropy={en_m:.4f}\n"
+            f"  KL={kl_m:.4f}  Ratio={rt_m:.4f}  GradNorm={gn_m:.4f}\n"
+            f"  Adv_mean={am_m:+.3f}  Adv_std={as_m:.3f}\n"
+            f"  Returns=[{ret_min:+.2f},{ret_max:+.2f}]  AuxDL={aux_m:.4f}\n"
+            f"  LR_factor={self.actor_lr_factor:.4f}  "
+            f"clip_eps={self._effective_clip_eps():.3f}\n"
+            f"\n"
+            f"  Episode metrics (last {self._obs_stat_interval} episodes):\n"
+            f"  Done-Rate mean={float(np.mean(d_list)) if d_list else 0.0:.3f}  "
+            f"std={float(np.std(d_list)) if d_list else 0.0:.3f}\n"
+            f"  Reward mean={float(np.mean(r_list)) if r_list else 0.0:+.1f}  "
+            f"std={float(np.std(r_list)) if r_list else 0.0:.1f}\n"
+            f"\n"
+            f"  Automated issues detected:\n{issue_text}\n"
+            f"\n"
+            f"  Questions: What are the most likely root causes? "
+            f"What should be changed first to improve done-rate stability?\n"
+            f"  Observed training pattern: done-rate rises to ~0.25 then oscillates "
+            f"+/-0.25 without further improvement."
+        )
+        print(f"  {'─'*76}")
+        print(f"{W}\n")
+
     def end_episode(self, train):
         if train:
+            # Collect episode-level stats before buffer is reset
+            ep_total_reward = 0.0
+            ep_done_count   = 0
+            ep_n_agents     = len(self.current_episode_memory.memory)
+            for transitions in self.current_episode_memory.memory.values():
+                if transitions:
+                    ep_total_reward += sum(float(t[2]) for t in transitions)
+                    if transitions[-1][4]:   # done flag of last transition
+                        ep_done_count += 1
+            self._ep_stat_buf['reward'].append(ep_total_reward)
+            self._ep_stat_buf['done_frac'].append(
+                ep_done_count / ep_n_agents if ep_n_agents > 0 else 0.0)
+
             self.accumulated_episodes.append(self.current_episode_memory)
             self.current_episode_memory = EpisodeBuffers()
-            
+
             if self.episode_count % self.train_frequency == 0:
                 if self.show_pre_train_debug_msg:
                     print(f"\n🎯 Training with sliding window of {len(self.accumulated_episodes)} episodes...")
                 self.train_net_accumulated()
+
+            if (self.episode_count + 1) % self._obs_stat_interval == 0 and self._obs_stat_buffer:
+                self._print_obs_statistics()
+
             self.episode_count += 1
 
     def save(self, filename):

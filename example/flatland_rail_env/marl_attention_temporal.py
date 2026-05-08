@@ -345,14 +345,14 @@ def create_decider_agent(observation_space: int, action_space: int, eps: float =
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     hidden_size=64,         # ⬇️ Reduced for 4x faster LSTM (was 128)
     batch_size=256,
-    learning_rate=1.2e-4,
+    learning_rate=1.4e-4,
     discount=0.99,  # Längere Belohnungsketten
     gae_lambda=0.95,  # Lower variance for stabler PPO updates
     use_gpu=True,
-    max_episodes_in_training_memory=16,   # Faster feedback with a slightly fresher window
-    k_epochs=2,
+    max_episodes_in_training_memory=12,   # Fresher data -> faster adaptation
+    k_epochs=3,
     batch_fraction=0.8,
-    max_batches_per_training=8,
+    max_batches_per_training=10,
     temporal_window=TEMPORAL_WINDOW, # ⚡ MUST MATCH create_temporal_obs_builder_object()!
     encoder_type='lstm'
 )
@@ -407,12 +407,12 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         ppo_param,
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
-        train_frequency=8,
+        train_frequency=10,
         use_deadlock_avoidance_policy=False
     )
     # Stable late-phase settings: keep learning without policy collapse.
-    policy.surrogate_eps_clip = 0.15
-    policy.weight_entropy = 0.030
+    policy.surrogate_eps_clip = 0.17
+    policy.weight_entropy = 0.036
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600
     policy.ppo_target_kl = 0.05
@@ -427,8 +427,13 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.hard_spike_streak_limit = 4
     policy.actor_lr_min_factor = 0.35
     policy.actor_lr_decay_on_instability = 0.85
-    policy.max_eps_random = 0.03
-    policy.decision_eps_floor = 0.00
+    policy.max_eps_random = 0.05
+    policy.decision_eps_floor = 0.02
+    policy.use_decision_eps_floor = True
+    # Encourage non-forward decisions at switches without forcing hard constraints.
+    policy.weight_action_diversity = 0.010
+    policy.forward_prob_soft_max = 0.50
+    policy.lr_prob_soft_min = 0.26
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
@@ -453,11 +458,11 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: f
         ppo_param,
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
-        train_frequency=10,   # ⬆️ Train every 10 episodes (faster feedback)
+        train_frequency=10,
         use_deadlock_avoidance_policy=True
     )
-    policy.surrogate_eps_clip = 0.15
-    policy.weight_entropy = 0.030  # ⬆️ Increased entropy
+    policy.surrogate_eps_clip = 0.16
+    policy.weight_entropy = 0.036
     policy.stability_guard_start_episode = 2600
     policy.stability_guard_hard_episode = 3800
     # Same anti-stall settings for shielded training.
@@ -473,8 +478,12 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: f
     policy.hard_spike_streak_limit = 3
     policy.actor_lr_min_factor = 0.35
     policy.actor_lr_decay_on_instability = 0.85
-    policy.max_eps_random = 0.03
-    policy.decision_eps_floor = 0.005
+    policy.max_eps_random = 0.05
+    policy.decision_eps_floor = 0.015
+    policy.use_decision_eps_floor = True
+    policy.weight_action_diversity = 0.008
+    policy.forward_prob_soft_max = 0.50
+    policy.lr_prob_soft_min = 0.25
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
