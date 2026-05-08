@@ -34,6 +34,8 @@
 from typing import Any, Callable, Optional, Type, List, Union, Tuple, Set, Dict
 from collections import namedtuple, deque
 import os
+import sys
+import argparse
 import numpy as np
 import torch
 from torch.distributions import Categorical
@@ -184,10 +186,11 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
             return int(super(MARL_ATT_DecisionPointPolicy, self).act(handle, state, eps))
         # Make solver epsilon meaningful: random among legal rail actions.
         eps_val = float(eps) if eps is not None else 0.0
-        # Keep a small exploration floor at decision points to avoid late-stage
-        # deterministic lock-in at suboptimal switch behaviors.
+        # By default, trust solver epsilon exactly. A decision-point floor is
+        # only applied when explicitly enabled.
         eps_floor = float(getattr(self, 'decision_eps_floor', 0.0))
-        eps_val = max(eps_val, eps_floor)
+        if bool(getattr(self, 'use_decision_eps_floor', False)):
+            eps_val = max(eps_val, eps_floor)
         if eps_val > 0.0 and np.random.rand() < eps_val:
             return int(np.random.choice(legal_actions))
         try:
@@ -303,14 +306,15 @@ def create_temporal_obs_builder_object():
     return TemporalMultiAgentObservation(temporal_window=TEMPORAL_WINDOW)
 
 
-def create_decider_agent(observation_space: int, action_space: int) -> LearningPolicy:
+def create_decider_agent(observation_space: int, action_space: int, eps: float = 0.0) -> LearningPolicy:
     """Hierarchical Decider policy with Specialist sub-modules + PPO + 1-step
     deadlock BCE aux-loss. See HIERARCHICAL_DECIDER_ARCHITECTURE.md."""
     print('>> DeciderPPOPolicy (Hierarchical Specialists + Decider)')
     print('   - observation_space:', observation_space)
     print('   - action_space:', action_space)
     print('   - temporal_window:', TEMPORAL_WINDOW)
-    return DeciderPPOPolicy(
+    print(f'   - EPS (epsilon floor): {eps:.4f}')
+    policy = DeciderPPOPolicy(
         state_size=observation_space,
         action_size=action_space,
         learning_rate=5.0e-5,
@@ -334,34 +338,38 @@ def create_decider_agent(observation_space: int, action_space: int) -> LearningP
         max_eps_random=0.0,
         clear_buffer_after_update=True,
     )
+    policy.eps_smoothing = eps  # Set epsilon floor
+    return policy
 
 
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     hidden_size=64,         # ⬇️ Reduced for 4x faster LSTM (was 128)
     batch_size=256,
-    learning_rate=1.5e-4,
+    learning_rate=1.2e-4,
     discount=0.99,  # Längere Belohnungsketten
-    gae_lambda=0.97,  # Weniger Bias
+    gae_lambda=0.95,  # Lower variance for stabler PPO updates
     use_gpu=True,
-    max_episodes_in_training_memory=20,   # ⬆️ Train after every 20 episodes
-    k_epochs=3,
+    max_episodes_in_training_memory=16,   # Faster feedback with a slightly fresher window
+    k_epochs=2,
     batch_fraction=0.8,
-    max_batches_per_training=10,          # ⬆️ Normal batch training (10 batches per update)
+    max_batches_per_training=8,
     temporal_window=TEMPORAL_WINDOW, # ⚡ MUST MATCH create_temporal_obs_builder_object()!
     encoder_type='lstm'
 )
 
-def create_ma_ppo_agent(observation_space: int, action_space: int) -> LearningPolicy:
+def create_ma_ppo_agent(observation_space: int, action_space: int, eps: float = 0.0) -> LearningPolicy:
     """
     Creates PPO Policy with Temporal Transformer Encoder
     
     observation_space: 33 (30 base + 3 velocity)
+    eps: Epsilon floor (0.0-1.0)
     """
     print('>> MARL_ATTENTION_TEMPORAL_PPOPolicy (Temporal Transformer)')
     print('   - observation_space:', observation_space)
     print('   - action_space:', action_space)
     print('   - temporal_window:', TEMPORAL_WINDOW)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
+    print(f'   - EPS (epsilon floor): {eps:.4f}')
         
     policy = MARL_ATTENTION_TEMPORAL_PPOPolicy(
         observation_space,
@@ -376,19 +384,22 @@ def create_ma_ppo_agent(observation_space: int, action_space: int) -> LearningPo
     policy.weight_entropy = 0.012
     policy.stability_guard_start_episode = 2600
     policy.stability_guard_hard_episode = 3800
+    policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
-def create_ma_ppo_agent_dp(observation_space: int, action_space: int) -> LearningPolicy:
+def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float = 0.0) -> LearningPolicy:
     """
     Creates  PPO Policy with Temporal Transformer Encoder
     
     observation_space: 33 (30 base + 3 velocity)
+    eps: Epsilon floor (0.0-1.0)
     """
     print('>> MARL_ATT_DecisionPointPolicy (Temporal Transformer)')
     print('   - observation_space:', observation_space)
     print('   - action_space:', action_space)
     print('   - temporal_window:', TEMPORAL_WINDOW)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
+    print(f'   - EPS (epsilon floor): {eps:.4f}')
         
     policy = MARL_ATT_DecisionPointPolicy(
         observation_space,
@@ -396,42 +407,45 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int) -> Learnin
         ppo_param,
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
-        train_frequency=10,   # ⬆️ Train every 10 episodes (faster feedback)
+        train_frequency=8,
         use_deadlock_avoidance_policy=False
     )
     # Stable late-phase settings: keep learning without policy collapse.
-    policy.surrogate_eps_clip = 0.16
-    policy.weight_entropy = 0.065  # ⬆️ Increased entropy to encourage Left/Right
+    policy.surrogate_eps_clip = 0.15
+    policy.weight_entropy = 0.030
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600
-    policy.ppo_target_kl = 0.07
-    policy.ppo_max_kl = 0.14
-    policy.ppo_emergency_kl = 0.24
-    policy.ppo_emergency_kl_hard = 0.32
-    policy.ratio_guard_soft = 1.12
-    policy.ratio_guard_soft_low = 0.88
-    policy.ratio_guard_hard = 1.28
-    policy.ratio_guard_hard_low = 0.72
-    policy.max_hard_batches_before_lr_decay = 10
+    policy.ppo_target_kl = 0.05
+    policy.ppo_max_kl = 0.10
+    policy.ppo_emergency_kl = 0.16
+    policy.ppo_emergency_kl_hard = 0.24
+    policy.ratio_guard_soft = 1.10
+    policy.ratio_guard_soft_low = 0.90
+    policy.ratio_guard_hard = 1.20
+    policy.ratio_guard_hard_low = 0.80
+    policy.max_hard_batches_before_lr_decay = 8
     policy.hard_spike_streak_limit = 4
-    policy.actor_lr_min_factor = 0.45
+    policy.actor_lr_min_factor = 0.35
     policy.actor_lr_decay_on_instability = 0.85
-    policy.max_eps_random = 0.10
-    policy.decision_eps_floor = 0.01
+    policy.max_eps_random = 0.03
+    policy.decision_eps_floor = 0.00
+    policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
  
-def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int) -> LearningPolicy:
+def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: float = 0.0) -> LearningPolicy:
     """
     Creates PPO Policy with Temporal Transformer Encoder
     
     observation_space: 33 (30 base + 3 velocity)
+    eps: Epsilon floor (0.0-1.0)
     """
     print('>> MARL_ATT_DecisionPointPolicy with Deadlockavoidance (Temporal Transformer)')
     print('   - observation_space:', observation_space)
     print('   - action_space:', action_space)
     print('   - temporal_window:', TEMPORAL_WINDOW)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
+    print(f'   - EPS (epsilon floor): {eps:.4f}')
     
     policy = MARL_ATT_DecisionPointPolicy(
         observation_space,
@@ -461,6 +475,7 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int) -> Lea
     policy.actor_lr_decay_on_instability = 0.85
     policy.max_eps_random = 0.03
     policy.decision_eps_floor = 0.005
+    policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
 def create_deadlock_avoidance_policy(environment: Environment,
@@ -615,13 +630,60 @@ else:
         create_ma_ppo_agent_dp,#_DLA,
     ]
 
-
+ 
 if __name__ == "__main__":
-    import sys
+    # Advanced argument parsing with --eps for epsilon floor.
+    parser = argparse.ArgumentParser(
+        description='MARL Attention Temporal PPO Training',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  python marl_attention_temporal.py final_continue
+    python marl_attention_temporal.py final_continue --eps 0.05
+    python marl_attention_temporal.py continue --eps 0.1
+    python marl_attention_temporal.py continue --eps 0.1 --min_eps 0.001
+  python marl_attention_temporal.py eval
+        """
+    )
+    parser.add_argument(
+        'mode',
+        nargs='?',
+        default='final',
+        choices=['final', 'final_continue', 'continue', 'eval', 'dla_eval', 'dla'],
+        help='Training mode (default: final)'
+    )
+    parser.add_argument(
+        '--eps',
+        type=float,
+        default=1.0,
+        metavar='EPS_VALUE',
+        dest='eps',
+        help='Exploration floor for epsilon-greedy in [0.0, 1.0] (default: 1.0)'
+    )
+
+    parser.add_argument(
+        '--min_eps',
+        type=float,
+        default=0.001,
+        metavar='MIN_EPS_VALUE',
+        dest='min_eps',
+        help='Minimum exploration floor for epsilon-greedy in [0.0, 1.0] (default: 0.001)'
+    )
     
-    # Simple mode selection via command line
-    # Usage: python marl_attention_temporal.py [phase5|continue|eval|dla_eval]
-    mode = sys.argv[1].lower() if len(sys.argv) > 1 else 'final'
+    args = parser.parse_args()
+    mode = args.mode.lower()
+    eps = args.eps
+    min_eps = args.min_eps
+    
+    # Validate EPS range
+    if not (0.0 <= eps <= 1.0):
+        print(f"ERROR: --eps must be between 0.0 and 1.0, got {eps}")
+        sys.exit(1)
+    if not (0.0 <= min_eps <= 1.0):
+        print(f"ERROR: --min_eps must be between 0.0 and 1.0, got {min_eps}")
+        sys.exit(1)
+    min_eps = min(eps, min_eps)  # Use the lower of the two for safety
+
+    print(f"\n[Config] mode={mode}, eps={eps:.4f} (epsilon floor)")
     
     do_rendering = False
     checkpoint_interval = 100  # Default: every 100 episodes
@@ -695,7 +757,7 @@ if __name__ == "__main__":
             FlatlandSimpleRenderer(environment) if do_rendering else None
         )
         if do_training:
-            solver_deadlock.perform_training(max_episodes=5000)
+            solver_deadlock.perform_training(max_episodes=5000, min_eps=eps)
         else:
             solver_deadlock.perform_evaluation(max_episodes=1000)
     else:
@@ -709,7 +771,8 @@ if __name__ == "__main__":
         for pcl in policy_creator_list:
             policy = pcl(
                 _state_size,
-                environment.get_action_space()
+                environment.get_action_space(),
+                eps=eps
             )
             if hasattr(policy, 'get_training_summary'):
                 policy.get_training_summary()
@@ -781,9 +844,19 @@ if __name__ == "__main__":
                         environment.load_environments_from_path(path=phase_path)
 
                         print(f"[Train] {phase['name']}: {phase_episodes} episodes, agents={phase_agents}")
-                        solver.perform_training(max_episodes=phase_episodes, checkpoint_interval=checkpoint_interval)
+                        solver.perform_training(
+                            max_episodes=phase_episodes,
+                            checkpoint_interval=checkpoint_interval,
+                            eps=eps,
+                            min_eps=min_eps, 
+                        )
                 else:
-                    solver.perform_training(max_episodes=10000, checkpoint_interval=checkpoint_interval)
+                    solver.perform_training(
+                        max_episodes=10000,
+                        checkpoint_interval=checkpoint_interval,
+                        eps=eps,
+                        min_eps=min_eps,  # If an epsilon floor is set, use it as min_eps to maintain exploration
+                    )
             else:
                 solver.load_policy()   
                 solver.perform_evaluation(max_episodes=1000)
