@@ -776,7 +776,83 @@ class FlatlandPBRSShaper:
         return shaped
 
 
-flatland_reward_shaper = FlatlandPBRSShaper()
+class SimpleDoneRewardShaper:
+    """Ultra-simple reward shaper: optimize ONLY for done rate and step efficiency.
+    
+    Reward structure:
+    - Every step: -1 (penalize time)
+    - Agent reaches done: +100 (one-time bonus, immediate)
+    - TIMING FIX: Team bonus is NOT retroactive (agents done at different times).
+      Instead, track when all agents are done and reward happens naturally via
+      policy.end_episode() when the simulation ends.
+    """
+    
+    STEP_PENALTY = -1.0
+    INDIVIDUAL_DONE_BONUS = 100.0
+    
+    def __init__(self):
+        self._done_charged: Dict[int, np.ndarray] = {}  # env_id -> bool array
+        self.episode_count = 0
+    
+    def __call__(self, reward, terminal, info, env, actions=None):
+        if actions is None:
+            actions = {}
+        raw_env = env.raw_env
+        agents = raw_env.agents
+        num_agents = len(agents)
+        env_id = id(raw_env)
+        episode_done = bool(terminal.get('__all__', False)) if isinstance(terminal, dict) else False
+
+        # Initialize state if needed
+        if env_id not in self._done_charged or len(self._done_charged[env_id]) != num_agents:
+            self._done_charged[env_id] = np.zeros(num_agents, dtype=bool)
+
+        # Shaping per agent: -1 per step + 100 when done (one-time)
+        shaped = list(reward)
+        for i, agent in enumerate(agents):
+            s = self.STEP_PENALTY  # -1 per step
+            
+            # One-time bonus when agent reaches done
+            # CRITICAL: This is applied only on the EXACT step agent.state changes to DONE
+            if agent.state == TrainState.DONE and not self._done_charged[env_id][i]:
+                self._done_charged[env_id][i] = True
+                s += self.INDIVIDUAL_DONE_BONUS
+                # reward is stored in buffer with this bonus immediately
+            
+            shaped[i] = float(reward[i] + s)
+
+        if episode_done:
+            self.episode_count += 1
+            # Clean up for next episode
+            if env_id in self._done_charged:
+                del self._done_charged[env_id]
+
+        return shaped
+
+
+# Mode selector: switch between complex and simple reward shapers
+_REWARD_SHAPER_MODE = "simple"  # "complex" or "simple"
+
+def set_reward_shaper_mode(mode: str):
+    """Set reward shaper mode: 'complex' (PBRS) or 'simple' (done-only)"""
+    global _REWARD_SHAPER_MODE
+    if mode not in ["complex", "simple"]:
+        raise ValueError(f"Invalid mode: {mode}. Must be 'complex' or 'simple'")
+    _REWARD_SHAPER_MODE = mode
+    print(f">> Reward Shaper Mode: {mode.upper()}")
+
+def get_reward_shaper():
+    """Get active reward shaper based on mode"""
+    if _REWARD_SHAPER_MODE == "complex":
+        return FlatlandPBRSShaper()
+    elif _REWARD_SHAPER_MODE == "simple":
+        return SimpleDoneRewardShaper()
+    else:
+        raise ValueError(f"Unknown mode: {_REWARD_SHAPER_MODE}")
+
+
+# Default: use simple shaper for now
+flatland_reward_shaper = SimpleDoneRewardShaper()
 
 
 _policy_mode = os.environ.get('FLATLAND_POLICY_MODE', 'pure_marl_dla').strip().lower()

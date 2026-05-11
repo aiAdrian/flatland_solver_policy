@@ -33,13 +33,15 @@ class EpisodeBuffers:
     def push_transition(self, handle, transition):
         transitions = self.get_transitions(handle)
 
-        # -------- not yet working -------
-        #    if len(transitions) > 0:
-        #        el = transitions[len(transitions)-1]
-        #        (_,_,_,_, done) = el
-        #        if done:
-        #            return
-        # -------------------------------
+        # 🎯 CRITICAL: Wenn letzter Eintrag bereits done==True, keine neue Transition!
+        # Pro Agent: maximal EINE done==True transition (die letzte)
+        if len(transitions) > 0:
+            last_transition = transitions[-1]
+            # Struktur: (state, action, reward, next_state, done, aux_deadlock)
+            done_flag = last_transition[4]
+            if done_flag:
+                # Agent ist fertig - ignoriere neue Steps
+                return
 
         transitions.append(transition)
         self.memory.update({handle: transitions})
@@ -846,14 +848,14 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             
         self.surrogate_eps_clip = 0.12  # tighter trust region to reduce KL spikes
         self.weight_loss = 2.0  # Prioritize critic fitting to stabilize actor guidance
-        self.weight_entropy = 0.02  # INCREASED: 0.01 → 0.02 to boost exploration, prevent collapse
+        self.weight_entropy = 0.03  # Increased to counter entropy collapse observed after ~800 episodes.
         self.weight_policy = 1.0
         self.weight_aux_deadlock = 0.08
         # Sparse-switch maps: keep forward dominant and avoid forcing turn frequency.
-        self.weight_action_diversity = 0.00
-        self.forward_prob_soft_max = 0.80
+        self.weight_action_diversity = 0.06
+        self.forward_prob_soft_max = 0.72
         self.lr_prob_soft_min = 0.05
-        self.idle_prob_soft_max = 0.35
+        self.idle_prob_soft_max = 0.30
         self.aux_deadlock_pos_weight = 4.0
         self.weight_comm = 3.0e-4  # weak communication sparsity regularizer
         self.comm_reg_start_episode = 300
@@ -862,8 +864,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.comm_dropout_late = 0.05
         self.stability_guard_start_episode = 600
         self.stability_guard_hard_episode = 900
-        self.ppo_target_kl = 0.025
-        self.ppo_max_kl = 0.060
+        self.ppo_target_kl = 0.020
+        self.ppo_max_kl = 0.050
         self.ratio_guard_soft = 1.15
         self.ratio_guard_hard = 1.22
         self.ratio_guard_soft_low = 0.85
@@ -1025,8 +1027,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.actor_lr_factor = 1.0
         # Entropy rescue prevents late deterministic collapse around local minima.
         self.entropy_rescue_start_episode = 350      # ⬆️ Activate VERY early (was 700, now immediately!)
-        self.entropy_floor = 0.55       # ⬆️ Raise threshold (34% of max)
-        self.entropy_recovery_scale = 4.0  # INCREASED: 2.5 → 4.0 for more aggressive recovery (2.5×base when needed)
+        self.entropy_floor = 0.60       # Higher floor to avoid premature deterministic collapse.
+        self.entropy_recovery_scale = 5.0  # Stronger entropy rescue when floor is violated.
 
         self.loss_function = nn.SmoothL1Loss(beta=1.0)
         self.training_step_count = 0
@@ -1718,13 +1720,13 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 grad_norm_actor = torch.nn.utils.clip_grad_norm_(
                     list(self.encoder_actor.parameters()) + 
                     list(self.actor_critic_model.actor.parameters()),
-                    max_norm=1.0
+                    max_norm=0.6
                 )
                 
                 grad_norm_critic = torch.nn.utils.clip_grad_norm_(
                     list(self.encoder_critic.parameters()) + 
                     list(self.actor_critic_model.critic.parameters()),
-                    max_norm=1.0
+                    max_norm=0.6
                 )
                 
                 grad_norm = max(grad_norm_actor.item(), grad_norm_critic.item())
@@ -2324,6 +2326,81 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         print(f"  {'─'*76}")
         print(f"{W}\n")
 
+    def _apply_episode_end_bonus(self, episode_memory, done_count, num_agents):
+        """Apply cooperative episode-end shaping — PER AGENT ONLY.
+
+        🎯 CRITICAL: Bonus applied ONLY to agents where final transition has done==True
+        - Each agent (handle) has at most ONE done==True transition (the last one)
+        - Multiple agents CAN be done in the same episode
+        - Bonus applied exactly ONCE per agent, to their final transition only
+        
+        Mechanism:
+        - Progress reward grows non-linearly with team completion ratio
+        - Deadlock-risk on terminal states is penalized
+        - Total shaping is normalized and capped for stability across 1..n agents
+
+        Returns:
+            Total scalar delta applied over all modified final transitions.
+        """
+        if num_agents <= 0:
+            return 0.0
+    
+        # Cooperative progress bonus is computed as an EPISODE budget, then distributed
+        # over done agents. This keeps scale stable for variable team sizes.
+        completion_ratio = float(done_count) / float(num_agents)
+        TEAM_BONUS_EPISODE_CAP = 100.0
+        TEAM_BONUS_EXP = 1.8
+        total_bonus_budget = TEAM_BONUS_EPISODE_CAP * (completion_ratio ** TEAM_BONUS_EXP)
+        per_done_agent_bonus = total_bonus_budget / max(1, done_count)
+
+        # Penalize agents that finish in high deadlock-risk states (aux_dl in [0, 1]).
+        DEADLOCK_PENALTY_PER_AGENT_MAX = 45.0
+
+        # Safety clamps to prevent reward/cost explosion.
+        PER_AGENT_DELTA_MIN = -40.0
+        PER_AGENT_DELTA_MAX = 45.0
+        EPISODE_DELTA_ABS_CAP = 120.0
+
+        done_updates = []
+        for handle in episode_memory.memory:
+            transitions = episode_memory.memory[handle]
+            if not transitions:
+                continue
+
+            # Get final transition for this agent
+            state, action, reward, next_state, done, aux_dl = transitions[-1]
+            # 🎯 ONLY process agents with done==True in their final transition
+            if not done:
+                continue
+
+            deadlock_risk = float(np.clip(aux_dl, 0.0, 1.0))
+            delta = per_done_agent_bonus - (DEADLOCK_PENALTY_PER_AGENT_MAX * deadlock_risk)
+            delta = float(np.clip(delta, PER_AGENT_DELTA_MIN, PER_AGENT_DELTA_MAX))
+            # Store: (handle, ..., delta) — exactly ONE entry per done agent
+            done_updates.append((handle, state, action, reward, next_state, done, aux_dl, delta))
+
+        if not done_updates:
+            return 0.0
+
+        total_delta = float(sum(item[7] for item in done_updates))
+
+        # Final episode-level cap independent of number of agents.
+        if abs(total_delta) > EPISODE_DELTA_ABS_CAP:
+            scale = EPISODE_DELTA_ABS_CAP / (abs(total_delta) + 1e-8)
+            done_updates = [
+                (h, s, a, r, ns, d, adl, delta * scale)
+                for (h, s, a, r, ns, d, adl, delta) in done_updates
+            ]
+            total_delta = float(sum(item[7] for item in done_updates))
+
+        # 🎯 Apply bonus to each done agent — exactly ONCE to their final transition
+        for handle, state, action, reward, next_state, done, aux_dl, delta in done_updates:
+            transitions = episode_memory.memory[handle]
+            # Modify only the final transition reward (done flag stays True)
+            transitions[-1] = (state, action, reward + delta, next_state, done, aux_dl)
+
+        return float(total_delta)
+
     def end_episode(self, train):
         if train:
             # Collect episode-level stats before buffer is reset
@@ -2333,8 +2410,19 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             for transitions in self.current_episode_memory.memory.values():
                 if transitions:
                     ep_total_reward += sum(float(t[2]) for t in transitions)
+                    # Count agents with done==True in their final transition
                     if transitions[-1][4]:   # done flag of last transition
                         ep_done_count += 1
+            # ═══════════════════════════════════════════════════════════════
+            # POST-EPISODE SHAPING: cooperative progress bonus + deadlock penalty
+            # Applied PER AGENT to agents with done==True only
+            # ═══════════════════════════════════════════════════════════════
+            team_bonus = self._apply_episode_end_bonus(
+                self.current_episode_memory, ep_done_count, ep_n_agents
+            )
+
+            # Keep logging aligned with the actual rewards used for training.
+            ep_total_reward += team_bonus
             self._ep_stat_buf['reward'].append(ep_total_reward)
             self._ep_stat_buf['done_frac'].append(
                 ep_done_count / ep_n_agents if ep_n_agents > 0 else 0.0)
