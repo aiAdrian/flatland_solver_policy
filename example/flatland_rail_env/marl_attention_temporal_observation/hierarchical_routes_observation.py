@@ -127,6 +127,10 @@ class HierarchicalRoutesObservation(DecisionPointObservation):
         # 6) Return ordered handle list (same order as the K blocks). Used by
         #    the Decider policy to read `global_metric` from its CommBuffer.
         ordered_handles = [h for (_s, h, _b) in scored]
+        
+        # 7) REVERTED: Original observations [-1,1] — no normalization
+        #    (Normalization to [0,1] caused model-input mismatch with pretrained weights from [-1,1] observations)
+        
         return feat, ordered_handles
 
     # ------------------------------------------------------------------

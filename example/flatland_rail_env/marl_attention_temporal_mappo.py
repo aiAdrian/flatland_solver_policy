@@ -683,9 +683,13 @@ class TemporalLSTMEncoder(nn.Module):
 # =============================================================================
 
 class ActorCriticModel(nn.Module):
-    def __init__(self, state_size, action_size, device, hidsize1=512, hidsize2=256):
+    def __init__(self, state_size, action_size, device,
+                 hidsize1=512, hidsize2=256,
+                 critic_hidsize1=None, critic_hidsize2=None):
         super(ActorCriticModel, self).__init__()
         self.device = device
+        critic_hidsize1 = hidsize1 if critic_hidsize1 is None else int(critic_hidsize1)
+        critic_hidsize2 = hidsize2 if critic_hidsize2 is None else int(critic_hidsize2)
         
         self.actor = nn.Sequential(
             nn.Linear(state_size, hidsize1),
@@ -696,11 +700,11 @@ class ActorCriticModel(nn.Module):
         ).to(self.device)
 
         self.critic = nn.Sequential(
-            nn.Linear(state_size, hidsize1),
+            nn.Linear(state_size, critic_hidsize1),
             nn.Tanh(),
-            nn.Linear(hidsize1, hidsize2),
+            nn.Linear(critic_hidsize1, critic_hidsize2),
             nn.Tanh(),
-            nn.Linear(hidsize2, 1)
+            nn.Linear(critic_hidsize2, 1)
         ).to(self.device)
 
         # Auxiliary head: predicts one-step deadlock risk from actor embedding.
@@ -785,7 +789,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                  in_parameters: Union[MARL_ATTENTION_TEMPORAL_MAPPO_Param, None] = None,
                  show_pre_train_debug_msg = False,
                  show_progress_bar = False,
-                 train_frequency = 1):
+                 train_frequency = 1,
+                 optimizer_mode: str = 'single'):
         super(MARL_ATTENTION_TEMPORAL_PPOPolicy, self).__init__()
 
         self.show_debug_msg = False
@@ -793,6 +798,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.show_progress_bar = show_progress_bar
         self.train_frequency = train_frequency
         self.episode_count = 0
+        self.optimizer_mode = optimizer_mode.lower()  # 'single' or 'multiple'
 
         self.state_size = state_size  # 33D per timestep
         self.action_size = action_size
@@ -829,38 +835,39 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         else:
             self.K_epoch = 3  # Back to baseline
             
-        self.surrogate_eps_clip = 0.15  # slightly tighter trust region
-        self.weight_loss = 0.5  # Standard
-        self.weight_entropy = 0.01  # Lower entropy pressure for late-stage policy stability
+        self.surrogate_eps_clip = 0.12  # tighter trust region to reduce KL spikes
+        self.weight_loss = 2.0  # Prioritize critic fitting to stabilize actor guidance
+        self.weight_entropy = 0.02  # INCREASED: 0.01 → 0.02 to boost exploration, prevent collapse
         self.weight_policy = 1.0
         self.weight_aux_deadlock = 0.08
         # Forward dominance is expected globally in rail domains; keep this
         # disabled by default to avoid penalizing valid straight-driving behavior.
-        self.weight_action_diversity = 0.0
-        self.forward_prob_soft_max = 0.52
-        self.lr_prob_soft_min = 0.22
+        self.weight_action_diversity = 0.20
+        self.forward_prob_soft_max = 0.46
+        self.lr_prob_soft_min = 0.30
+        self.idle_prob_soft_max = 0.35
         self.aux_deadlock_pos_weight = 4.0
         self.weight_comm = 3.0e-4  # weak communication sparsity regularizer
         self.comm_reg_start_episode = 300
         self.comm_reg_full_episode = 600
         self.comm_dropout_early = 0.00
         self.comm_dropout_late = 0.05
-        self.stability_guard_start_episode = 900
-        self.stability_guard_hard_episode = 1300
-        self.ppo_target_kl = 0.020
-        self.ppo_max_kl = 0.045
-        self.ratio_guard_soft = 1.12
+        self.stability_guard_start_episode = 600
+        self.stability_guard_hard_episode = 900
+        self.ppo_target_kl = 0.025
+        self.ppo_max_kl = 0.060
+        self.ratio_guard_soft = 1.15
         self.ratio_guard_hard = 1.22
-        self.ratio_guard_soft_low = 0.88
+        self.ratio_guard_soft_low = 0.85
         self.ratio_guard_hard_low = 0.75
         self.ppo_emergency_kl = 0.12
         self.ppo_emergency_kl_hard = 0.25
         self.comm_gate_target = 0.032
         self.max_hard_batches_before_lr_decay = 4
         self.hard_spike_streak_limit = 2
-        self.actor_lr_decay_on_instability = 0.85
-        self.actor_lr_recover_rate = 1.01
-        self.actor_lr_min_factor = 0.15
+        self.actor_lr_decay_on_instability = 0.92
+        self.actor_lr_recover_rate = 1.02
+        self.actor_lr_min_factor = 0.50
         self.actor_lr_max_factor = 1.00
         self.gae_lambda = self.ppo_parameters.gae_lambda if self.ppo_parameters else 0.95
 
@@ -896,6 +903,16 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         print(f"   - temporal_window: {self.temporal_window}")
         print(f"   - num_heads: {self.num_heads}")
         print(f"   - encoder_type: {self.encoder_type}")
+        print(f"   - optimizer_mode: {self.optimizer_mode}")
+        print(
+            f"   - ppo: clip={self.surrogate_eps_clip:.3f}, target_kl={self.ppo_target_kl:.3f}, "
+            f"max_kl={self.ppo_max_kl:.3f}, guard_start={self.stability_guard_start_episode}, "
+            f"guard_hard={self.stability_guard_hard_episode}"
+        )
+        print(
+            f"   - actor_lr: decay={self.actor_lr_decay_on_instability:.3f}, "
+            f"recover={self.actor_lr_recover_rate:.3f}, min_factor={self.actor_lr_min_factor:.3f}"
+        )
 
         encoder_cls = TemporalLSTMEncoder if str(self.encoder_type).lower() == 'lstm' else TemporalTransformerEncoder
 
@@ -916,48 +933,99 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         )
 
         # Actor-Critic Model (heads only, encoders are separate!)
+        critic_hidden = max(192, int(self.hidden_size))
         self.actor_critic_model = ActorCriticModel(
             self.hidden_size, action_size, self.device,
             hidsize1=self.hidden_size,
-            hidsize2=self.hidden_size
+            hidsize2=self.hidden_size,
+            critic_hidsize1=critic_hidden,
+            critic_hidsize2=critic_hidden
         )
 
-        # Adaptive Learning Rates
+        # Adaptive Learning Rates - Choose between Option A (consolidated) and Option B (synchronized decay)
         base_lr = self.learning_rate
         
-        self.optimizer_encoder_actor = optim.AdamW(
-            self.encoder_actor.parameters(),
-            lr=base_lr * 1.2
-        )
+        if self.optimizer_mode == 'single':
+            # ===================================================================
+            # SINGLE: CONSOLIDATED SINGLE OPTIMIZER (Recommended for MAPPO)
+            # ===================================================================
+            # All parameters (actor + critic) use ONE shared Adam optimizer.
+            # This is the standard MAPPO design (OpenAI/IPPO literature).
+            # Ensures symmetric learning rates and synchronized training pace.
+            print("[Optimizer] Mode SINGLE: Consolidated single optimizer for actor + critic")
+            
+            all_params = list(self.encoder_actor.parameters()) + \
+                        list(self.actor_critic_model.actor.parameters()) + \
+                        list(self.encoder_critic.parameters()) + \
+                        list(self.actor_critic_model.critic.parameters())
+            
+            self.optimizer = optim.AdamW(all_params, lr=base_lr)
+            
+            # Keep these for compatibility with existing code that references them
+            self.optimizer_actor = self.optimizer
+            self.optimizer_critic = self.optimizer
+            self.optimizer_encoder_actor = self.optimizer
+            self.optimizer_actor_head = self.optimizer
+            self.optimizer_encoder_critic = self.optimizer
+            self.optimizer_critic_head = self.optimizer
+            
+            # Store base LRs for reference (single base_lr for all)
+            self.base_lr_all = base_lr
+            self.base_lr_encoder_actor = base_lr
+            self.base_lr_actor_head = base_lr
+            self.base_lr_encoder_critic = base_lr
+            self.base_lr_critic_head = base_lr
+            
+        else:  # multiple
+            # ===================================================================
+            # MULTIPLE: FOUR OPTIMIZERS WITH SYNCHRONIZED DECAY
+            # ===================================================================
+            # Keeps 4 separate optimizers (encoder_actor, actor_head, encoder_critic, critic_head)
+            # but applies decay to ALL of them, not just actor.
+            # This maintains symmetric learning rates: when actor_lr_factor changes,
+            # all 4 optimizers decay proportionally.
+            print("[Optimizer] Mode MULTIPLE: 4 optimizers with synchronized decay")
+            
+            self.optimizer_encoder_actor = optim.AdamW(
+                self.encoder_actor.parameters(),
+                lr=base_lr * 1.2
+            )
+            
+            self.optimizer_actor_head = optim.AdamW(
+                self.actor_critic_model.actor.parameters(),
+                lr=base_lr * 1.0
+            )
+            
+            self.optimizer_encoder_critic = optim.AdamW(
+                self.encoder_critic.parameters(),
+                lr=base_lr * 1.4
+            )
+            
+            self.optimizer_critic_head = optim.AdamW(
+                self.actor_critic_model.critic.parameters(),
+                lr=base_lr * 1.1
+            )
+            
+            self.optimizer_actor = self.optimizer_actor_head
+            self.optimizer_critic = self.optimizer_critic_head
+            self.optimizer = self.optimizer_actor_head
+            self.base_lr_encoder_actor = base_lr * 1.2
+            self.base_lr_actor_head = base_lr * 1.0
+            self.base_lr_encoder_critic = base_lr * 1.4
+            self.base_lr_critic_head = base_lr * 1.1
         
-        self.optimizer_actor_head = optim.AdamW(
-            self.actor_critic_model.actor.parameters(),
-            lr=base_lr * 1.0
-        )
-        
-        self.optimizer_encoder_critic = optim.AdamW(
-            self.encoder_critic.parameters(),
-            lr=base_lr * 1.0
-        )
-        
-        self.optimizer_critic_head = optim.AdamW(
-            self.actor_critic_model.critic.parameters(),
-            lr=base_lr * 0.5
-        )
-        
-        self.optimizer_actor = self.optimizer_actor_head
-        self.optimizer_critic = self.optimizer_critic_head
-        self.optimizer = self.optimizer_actor_head
-        self.base_lr_encoder_actor = base_lr * 1.2
-        self.base_lr_actor_head = base_lr * 1.0
         self.actor_lr_factor = 1.0
         # Entropy rescue prevents late deterministic collapse around local minima.
         self.entropy_rescue_start_episode = 350      # ⬆️ Activate VERY early (was 700, now immediately!)
         self.entropy_floor = 0.55       # ⬆️ Raise threshold (34% of max)
-        self.entropy_recovery_scale = 2.5  # ⬆️ Stronger recovery kick
+        self.entropy_recovery_scale = 4.0  # INCREASED: 2.5 → 4.0 for more aggressive recovery (2.5×base when needed)
 
         self.loss_function = nn.SmoothL1Loss(beta=1.0)
         self.training_step_count = 0
+        
+        # TensorBoard writer (optional, can be set via set_tensorboard_writer)
+        self.writer = None
+        self._tensorboard_batch_counter = 0
 
         # Observation sanity statistics (gesammelt über 100 Episoden)
         self._obs_stat_buffer: list = []   # rohe Feature-Vektoren der letzten 100 Ep.
@@ -969,6 +1037,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             'kl': [], 'ratio': [], 'entropy': [],
             'adv_mean': [], 'adv_std': [], 'grad_norm': [],
             'ret_min': [], 'ret_max': [],
+            'comm_loss': [], 'action_div_loss': [], 'total_loss': [],
+            'action_hist': [],
         }
         # Episode-Kennzahlen (Reward + Done-Rate)
         self._ep_stat_buf: dict = {'reward': [], 'done_frac': []}
@@ -981,6 +1051,94 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         if self.episode_count <= start_ep:
             return 0.0
         return float(np.clip((self.episode_count - start_ep) / float(full_ep - start_ep), 0.0, 1.0))
+
+    def set_tensorboard_writer(self, writer):
+        """Set TensorBoard SummaryWriter for metric logging."""
+        self.writer = writer
+    
+    def _log_batch_metrics(self, batch_metrics: dict):
+        """Log per-batch metrics to TensorBoard if writer is available.
+        
+        Uses pattern: {policy_name}/training_value_{metric_name}
+        matching the base_solver.py convention.
+        """
+        if self.writer is None:
+            return
+        
+        policy_prefix = self.get_name()
+        global_step = self._tensorboard_batch_counter
+        
+        # Loss metrics
+        self.writer.add_scalar(f'{policy_prefix}/training_value_loss_policy', batch_metrics.get('p_loss', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_loss_value', batch_metrics.get('v_loss', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_loss_entropy', batch_metrics.get('e_loss', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_loss_aux_deadlock', batch_metrics.get('aux_dl', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_loss_action_diversity', batch_metrics.get('action_div', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_loss_communication', batch_metrics.get('comm_loss', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_loss_total', batch_metrics.get('loss', 0.0), global_step)
+        
+        # PPO metrics
+        self.writer.add_scalar(f'{policy_prefix}/training_value_ppo_kl', batch_metrics.get('kl', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_ppo_ratio', batch_metrics.get('ratio', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_ppo_entropy', batch_metrics.get('entropy', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_ppo_clip', batch_metrics.get('clip', 0.0), global_step)
+        
+        # Advantage metrics
+        self.writer.add_scalar(f'{policy_prefix}/training_value_advantage_mean', batch_metrics.get('adv_mean', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_advantage_std', batch_metrics.get('adv_std', 0.0), global_step)
+        
+        # Gradient & learning rate
+        self.writer.add_scalar(f'{policy_prefix}/training_value_grad_norm', batch_metrics.get('grad_norm', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_lr_factor', batch_metrics.get('lr_factor', 1.0), global_step)
+        
+        # Communication metrics
+        self.writer.add_scalar(f'{policy_prefix}/training_value_comm_gate', batch_metrics.get('comm_gate', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_comm_intent_wait', batch_metrics.get('intent_wait', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_comm_intent_go', batch_metrics.get('intent_go', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_comm_intent_yellow', batch_metrics.get('intent_yellow', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_comm_dropout', batch_metrics.get('comm_dropout', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_comm_weight', batch_metrics.get('comm_weight', 0.0), global_step)
+        
+        # Policy weight
+        self.writer.add_scalar(f'{policy_prefix}/training_value_policy_weight', batch_metrics.get('policy_weight', 0.0), global_step)
+        
+        # Action distribution (per action type)
+        action_labels = ['DN', 'L', 'F', 'R', 'S']
+        action_hist = batch_metrics.get('action_hist', np.zeros(5))
+        for i, label in enumerate(action_labels):
+            self.writer.add_scalar(f'{policy_prefix}/training_value_action_{label}', action_hist[i], global_step)
+        
+        self._tensorboard_batch_counter += 1
+    
+    def _log_episode_metrics(self, episode_metrics: dict):
+        """Log per-episode aggregate metrics to TensorBoard if writer is available.
+        
+        Uses pattern: {policy_name}/training_smoothed_{metric_name}
+        (smoothed = aggregated over 100 episode buffer, matching base_solver.py convention)
+        """
+        if self.writer is None:
+            return
+        
+        policy_prefix = self.get_name()
+        ep_num = self.episode_count
+        
+        # Aggregate loss metrics
+        self.writer.add_scalar(f'{policy_prefix}/training_smoothed_loss_policy', episode_metrics.get('p_loss_mean', 0.0), ep_num)
+        self.writer.add_scalar(f'{policy_prefix}/training_smoothed_loss_value', episode_metrics.get('v_loss_mean', 0.0), ep_num)
+        self.writer.add_scalar(f'{policy_prefix}/training_smoothed_loss_entropy', episode_metrics.get('e_loss_mean', 0.0), ep_num)
+        self.writer.add_scalar(f'{policy_prefix}/training_smoothed_loss_aux_deadlock', episode_metrics.get('aux_dl_mean', 0.0), ep_num)
+        
+        # Aggregate PPO metrics
+        self.writer.add_scalar(f'{policy_prefix}/training_smoothed_ppo_kl', episode_metrics.get('kl_mean', 0.0), ep_num)
+        self.writer.add_scalar(f'{policy_prefix}/training_smoothed_ppo_entropy', episode_metrics.get('entropy_mean', 0.0), ep_num)
+        self.writer.add_scalar(f'{policy_prefix}/training_smoothed_ppo_ratio', episode_metrics.get('ratio_mean', 0.0), ep_num)
+        
+        # Aggregate gradient metric
+        self.writer.add_scalar(f'{policy_prefix}/training_smoothed_grad_norm', episode_metrics.get('grad_norm_mean', 0.0), ep_num)
+        
+        # Episode performance (from reward shaper)
+        self.writer.add_scalar(f'{policy_prefix}/training_smoothed_reward', episode_metrics.get('reward_mean', 0.0), ep_num)
+        self.writer.add_scalar(f'{policy_prefix}/training_smoothed_done', episode_metrics.get('done_frac', 0.0), ep_num)
 
     def _apply_comm_schedule(self):
         progress = self._comm_progress()
@@ -1011,11 +1169,36 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         return int(self.K_epoch)
 
     def _set_actor_lr_factor(self, factor: float):
+        """Update learning rates based on actor_lr_factor (used for decay/recovery).
+        
+        SINGLE: Update single shared optimizer's lr
+        MULTIPLE: Apply decay to ALL 4 optimizers (not just actor), ensuring synchronized pacing
+        """
         self.actor_lr_factor = float(np.clip(factor, self.actor_lr_min_factor, self.actor_lr_max_factor))
-        for param_group in self.optimizer_encoder_actor.param_groups:
-            param_group['lr'] = self.base_lr_encoder_actor * self.actor_lr_factor
-        for param_group in self.optimizer_actor_head.param_groups:
-            param_group['lr'] = self.base_lr_actor_head * self.actor_lr_factor
+        
+        if self.optimizer_mode == 'single':
+            # Single optimizer: scale all parameters by same factor
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = self.base_lr_all * self.actor_lr_factor
+        else:  # Mode B
+            # 4 optimizers: apply decay to ALL, not just actor (synchronized decay)
+            for param_group in self.optimizer_encoder_actor.param_groups:
+                param_group['lr'] = self.base_lr_encoder_actor * self.actor_lr_factor
+            for param_group in self.optimizer_actor_head.param_groups:
+                param_group['lr'] = self.base_lr_actor_head * self.actor_lr_factor
+            # ⚠️ NEW: Apply decay to critic too! (previously was constant)
+            for param_group in self.optimizer_encoder_critic.param_groups:
+                param_group['lr'] = self.base_lr_encoder_critic * self.actor_lr_factor
+            for param_group in self.optimizer_critic_head.param_groups:
+                param_group['lr'] = self.base_lr_critic_head * self.actor_lr_factor
+
+    def _set_critic_lr_defaults(self):
+        """Reset critic LRs to default (only needed in MULTIPLE mode; SINGLE uses synchronized decay)."""
+        if self.optimizer_mode == 'multiple':
+            for param_group in self.optimizer_encoder_critic.param_groups:
+                param_group['lr'] = self.base_lr_encoder_critic
+            for param_group in self.optimizer_critic_head.param_groups:
+                param_group['lr'] = self.base_lr_critic_head
 
     def get_name(self):
         return self.__class__.__name__
@@ -1189,11 +1372,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 with torch.no_grad():
                     states_critic = self.encoder_critic.forward_batch(state_tuples)
                     values = torch.squeeze(self.actor_critic_model.critic(states_critic), dim=-1)
-                    values = torch.clamp(values, -5, 5)  # scaled range: reward_scale=0.1 → returns ≈ [-3, +0.3]
+                    # FIXED: Removed torch.clamp(values, -5, 5) — was truncating returns [-19.85, +2.97].
+                    # Let critic learn to predict true return values without artificial bounds.
                     
                     next_states_critic = self.encoder_critic.forward_batch(state_next_tuples)
                     next_values = torch.squeeze(self.actor_critic_model.critic(next_states_critic), dim=-1)
-                    next_values = torch.clamp(next_values, -5, 5)
+                    # Critic now free to fit the full range of returns for better GAE advantage signals.
                     
                     traj_gae_advantages, traj_gae_returns = self._compute_gae(
                         rewards, values, dones, next_values
@@ -1427,12 +1611,19 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     # Soft constraints via squared hinge losses:
                     # 1) keep forward probability below a soft cap
                     # 2) keep combined left+right probability above a soft floor
+                    # 3) keep idle actions (DO_NOTHING + STOP) below a soft cap
                     mean_probs = probs.mean(dim=0)
                     forward_prob = mean_probs[2]
                     lr_prob = mean_probs[1] + mean_probs[3]
+                    idle_prob = mean_probs[0] + mean_probs[4]
                     forward_excess = torch.relu(forward_prob - self.forward_prob_soft_max)
                     lr_shortfall = torch.relu(self.lr_prob_soft_min - lr_prob)
-                    action_diversity_loss_component = forward_excess.pow(2) + 0.5 * lr_shortfall.pow(2)
+                    idle_excess = torch.relu(idle_prob - self.idle_prob_soft_max)
+                    action_diversity_loss_component = (
+                        forward_excess.pow(2)
+                        + 0.5 * lr_shortfall.pow(2)
+                        + 0.30 * idle_excess.pow(2)
+                    )
                 deadlock_logits = torch.squeeze(self.actor_critic_model.deadlock_head(states_actor), dim=-1)
                 aux_targets = torch.clamp(batch_aux_deadlock, 0.0, 1.0)
                 pos_weight = torch.full_like(aux_targets, self.aux_deadlock_pos_weight)
@@ -1465,7 +1656,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 if approx_kl > self.ppo_max_kl or ratio_hard_viol:
                     # Keep small actor updates alive during hard spikes to avoid
                     # long Pw=0 plateaus where policy stops improving.
-                    policy_weight_eff = max(policy_weight_eff * 0.45, 0.22)
+                    policy_weight_eff = max(policy_weight_eff * 0.55, 0.35)
                     entropy_weight_eff *= 0.4
                     comm_weight_eff *= 1.35
                     hard_spike_batches_total += 1
@@ -1476,7 +1667,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     hard_spike_streak = 0
 
                 if approx_kl > self.ppo_emergency_kl_hard:
-                    policy_weight_eff = max(policy_weight_eff * 0.35, 0.18)
+                    policy_weight_eff = max(policy_weight_eff * 0.45, 0.30)
                     entropy_weight_eff *= 0.25
                     comm_weight_eff *= 1.45
                     hard_spike_batches_total += 1
@@ -1531,12 +1722,17 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     print("   Skipping optimizer step to prevent crash...")
                     continue
                 
-                # Update optimizers
-                if policy_weight_eff > 0.0:
-                    self.optimizer_encoder_actor.step()
-                    self.optimizer_actor_head.step()
-                self.optimizer_encoder_critic.step()
-                self.optimizer_critic_head.step()
+                # Update optimizers - mode-dependent
+                if self.optimizer_mode == 'single':
+                    # Single shared optimizer: one step for all parameters
+                    self.optimizer.step()
+                else:  # multiple
+                    # 4 separate optimizers: update all 4
+                    if policy_weight_eff > 0.0:
+                        self.optimizer_encoder_actor.step()
+                        self.optimizer_actor_head.step()
+                    self.optimizer_encoder_critic.step()
+                    self.optimizer_critic_head.step()
                 
                 self.loss = loss.detach().cpu().numpy()
 
@@ -1551,6 +1747,49 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 self._stat_buf['adv_mean'].append(raw_adv_mean)
                 self._stat_buf['adv_std'].append(raw_adv_std)
                 self._stat_buf['grad_norm'].append(grad_norm)
+                self._stat_buf['comm_loss'].append(comm_loss_component.item())
+                self._stat_buf['action_div_loss'].append(action_diversity_loss_component.item())
+                self._stat_buf['total_loss'].append(loss.item())
+                self._stat_buf['action_hist'].append(batch_action_hist.detach().cpu().numpy())
+                
+                # Calculate communication intent metrics (needed for batch_metrics)
+                actor_int = self.encoder_actor.last_comm_intent_mean
+                critic_int = self.encoder_critic.last_comm_intent_mean
+                valid_cnt = self.encoder_actor.last_comm_valid_count + self.encoder_critic.last_comm_valid_count
+                if valid_cnt > 0:
+                    wait_mean = 0.5 * (actor_int[0] + critic_int[0])
+                    go_mean = 0.5 * (actor_int[1] + critic_int[1])
+                    yield_mean = 0.5 * (actor_int[2] + critic_int[2])
+                else:
+                    wait_mean, go_mean, yield_mean = 0.0, 0.0, 0.0
+                
+                # Log per-batch metrics to TensorBoard
+                batch_metrics = {
+                    'loss': loss.item(),
+                    'p_loss': policy_loss_component.item(),
+                    'v_loss': value_loss_component.item(),
+                    'e_loss': entropy_loss_component.item(),
+                    'aux_dl': aux_deadlock_loss_component.item(),
+                    'action_div': action_diversity_loss_component.item(),
+                    'comm_loss': comm_loss_component.item(),
+                    'kl': approx_kl,
+                    'ratio': ratio_mean,
+                    'entropy': entropy_mean,
+                    'adv_mean': raw_adv_mean,
+                    'adv_std': raw_adv_std,
+                    'grad_norm': grad_norm,
+                    'clip': clip_eps_eff,
+                    'lr_factor': self.actor_lr_factor,
+                    'comm_gate': (self.encoder_actor.last_comm_gate_mean + self.encoder_critic.last_comm_gate_mean) / 2.0,
+                    'intent_wait': wait_mean if valid_cnt > 0 else 0.0,
+                    'intent_go': go_mean if valid_cnt > 0 else 0.0,
+                    'intent_yellow': yield_mean if valid_cnt > 0 else 0.0,
+                    'comm_dropout': self.encoder_actor.comm_dropout.p,
+                    'comm_weight': comm_weight_eff,
+                    'policy_weight': policy_weight_eff,
+                    'action_hist': batch_action_hist.numpy() if hasattr(batch_action_hist, 'numpy') else np.array(batch_action_hist),
+                }
+                self._log_batch_metrics(batch_metrics)
                 self._stat_buf['ret_min'].append(batch_gae_returns.min().item())
                 self._stat_buf['ret_max'].append(batch_gae_returns.max().item())
 
@@ -1563,15 +1802,6 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     bar_length = 40
                     filled = int(bar_length * progress)
                     bar = '█' * filled + '░' * (bar_length - filled)
-                    actor_int = self.encoder_actor.last_comm_intent_mean
-                    critic_int = self.encoder_critic.last_comm_intent_mean
-                    valid_cnt = self.encoder_actor.last_comm_valid_count + self.encoder_critic.last_comm_valid_count
-                    if valid_cnt > 0:
-                        wait_mean = 0.5 * (actor_int[0] + critic_int[0])
-                        go_mean = 0.5 * (actor_int[1] + critic_int[1])
-                        yield_mean = 0.5 * (actor_int[2] + critic_int[2])
-                    else:
-                        wait_mean, go_mean, yield_mean = 0.0, 0.0, 0.0
                     print(f"\r  [{bar}] Epoch {k_loop+1}/{k_epochs_eff}, Batch {batch_idx+1}/{num_batches} ({progress*100:3.1f}%)", end='')
                     print(f"\t", end='')
                     print(f"| Loss: {loss.item():.4f}", end='')
@@ -1724,9 +1954,17 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # ── 1) Episoden-Kennzahlen ─────────────────────────────────────────────
         r_list = self._ep_stat_buf['reward']
         d_list = self._ep_stat_buf['done_frac']
+        ep_reward_mean = 0.0
+        ep_reward_std = 0.0
+        ep_done_mean = 0.0
+        ep_done_std = 0.0
         if r_list:
             r_arr = np.array(r_list, dtype=np.float32)
             d_arr = np.array(d_list, dtype=np.float32)
+            ep_reward_mean = float(r_arr.mean())
+            ep_reward_std = float(r_arr.std())
+            ep_done_mean = float(d_arr.mean())
+            ep_done_std = float(d_arr.std())
 
             hdr(f"SECTION 1 — EPISODE PERFORMANCE  (n={len(r_arr)} episodes)")
             def ep_row(lbl, val, unit, lo_ok, hi_ok, note_ok, note_warn):
@@ -1835,13 +2073,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             # Diagnose
             if vl_m > 0.30:
                 issues.append(
-                    f"V_Loss={vl_m:.4f} > 0.30: Critic cannot fit the return targets. "
+                    f"V_Loss={vl_m:.4f} > 0.30: Critic slow to converge (value clamp removed, learning full range). "
                     f"Returns span [{ret_min:+.2f},{ret_max:+.2f}]. "
-                    + ("Returns exceed value-clamp [-5,5] → GAE advantages are truncated "
-                       "→ value targets are inconsistent with what critic can predict. "
-                       "Fix: remove or widen the values = torch.clamp(values,-5,5) call."
-                       if ret_min < -5.0 or ret_max > 5.0 else
-                       "Check reward_scale and discount."))
+                    f"Expected to improve over 200+ episodes as critic adapts to broader range.")
             if abs(pl_m) < 0.005:
                 issues.append(
                     f"P_Loss={pl_m:+.5f} ≈ 0: Policy gradient is nearly zero. "
@@ -1878,6 +2112,22 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     print(f"    WARN  {iss}")
             else:
                 print(f"\n    OK  No training-level issues.")
+
+        # Log episode-level aggregated metrics to TensorBoard
+        if n_b > 0:
+            episode_metrics = {
+                'v_loss_mean': vl_m,
+                'p_loss_mean': pl_m,
+                'e_loss_mean': el_m,
+                'aux_dl_mean': aux_m,
+                'kl_mean': kl_m,
+                'entropy_mean': en_m,
+                'ratio_mean': rt_m,
+                'grad_norm_mean': gn_m,
+                'reward_mean': float(r_arr.mean()) if len(r_arr) > 0 else 0.0,
+                'done_frac': float(d_arr.mean()) if len(d_arr) > 0 else 0.0,
+            }
+            self._log_episode_metrics(episode_metrics)
 
         for key in self._stat_buf:
             self._stat_buf[key].clear()
@@ -1939,6 +2189,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             print(f"  (Feature importance not available: {exc})")
 
         # ── 4) Obs-Sanity ──────────────────────────────────────────────────────
+        obs_issues = []
         if self._obs_stat_buffer:
             data  = np.array(self._obs_stat_buffer, dtype=np.float32)
             self._obs_stat_buffer.clear()
@@ -2019,41 +2270,37 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         else:
             self._obs_stat_buffer.clear()
 
-        # ── 5) LLM summary block ───────────────────────────────────────────────
+        # ── 5) Copilot summary block ───────────────────────────────────────────
         print(f"\n{W}")
-        print(f"  SECTION 5 — LLM ANALYSIS PROMPT")
-        print(f"  Copy the text below into an LLM for deeper analysis:")
+        print(f"  SECTION 5 — COPILOT INTERNAL TRIAGE")
+        print(f"  Compact block for direct next-action decisions:")
         print(f"  {'─'*76}")
 
-        all_issues = issues + (obs_issues if self._obs_stat_buffer == [] else [])
+        all_issues = issues + obs_issues
         issue_text = (("\n".join(f"  - {x}" for x in all_issues))
                       if all_issues else "  - None detected.")
         print(
-            f"  Context:\n"
-            f"  MAPPO training on Flatland 5-agent rail scheduling.\n"
-            f"  Episode {self.episode_count}, "
-            f"DecisionPoint observation 54D, LSTM encoder, PPO clip.\n"
+            f"  PROFILE: MAPPO Flatland 5-agent | Episode={self.episode_count}\n"
+            f"  OBS: DecisionPoint54 + temporal LSTM + comm-attn\n"
             f"\n"
-            f"  Training metrics (mean over {n_b} batches):\n"
-            f"  V_Loss={vl_m:.4f}  P_Loss={pl_m:+.4f}  Entropy={en_m:.4f}\n"
-            f"  KL={kl_m:.4f}  Ratio={rt_m:.4f}  GradNorm={gn_m:.4f}\n"
-            f"  Adv_mean={am_m:+.3f}  Adv_std={as_m:.3f}\n"
-            f"  Returns=[{ret_min:+.2f},{ret_max:+.2f}]  AuxDL={aux_m:.4f}\n"
-            f"  LR_factor={self.actor_lr_factor:.4f}  "
-            f"clip_eps={self._effective_clip_eps():.3f}\n"
+            f"  METRICS:\n"
+            f"  done_mean={ep_done_mean:.3f} done_std={ep_done_std:.3f} "
+            f"reward_mean={ep_reward_mean:+.1f} reward_std={ep_reward_std:.1f}\n"
+            f"  v_loss={vl_m:.4f} p_loss={pl_m:+.4f} entropy={en_m:.4f} "
+            f"kl={kl_m:.4f} ratio={rt_m:.4f} grad={gn_m:.4f}\n"
+            f"  adv_mean={am_m:+.3f} adv_std={as_m:.3f} "
+            f"returns=[{ret_min:+.2f},{ret_max:+.2f}] aux_dl={aux_m:.4f}\n"
+            f"  actor_lr_factor={self.actor_lr_factor:.4f} clip_eps={self._effective_clip_eps():.3f}\n"
             f"\n"
-            f"  Episode metrics (last {self._obs_stat_interval} episodes):\n"
-            f"  Done-Rate mean={float(np.mean(d_list)) if d_list else 0.0:.3f}  "
-            f"std={float(np.std(d_list)) if d_list else 0.0:.3f}\n"
-            f"  Reward mean={float(np.mean(r_list)) if r_list else 0.0:+.1f}  "
-            f"std={float(np.std(r_list)) if r_list else 0.0:.1f}\n"
+            f"  DECISION_RULES:\n"
+            f"  - if done_mean < 0.22 and v_loss > 0.80: increase critic pressure or reduce reward penalties\n"
+            f"  - if entropy < {self.entropy_floor:.2f}: raise entropy weight / recovery scale\n"
+            f"  - if forward-action share > 0.55: increase action-diversity penalty\n"
+            f"  - if grad > 5.0: lower actor lr or tighten clipping\n"
             f"\n"
-            f"  Automated issues detected:\n{issue_text}\n"
+            f"  ISSUES:\n{issue_text}\n"
             f"\n"
-            f"  Questions: What are the most likely root causes? "
-            f"What should be changed first to improve done-rate stability?\n"
-            f"  Observed training pattern: done-rate rises to ~0.25 then oscillates "
-            f"+/-0.25 without further improvement."
+            f"  NEXT_ACTION: output top-3 code-level changes with concrete parameter deltas."
         )
         print(f"  {'─'*76}")
         print(f"{W}\n")
@@ -2102,12 +2349,43 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 print(f" >> failed to load: {e}")
         return obj
 
+    @staticmethod
+    def _optimizer_state_compatible(optimizer) -> bool:
+        """Validate that tensor-shaped optimizer states match current param shapes."""
+        try:
+            for group in optimizer.param_groups:
+                for p in group['params']:
+                    if p not in optimizer.state:
+                        continue
+                    st = optimizer.state[p]
+                    for _, v in st.items():
+                        if torch.is_tensor(v) and tuple(v.shape) != tuple(p.shape):
+                            return False
+            return True
+        except Exception:
+            return False
+
+    def _reset_critic_optimizer(self):
+        """Recreate critic-head optimizer after architecture changes."""
+        self.optimizer_critic_head = optim.AdamW(
+            self.actor_critic_model.critic.parameters(),
+            lr=self.base_lr_critic_head
+        )
+        self.optimizer_critic = self.optimizer_critic_head
+
     def load(self, filename):
         self.actor_critic_model.load(filename)
         self.encoder_actor.load(filename + "_actor")
         self.encoder_critic.load(filename + "_critic")
         self.optimizer_actor = self._load(self.optimizer_actor, filename + ".optimizer_actor")
         self.optimizer_critic = self._load(self.optimizer_critic, filename + ".optimizer_critic")
+        self.optimizer_actor_head = self.optimizer_actor
+        self.optimizer_critic_head = self.optimizer_critic
+        if not self._optimizer_state_compatible(self.optimizer_critic_head):
+            print(" >> critic optimizer state incompatible with current critic shape; reinitializing critic optimizer")
+            self._reset_critic_optimizer()
+        self._set_actor_lr_factor(self.actor_lr_factor)
+        self._set_critic_lr_defaults()
         print('{} -> load {} ok'.format(self.get_name(), filename))
 
     def clone(self):

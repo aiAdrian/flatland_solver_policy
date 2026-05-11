@@ -77,7 +77,8 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
                  show_pre_train_debug_msg=False,
                  show_progress_bar=True,
                  train_frequency=10,
-                 use_deadlock_avoidance_policy = False):
+                 use_deadlock_avoidance_policy=False,
+                 optimizer_mode: str = 'single'):
         self.deadlock_avoidance_policy = None
         self.use_deadlock_avoidance_policy = use_deadlock_avoidance_policy
         super(MARL_ATT_DecisionPointPolicy, self).__init__(
@@ -86,7 +87,8 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
                 in_parameters,
                 show_pre_train_debug_msg,
                 show_progress_bar,
-                train_frequency
+                train_frequency,
+                optimizer_mode
             )
         self._env: Union[Environment, None] = None
         self.switchAnalyser: Union[RailroadSwitchAnalyser, None] = None
@@ -192,6 +194,14 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         if bool(getattr(self, 'use_decision_eps_floor', False)):
             eps_val = max(eps_val, eps_floor)
         if eps_val > 0.0 and np.random.rand() < eps_val:
+            # Prefer movement actions during random exploration to avoid
+            # collapsing into DO_NOTHING/STOP-heavy local minima.
+            move_actions = legal_actions[
+                (legal_actions != RailEnvActions.DO_NOTHING)
+                & (legal_actions != RailEnvActions.STOP_MOVING)
+            ]
+            if move_actions.size > 0:
+                return int(np.random.choice(move_actions))
             return int(np.random.choice(legal_actions))
         try:
             with torch.no_grad():
@@ -357,12 +367,13 @@ ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     encoder_type='lstm'
 )
 
-def create_ma_ppo_agent(observation_space: int, action_space: int, eps: float = 0.0) -> LearningPolicy:
+def create_ma_ppo_agent(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'single') -> LearningPolicy:
     """
     Creates PPO Policy with Temporal Transformer Encoder
     
     observation_space: 33 (30 base + 3 velocity)
     eps: Epsilon floor (0.0-1.0)
+    optimizer_mode: 'single' = consolidated optimizer, 'multiple' = 4 optimizers with sync decay
     """
     print('>> MARL_ATTENTION_TEMPORAL_PPOPolicy (Temporal Transformer)')
     print('   - observation_space:', observation_space)
@@ -370,6 +381,7 @@ def create_ma_ppo_agent(observation_space: int, action_space: int, eps: float = 
     print('   - temporal_window:', TEMPORAL_WINDOW)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
     print(f'   - EPS (epsilon floor): {eps:.4f}')
+    print(f'   - optimizer_mode: {optimizer_mode}')
         
     policy = MARL_ATTENTION_TEMPORAL_PPOPolicy(
         observation_space,
@@ -377,7 +389,8 @@ def create_ma_ppo_agent(observation_space: int, action_space: int, eps: float = 
         ppo_param,
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
-        train_frequency=10    # ⬆️ Train every 10 episodes (faster feedback)
+        train_frequency=10,    # ⬆️ Train every 10 episodes (faster feedback)
+        optimizer_mode=optimizer_mode
     )
     # Avoid late-stage over-conservative clipping that caused the 0.54-0.57 plateau.
     policy.surrogate_eps_clip = 0.15
@@ -387,12 +400,13 @@ def create_ma_ppo_agent(observation_space: int, action_space: int, eps: float = 
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
-def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float = 0.0) -> LearningPolicy:
+def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'single') -> LearningPolicy:
     """
     Creates  PPO Policy with Temporal Transformer Encoder
     
     observation_space: 33 (30 base + 3 velocity)
     eps: Epsilon floor (0.0-1.0)
+    optimizer_mode: 'single' = consolidated optimizer, 'multiple' = 4 optimizers with sync decay
     """
     print('>> MARL_ATT_DecisionPointPolicy (Temporal Transformer)')
     print('   - observation_space:', observation_space)
@@ -400,6 +414,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     print('   - temporal_window:', TEMPORAL_WINDOW)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
     print(f'   - EPS (epsilon floor): {eps:.4f}')
+    print(f'   - optimizer_mode: {optimizer_mode}')
         
     policy = MARL_ATT_DecisionPointPolicy(
         observation_space,
@@ -408,42 +423,45 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
         train_frequency=10,
-        use_deadlock_avoidance_policy=False
+        use_deadlock_avoidance_policy=False,
+        optimizer_mode=optimizer_mode
     )
     # Stable late-phase settings: keep learning without policy collapse.
-    policy.surrogate_eps_clip = 0.17
+    policy.surrogate_eps_clip = 0.10
     policy.weight_entropy = 0.036
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600
-    policy.ppo_target_kl = 0.05
-    policy.ppo_max_kl = 0.10
+    policy.ppo_target_kl = 0.02
+    policy.ppo_max_kl = 0.045
     policy.ppo_emergency_kl = 0.16
     policy.ppo_emergency_kl_hard = 0.24
     policy.ratio_guard_soft = 1.10
     policy.ratio_guard_soft_low = 0.90
-    policy.ratio_guard_hard = 1.20
-    policy.ratio_guard_hard_low = 0.80
-    policy.max_hard_batches_before_lr_decay = 8
+    policy.ratio_guard_hard = 1.15
+    policy.ratio_guard_hard_low = 0.85
+    policy.max_hard_batches_before_lr_decay = 4
     policy.hard_spike_streak_limit = 4
-    policy.actor_lr_min_factor = 0.35
+    policy.actor_lr_min_factor = 0.50
     policy.actor_lr_decay_on_instability = 0.85
-    policy.max_eps_random = 0.05
-    policy.decision_eps_floor = 0.02
+    policy.max_eps_random = 0.12
+    policy.decision_eps_floor = 0.08
     policy.use_decision_eps_floor = True
     # Encourage non-forward decisions at switches without forcing hard constraints.
-    policy.weight_action_diversity = 0.010
-    policy.forward_prob_soft_max = 0.50
-    policy.lr_prob_soft_min = 0.26
+    policy.weight_action_diversity = 0.05
+    policy.forward_prob_soft_max = 0.46
+    policy.lr_prob_soft_min = 0.30
+    policy.idle_prob_soft_max = 0.50
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
  
-def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: float = 0.0) -> LearningPolicy:
+def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'single') -> LearningPolicy:
     """
     Creates PPO Policy with Temporal Transformer Encoder
     
     observation_space: 33 (30 base + 3 velocity)
     eps: Epsilon floor (0.0-1.0)
+    optimizer_mode: 'single' = consolidated optimizer, 'multiple' = 4 optimizers with sync decay
     """
     print('>> MARL_ATT_DecisionPointPolicy with Deadlockavoidance (Temporal Transformer)')
     print('   - observation_space:', observation_space)
@@ -451,6 +469,7 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: f
     print('   - temporal_window:', TEMPORAL_WINDOW)
     print('   - architecture: 2-Level Attention (Temporal + Spatial)')
     print(f'   - EPS (epsilon floor): {eps:.4f}')
+    print(f'   - optimizer_mode: {optimizer_mode}')
     
     policy = MARL_ATT_DecisionPointPolicy(
         observation_space,
@@ -459,31 +478,33 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: f
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
         train_frequency=10,
-        use_deadlock_avoidance_policy=True
+        use_deadlock_avoidance_policy=True,
+        optimizer_mode=optimizer_mode
     )
-    policy.surrogate_eps_clip = 0.16
+    policy.surrogate_eps_clip = 0.10
     policy.weight_entropy = 0.036
     policy.stability_guard_start_episode = 2600
     policy.stability_guard_hard_episode = 3800
     # Same anti-stall settings for shielded training.
-    policy.ppo_target_kl = 0.05
-    policy.ppo_max_kl = 0.10
+    policy.ppo_target_kl = 0.02
+    policy.ppo_max_kl = 0.045
     policy.ppo_emergency_kl = 0.16
     policy.ppo_emergency_kl_hard = 0.24
     policy.ratio_guard_soft = 1.10
     policy.ratio_guard_soft_low = 0.90
-    policy.ratio_guard_hard = 1.20
-    policy.ratio_guard_hard_low = 0.80
-    policy.max_hard_batches_before_lr_decay = 8
+    policy.ratio_guard_hard = 1.15
+    policy.ratio_guard_hard_low = 0.85
+    policy.max_hard_batches_before_lr_decay = 4
     policy.hard_spike_streak_limit = 3
-    policy.actor_lr_min_factor = 0.35
+    policy.actor_lr_min_factor = 0.50
     policy.actor_lr_decay_on_instability = 0.85
-    policy.max_eps_random = 0.05
-    policy.decision_eps_floor = 0.015
+    policy.max_eps_random = 0.12
+    policy.decision_eps_floor = 0.06
     policy.use_decision_eps_floor = True
-    policy.weight_action_diversity = 0.008
-    policy.forward_prob_soft_max = 0.50
-    policy.lr_prob_soft_min = 0.25
+    policy.weight_action_diversity = 0.05
+    policy.forward_prob_soft_max = 0.46
+    policy.lr_prob_soft_min = 0.30
+    policy.idle_prob_soft_max = 0.50
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
@@ -511,8 +532,10 @@ class FlatlandPBRSShaper:
     STEP_PENALTY = -0.01
     INDIVIDUAL_DONE_BONUS = 10.0
     ALL_DONE_BONUS = 100.0
-    DEADLOCK_PENALTY = -20.0
-    TIMEOUT_PENALTY = -8.0
+    DEADLOCK_PENALTY = -8.0
+    TIMEOUT_PENALTY = -3.0
+    PROGRESS_BONUS = 0.01
+    IDLE_STOP_PENALTY = -0.01
 
     def __init__(self):
         self._done_charged: Dict[int, np.ndarray] = {}
@@ -558,8 +581,8 @@ class FlatlandPBRSShaper:
         distances = np.array([float(dm[a.handle, a.position[0], a.position[1], a.direction]) 
                               if a.position else float('inf') for a in agents], dtype=np.float32)
 
-        # Initialize state if needed
-        if env_id not in self._done_charged:
+        # Initialize state if needed (also reinitialize if num_agents changed)
+        if env_id not in self._done_charged or len(self._done_charged[env_id]) != num_agents:
             self._done_charged[env_id] = np.zeros(num_agents, dtype=bool)
             self._deadlock_charged[env_id] = np.zeros(num_agents, dtype=bool)
             self._team_bonus_charged[env_id] = False
@@ -576,10 +599,15 @@ class FlatlandPBRSShaper:
             if agent.state == TrainState.DONE and not self._done_charged[env_id][i]:
                 self._done_charged[env_id][i] = True
                 s += self.INDIVIDUAL_DONE_BONUS
-            if not self._deadlock_charged[env_id][i] and agent.position is not None and self._is_local_deadlock(raw_env, agent):
+            deadlocked_now = agent.position is not None and self._is_local_deadlock(raw_env, agent)
+            if not self._deadlock_charged[env_id][i] and deadlocked_now:
                 self._deadlock_charged[env_id][i] = True
                 s += self.DEADLOCK_PENALTY
-            shaped[i] = float(reward[i] + s)
+            action_required = False
+            if isinstance(info, dict):
+                ar = info.get('action_required', {})
+                if isinstance(ar, dict):
+                    action_required = bool(ar.get(agent.handle, False))
 
             # Track progress
             if agent.state.is_on_map_state() and np.isfinite(self._prev_dist[env_id][i]) and np.isfinite(distances[i]):
@@ -587,10 +615,18 @@ class FlatlandPBRSShaper:
                 d = distances[i] - self._prev_dist[env_id][i]
                 if d < -1e-6:
                     self._diag[env_id]['progress'] += 1
+                    # Potential-based shaping: reward if distance to target decreases.
+                    s += self.PROGRESS_BONUS
                 elif d > 1e-6:
                     self._diag[env_id]['regress'] += 1
                 else:
                     self._diag[env_id]['flat'] += 1
+                    # Penalize likely unnecessary stop/idle only when action is required
+                    # and the agent is not in a local deadlock.
+                    if action_required and not deadlocked_now:
+                        s += self.IDLE_STOP_PENALTY
+
+            shaped[i] = float(reward[i] + s)
 
         # Team bonuses
         all_done = all(a.state == TrainState.DONE for a in agents)
@@ -656,9 +692,9 @@ if __name__ == "__main__":
     parser.add_argument(
         'mode',
         nargs='?',
-        default='final',
-        choices=['final', 'final_continue', 'continue', 'eval', 'dla_eval', 'dla'],
-        help='Training mode (default: final)'
+        default='',
+        choices=['new', 'final', 'final_continue', 'continue', 'eval', 'dla_eval', 'dla'],
+        help='Training mode (default: new)'
     )
     parser.add_argument(
         '--eps',
@@ -677,11 +713,22 @@ if __name__ == "__main__":
         dest='min_eps',
         help='Minimum exploration floor for epsilon-greedy in [0.0, 1.0] (default: 0.001)'
     )
+
+    parser.add_argument(
+        '--optimizer_mode',
+        type=str,
+        default='single',
+        choices=['single', 'multiple'],
+        metavar='MODE',
+        dest='optimizer_mode',
+        help='Optimizer mode: single = consolidated single optimizer (default), multiple = 4 optimizers with synchronized decay'
+    )
     
     args = parser.parse_args()
     mode = args.mode.lower()
     eps = args.eps
     min_eps = args.min_eps
+    optimizer_mode = args.optimizer_mode.upper()
     
     # Validate EPS range
     if not (0.0 <= eps <= 1.0):
@@ -692,10 +739,11 @@ if __name__ == "__main__":
         sys.exit(1)
     min_eps = min(eps, min_eps)  # Use the lower of the two for safety
 
-    print(f"\n[Config] mode={mode}, eps={eps:.4f} (epsilon floor)")
+    print(f"\n[Config] mode={mode}, eps={eps:.4f}, optimizer_mode={optimizer_mode}")
     
     do_rendering = False
     checkpoint_interval = 100  # Default: every 100 episodes
+    start_from_phase = 0
     if mode == 'final':
         do_training = True
         test_with_deadlock_avoidance_policy = False
@@ -719,6 +767,10 @@ if __name__ == "__main__":
         do_training = False
         test_with_deadlock_avoidance_policy = True
         start_from_phase = len(CURRICULUM_PHASES) - 1  # Only run last phase (dynamic index)
+    elif mode == 'new':
+        do_training = True
+        test_with_deadlock_avoidance_policy = False
+        start_from_phase = 0  # Full curriculum
     else:
         print(f"Unknown mode '{mode}'. Choose: final, continue, eval, dla_eval")
         sys.exit(1)
@@ -781,7 +833,8 @@ if __name__ == "__main__":
             policy = pcl(
                 _state_size,
                 environment.get_action_space(),
-                eps=eps
+                eps=eps,
+                optimizer_mode=optimizer_mode
             )
             if hasattr(policy, 'get_training_summary'):
                 policy.get_training_summary()

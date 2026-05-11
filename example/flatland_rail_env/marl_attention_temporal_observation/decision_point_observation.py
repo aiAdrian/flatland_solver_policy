@@ -106,7 +106,9 @@ class DecisionPointObservation(ObservationBuilder):
         distance_map = self.env.distance_map.get()
         curr_dist_raw = distance_map[handle, pos[0], pos[1], direction]
         if curr_dist_raw == np.inf:
-            return (features-1, [])
+            # FIXED: was (features-1, []) which broadcast -1 to all features.
+            # Now return zeroed features (safe default for unreachable agents).
+            return (features, [])
 
         max_dist = self._max_dist
         curr_dist_norm = float(curr_dist_raw) / max_dist
@@ -277,6 +279,10 @@ class DecisionPointObservation(ObservationBuilder):
         self.env.dev_obs_dict.update({handle: visited})
 
         agent.cur_opp_agent_handles = list(opp_agents)
+        
+        # REVERTED: Original observations [-1,1] — no normalization
+        # (Normalization to [0,1] caused model-input mismatch with pretrained weights from [-1,1] observations)
+        # return (features, agent.cur_opp_agent_handles)
         return (features, agent.cur_opp_agent_handles)
 
     def get_many(self, handles: list = None):

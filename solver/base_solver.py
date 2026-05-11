@@ -239,6 +239,10 @@ class BaseSolver:
         if hasattr(self, '_reward_shaper') and self._reward_shaper is not None:
             if hasattr(self._reward_shaper, 'set_tensorboard_writer'):
                 self._reward_shaper.set_tensorboard_writer(writer)
+        
+        # ==Pass writer to policy if it supports it==
+        if hasattr(self.policy, 'set_tensorboard_writer'):
+            self.policy.set_tensorboard_writer(writer)
 
         while True:
             episode += 1
