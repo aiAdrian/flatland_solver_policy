@@ -8,7 +8,8 @@ from solver.base_solver import BaseSolver
 RewardList = List[float]
 TerminalList = List[float]
 InfoDict = Dict
-MultiAgentRewardShaper = Callable[[RewardList, TerminalList, InfoDict, Environment], List[float]]
+ActionDict = Dict[int, int]  # handle -> action
+MultiAgentRewardShaper = Callable[[RewardList, TerminalList, InfoDict, Environment, ActionDict], List[float]]
 
 
 class MultiAgentBaseSolver(BaseSolver):
@@ -39,9 +40,11 @@ class MultiAgentBaseSolver(BaseSolver):
     def set_reward_shaper(self, reward_shaper: MultiAgentRewardShaper):
         self._reward_shaper = reward_shaper
 
-    def shape_reward(self, reward, terminal, info):
+    def shape_reward(self, reward, terminal, info, actions=None):
+        if actions is None:
+            actions = {}
         if self._reward_shaper is not None:
-            return self._reward_shaper(reward, terminal, info, self.env)
+            return self._reward_shaper(reward, terminal, info, self.env, actions)
         return reward
 
     def run_step(self,
@@ -67,7 +70,7 @@ class MultiAgentBaseSolver(BaseSolver):
         raw_state_next, reward, terminal, info = env.step(actions)
 
         # shape reward and transform observation (if required)
-        reward = self.shape_reward(reward, terminal, info)
+        reward = self.shape_reward(reward, terminal, info, actions)
         state_next = self.transform_state(raw_state_next)
 
         # calculate total reward, terminal_all, ..

@@ -180,6 +180,15 @@ class TemporalTransformerEncoder(nn.Module):
         
         # ⚠️ PROTECTION: Clamp extreme values
         t = torch.clamp(t, min=-10.0, max=10.0)
+
+        # Observation sanitation for 78D DecisionPoint vectors:
+        # - map bipolar target-like channels from [-1, 1] to [0, 1]
+        # - suppress known duplicate channel to reduce redundant gradients
+        if t.numel() >= 78:
+            for idx in (10, 18, 26, 33, 38):
+                t[idx] = torch.clamp(0.5 * (t[idx] + 1.0), 0.0, 1.0)
+            # [39] is near-perfectly anti-correlated with [38] (duplicate pair).
+            t[39] = 0.0
         
         return t
 
@@ -840,11 +849,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.weight_entropy = 0.02  # INCREASED: 0.01 → 0.02 to boost exploration, prevent collapse
         self.weight_policy = 1.0
         self.weight_aux_deadlock = 0.08
-        # Forward dominance is expected globally in rail domains; keep this
-        # disabled by default to avoid penalizing valid straight-driving behavior.
-        self.weight_action_diversity = 0.20
-        self.forward_prob_soft_max = 0.46
-        self.lr_prob_soft_min = 0.30
+        # Sparse-switch maps: keep forward dominant and avoid forcing turn frequency.
+        self.weight_action_diversity = 0.00
+        self.forward_prob_soft_max = 0.80
+        self.lr_prob_soft_min = 0.05
         self.idle_prob_soft_max = 0.35
         self.aux_deadlock_pos_weight = 4.0
         self.weight_comm = 3.0e-4  # weak communication sparsity regularizer
@@ -1673,9 +1681,20 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     hard_spike_batches_total += 1
                     hard_spike_streak += 1
                 
+                # Keep policy and critic progress coupled: when critic error is high,
+                # increase critic pressure and slightly damp policy updates.
+                value_weight_eff = self.weight_loss
+                value_loss_scalar = float(value_loss_component.detach().item())
+                if value_loss_scalar > 0.90:
+                    value_weight_eff *= 1.35
+                    policy_weight_eff *= 0.90
+                elif value_loss_scalar < 0.45:
+                    value_weight_eff *= 0.90
+                    policy_weight_eff *= 1.05
+
                 loss = \
                     policy_weight_eff * policy_loss_component \
-                    + self.weight_loss * value_loss_component \
+                    + value_weight_eff * value_loss_component \
                     + entropy_weight_eff * entropy_loss_component \
                     + self.weight_action_diversity * action_diversity_loss_component \
                     + self.weight_aux_deadlock * aux_deadlock_loss_component \

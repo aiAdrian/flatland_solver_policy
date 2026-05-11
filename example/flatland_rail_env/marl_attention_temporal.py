@@ -127,6 +127,64 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         return position, direction
 
     # ------------------------------------------------------------------
+    # Cell-Type Classification for State-Machine Reduction
+    # ------------------------------------------------------------------
+    # Classifies rail cells into 5 types to optimize decision-making:
+    # OUTSIDE: Agent spawning (state type selection)
+    # FORWARD_ONLY: Single rail path (no choice, hard-coded MOVE_FORWARD)
+    # MERGING: Before a merge/switch (binary choice: forward or stop)
+    # SWITCH: Multi-choice cell (left/forward/right)
+    # DONE: Goal reached (no action needed)
+    # ------------------------------------------------------------------
+    def _classify_cell_type(self, agent: EnvAgent, raw_env) -> str:
+        """Classify the current cell type of an agent.
+        
+        Returns: 'OUTSIDE' | 'FORWARD_ONLY' | 'MERGING' | 'SWITCH' | 'DONE'
+        """
+        # DONE state
+        if agent.state == TrainState.DONE:
+            return 'DONE'
+        
+        # OUTSIDE: not yet on map
+        if agent.position is None or not agent.state.is_on_map_state():
+            return 'OUTSIDE'
+        
+        # Get transitions at current position
+        transitions = raw_env.rail.get_transitions(*agent.position, agent.direction)
+        num_transitions = fast_count_nonzero(transitions)
+        
+        # SWITCH: >1 transition options
+        if num_transitions > 1:
+            return 'SWITCH'
+        
+        # Check next cell (one forward)
+        try:
+            next_pos = get_new_position(agent.position, agent.direction)
+            next_dir = fast_argmax(transitions)
+            next_transitions = raw_env.rail.get_transitions(*next_pos, next_dir)
+            next_num_transitions = fast_count_nonzero(next_transitions)
+            opp_dir_options = 1
+            for nd in range(4):
+                if nd != next_dir:
+                    ntrans = raw_env.rail.get_transitions(*next_pos, nd)
+                    opp_dir_options = max(opp_dir_options, fast_count_nonzero(ntrans))
+            if next_num_transitions == 1:
+                if opp_dir_options > 1:
+                    # Next cell has choices (merge point ahead)
+                    return 'MERGING'
+                else:
+                    # Next cell is also forward-only
+                    return 'FORWARD_ONLY'
+            elif next_num_transitions > 1:
+                # Next cell is a switch/merge area with alternatives.
+                return 'MERGING'
+        except Exception:
+            pass
+        
+        # Default fallback
+        return 'FORWARD_ONLY'
+
+    # ------------------------------------------------------------------
     # Invalid-Action Masking for Flatland's directed maze
     # ------------------------------------------------------------------
     # Refs: Huang & Ontañón (2022) arXiv:2006.14171 -- masking invalid
@@ -211,6 +269,21 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
                 # Standard masking (Huang & Ontañón 2022): set illegal logits
                 # to a large negative number BEFORE softmax.
                 logits = logits.masked_fill(mask_t < 0.5, -1e9)
+                # At decision cells, damp idle actions if at least one movement
+                # action is legal. This keeps DO_NOTHING/STOP available but
+                # reduces their over-selection in sparse-switch layouts.
+                cell_type = self._classify_cell_type(agent, self._env.raw_env)
+                if cell_type in ('OUTSIDE', 'MERGING', 'SWITCH'):
+                    has_move = bool(
+                        mask[RailEnvActions.MOVE_LEFT] > 0.5
+                        or mask[RailEnvActions.MOVE_FORWARD] > 0.5
+                        or mask[RailEnvActions.MOVE_RIGHT] > 0.5
+                    )
+                    if has_move:
+                        idle_pen = float(getattr(self, 'idle_logit_penalty', 1.25))
+                        stop_pen = float(getattr(self, 'stop_logit_penalty', 0.80))
+                        logits[RailEnvActions.DO_NOTHING] -= idle_pen
+                        logits[RailEnvActions.STOP_MOVING] -= stop_pen
                 action = Categorical(logits=logits).sample().item()
             return int(action)
         except Exception:
@@ -218,22 +291,26 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 
     def act(self, handle: int, state, eps=0.):
         agent: EnvAgent = self._env.raw_env.agents[handle]
-        position, direction = self._get_agent_position_and_direction(agent)
-        agent_at_railroad_switch, agent_near_to_railroad_switch, \
-            agent_at_railroad_switch_cell, agent_near_to_railroad_switch_cell = \
-            self.switchAnalyser.check_agent_decision(position=position, direction=direction)
-
-        # only if the agent is moving
-        if agent.state.is_on_map_state():
-            # Decision-point reduction (Laurent et al. 2021, arXiv:2103.16511,
-            # Sec. 4): outside switches there is exactly one legal heading,
-            # so we hard-code MOVE_FORWARD and let the RL policy only act at
-            # genuine decision points. This drastically shortens credit
-            # assignment paths and is what every top-5 solution did.
-            if not agent_at_railroad_switch and not agent_near_to_railroad_switch_cell:
-                return RailEnvActions.MOVE_FORWARD
-
-        # Masked sampling at decision points.
+        
+        # ================================================================
+        # Cell-Type-Based Action Selection (State Machine Reduction)
+        # Laurent et al. (2021): Optimize credit assignment by only
+        # applying policy to genuine decision points (SWITCH/MERGING).
+        # ================================================================
+        cell_type = self._classify_cell_type(agent, self._env.raw_env)
+        
+        # FORWARD_ONLY cells: hard-coded MOVE_FORWARD (no policy choice)
+        # This avoids training noise on trivial forward-only rail segments.
+        if cell_type == 'FORWARD_ONLY':
+            return RailEnvActions.MOVE_FORWARD
+        
+        # DONE: episode complete, no action needed
+        if cell_type == 'DONE':
+            return RailEnvActions.DO_NOTHING
+        
+        # OUTSIDE / MERGING / SWITCH: apply policy
+        # These are the only meaningful decision points where the RL policy
+        # should contribute to credit assignment and learning.
         action = self._masked_act(handle, state, eps)
 
         # ------------------------------------------------------------
@@ -427,11 +504,11 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         optimizer_mode=optimizer_mode
     )
     # Stable late-phase settings: keep learning without policy collapse.
-    policy.surrogate_eps_clip = 0.10
+    policy.surrogate_eps_clip = 0.12
     policy.weight_entropy = 0.036
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600
-    policy.ppo_target_kl = 0.02
+    policy.ppo_target_kl = 0.03
     policy.ppo_max_kl = 0.045
     policy.ppo_emergency_kl = 0.16
     policy.ppo_emergency_kl_hard = 0.24
@@ -441,16 +518,18 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.ratio_guard_hard_low = 0.85
     policy.max_hard_batches_before_lr_decay = 4
     policy.hard_spike_streak_limit = 4
-    policy.actor_lr_min_factor = 0.50
-    policy.actor_lr_decay_on_instability = 0.85
+    policy.actor_lr_min_factor = 0.60
+    policy.actor_lr_decay_on_instability = 0.88
     policy.max_eps_random = 0.12
-    policy.decision_eps_floor = 0.08
+    policy.decision_eps_floor = 0.04
     policy.use_decision_eps_floor = True
-    # Encourage non-forward decisions at switches without forcing hard constraints.
-    policy.weight_action_diversity = 0.05
-    policy.forward_prob_soft_max = 0.46
-    policy.lr_prob_soft_min = 0.30
-    policy.idle_prob_soft_max = 0.50
+    # Sparse-switch maps: keep forward dominant and avoid forcing turn frequency.
+    policy.weight_action_diversity = 0.00
+    policy.forward_prob_soft_max = 0.80
+    policy.lr_prob_soft_min = 0.05
+    policy.idle_prob_soft_max = 0.65
+    policy.idle_logit_penalty = 2.80
+    policy.stop_logit_penalty = 2.00
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
@@ -481,12 +560,12 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: f
         use_deadlock_avoidance_policy=True,
         optimizer_mode=optimizer_mode
     )
-    policy.surrogate_eps_clip = 0.10
+    policy.surrogate_eps_clip = 0.12
     policy.weight_entropy = 0.036
     policy.stability_guard_start_episode = 2600
     policy.stability_guard_hard_episode = 3800
     # Same anti-stall settings for shielded training.
-    policy.ppo_target_kl = 0.02
+    policy.ppo_target_kl = 0.03
     policy.ppo_max_kl = 0.045
     policy.ppo_emergency_kl = 0.16
     policy.ppo_emergency_kl_hard = 0.24
@@ -496,15 +575,18 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: f
     policy.ratio_guard_hard_low = 0.85
     policy.max_hard_batches_before_lr_decay = 4
     policy.hard_spike_streak_limit = 3
-    policy.actor_lr_min_factor = 0.50
-    policy.actor_lr_decay_on_instability = 0.85
+    policy.actor_lr_min_factor = 0.70
+    policy.actor_lr_decay_on_instability = 0.92
     policy.max_eps_random = 0.12
-    policy.decision_eps_floor = 0.06
+    policy.decision_eps_floor = 0.04
     policy.use_decision_eps_floor = True
-    policy.weight_action_diversity = 0.05
-    policy.forward_prob_soft_max = 0.46
-    policy.lr_prob_soft_min = 0.30
-    policy.idle_prob_soft_max = 0.50
+    # Sparse-switch maps: keep forward dominant and avoid forcing turn frequency.
+    policy.weight_action_diversity = 0.00
+    policy.forward_prob_soft_max = 0.80
+    policy.lr_prob_soft_min = 0.05
+    policy.idle_prob_soft_max = 0.65
+    policy.idle_logit_penalty = 1.10
+    policy.stop_logit_penalty = 0.70
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
@@ -527,7 +609,13 @@ def create_deadlock_avoidance_policy(environment: Environment,
 # ============================================================================
 
 class FlatlandPBRSShaper:
-    """Minimal reward shaper: time cost + bonuses + deadlock penalty."""
+    """Minimal reward shaper: time cost + bonuses + deadlock penalty.
+    
+    Key improvement: DO_NOTHING is strongly penalized when action_required=True,
+    but NOT penalized when the agent must forward (no decision point).
+    This addresses sparse-environment value learning: Value estimates only on
+    real decision points, not on trivial forward-only segments.
+    """
 
     STEP_PENALTY = -0.01
     INDIVIDUAL_DONE_BONUS = 10.0
@@ -536,6 +624,8 @@ class FlatlandPBRSShaper:
     TIMEOUT_PENALTY = -3.0
     PROGRESS_BONUS = 0.01
     IDLE_STOP_PENALTY = -0.01
+    DO_NOTHING_PENALTY = -1.0  # Strong penalty for inaction at decision points
+    DO_NOTHING_NOT_ON_MAP_PENALTY = -0.50  # Mild penalty for action attempt before agent on map
 
     def __init__(self):
         self._done_charged: Dict[int, np.ndarray] = {}
@@ -569,7 +659,9 @@ class FlatlandPBRSShaper:
                         return True
         return False
 
-    def __call__(self, reward, terminal, info, env):
+    def __call__(self, reward, terminal, info, env, actions=None):
+        if actions is None:
+            actions = {}
         raw_env = env.raw_env
         agents = raw_env.agents
         num_agents = len(agents)
@@ -603,11 +695,38 @@ class FlatlandPBRSShaper:
             if not self._deadlock_charged[env_id][i] and deadlocked_now:
                 self._deadlock_charged[env_id][i] = True
                 s += self.DEADLOCK_PENALTY
-            action_required = False
-            if isinstance(info, dict):
-                ar = info.get('action_required', {})
-                if isinstance(ar, dict):
-                    action_required = bool(ar.get(agent.handle, False))
+            
+            # Decision-Point Detection: Only penalize DO_NOTHING at genuine switches/merges
+            # (NOT on trivial forward-only cells where Value learning is meaningless)
+            is_at_decision_point = False
+            if agent.position is not None and agent.state.is_on_map_state():
+                # Check if agent is at or near a switch (same logic as MARL_ATT_DecisionPointPolicy.act())
+                transitions = raw_env.rail.get_transitions(*agent.position, agent.direction)
+                num_transitions = fast_count_nonzero(transitions)
+                # At a switch: >1 transition option
+                # Or near a switch: next cell has multiple transitions (check ahead)
+                is_at_decision_point = (num_transitions > 1)
+                
+                if not is_at_decision_point:
+                    # Check if next cell (one forward) is a switch (near-switch detection)
+                    try:
+                        next_pos = get_new_position(agent.position, agent.direction)
+                        next_transitions = raw_env.rail.get_transitions(*next_pos, agent.direction)
+                        is_at_decision_point = (fast_count_nonzero(next_transitions) > 1)
+                    except:
+                        pass
+            
+            # DO_NOTHING detection and penalty (Sparse-environment fix)
+            action_taken = actions.get(agent.handle, RailEnvActions.DO_NOTHING)
+            is_do_nothing = (action_taken == RailEnvActions.DO_NOTHING)
+            action_required = info.get('action_required', {}).get(agent.handle, True) if isinstance(info, dict) else True
+            
+            if is_at_decision_point and is_do_nothing and action_required:
+                # STRONG penalty: Agent had to decide at switch but chose DO_NOTHING
+                s += self.DO_NOTHING_PENALTY
+            elif agent.position is None and not is_do_nothing:
+                # Mild penalty: Agent tried to move before being on the map
+                s += self.DO_NOTHING_NOT_ON_MAP_PENALTY
 
             # Track progress
             if agent.state.is_on_map_state() and np.isfinite(self._prev_dist[env_id][i]) and np.isfinite(distances[i]):
