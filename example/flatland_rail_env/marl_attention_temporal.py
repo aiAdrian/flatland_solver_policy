@@ -524,12 +524,12 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.decision_eps_floor = 0.04
     policy.use_decision_eps_floor = True
     # Sparse-switch maps: keep forward dominant and avoid forcing turn frequency.
-    policy.weight_action_diversity = 0.00
-    policy.forward_prob_soft_max = 0.80
+    policy.weight_action_diversity = 0.15
+    policy.forward_prob_soft_max = 0.85
     policy.lr_prob_soft_min = 0.05
-    policy.idle_prob_soft_max = 0.65
-    policy.idle_logit_penalty = 2.80
-    policy.stop_logit_penalty = 2.00
+    policy.idle_prob_soft_max = 0.40
+    policy.idle_logit_penalty = 3.50
+    policy.stop_logit_penalty = 2.80
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
@@ -581,12 +581,12 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: f
     policy.decision_eps_floor = 0.04
     policy.use_decision_eps_floor = True
     # Sparse-switch maps: keep forward dominant and avoid forcing turn frequency.
-    policy.weight_action_diversity = 0.00
-    policy.forward_prob_soft_max = 0.80
+    policy.weight_action_diversity = 0.15
+    policy.forward_prob_soft_max = 0.85
     policy.lr_prob_soft_min = 0.05
-    policy.idle_prob_soft_max = 0.65
-    policy.idle_logit_penalty = 2.80
-    policy.stop_logit_penalty = 2.00
+    policy.idle_prob_soft_max = 0.40
+    policy.idle_logit_penalty = 3.50
+    policy.stop_logit_penalty = 2.80
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
