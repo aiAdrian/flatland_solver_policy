@@ -575,8 +575,8 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: f
     policy.ratio_guard_hard_low = 0.85
     policy.max_hard_batches_before_lr_decay = 4
     policy.hard_spike_streak_limit = 3
-    policy.actor_lr_min_factor = 0.70
-    policy.actor_lr_decay_on_instability = 0.92
+    policy.actor_lr_min_factor = 0.60
+    policy.actor_lr_decay_on_instability = 0.88
     policy.max_eps_random = 0.12
     policy.decision_eps_floor = 0.04
     policy.use_decision_eps_floor = True
@@ -585,8 +585,8 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: f
     policy.forward_prob_soft_max = 0.80
     policy.lr_prob_soft_min = 0.05
     policy.idle_prob_soft_max = 0.65
-    policy.idle_logit_penalty = 1.10
-    policy.stop_logit_penalty = 0.70
+    policy.idle_logit_penalty = 2.80
+    policy.stop_logit_penalty = 2.00
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
