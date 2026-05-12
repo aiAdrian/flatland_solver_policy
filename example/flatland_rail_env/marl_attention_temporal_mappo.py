@@ -1276,11 +1276,32 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         deadlock_ahead  = max(_safe(12), _safe(20), _safe(28)) # direct binary flags
         merge_deadlock  = _safe(31) + _safe(36)
 
-        # Optional extra cues in 72D hierarchical sparse-neighbor block.
-        # Per-neighbor 6D block starts at 48; index +3 == local conflict flag.
+        # Optional extra cues in hierarchical sparse-neighbor block.
+        # Per-neighbor 6D block: index +3 == local conflict flag.
+        # Support old/new base observation sizes:
+        #   - 48D base  -> start 48
+        #   - 54D base  -> start 54
+        #   - 59D base (cell-type one-hot) -> start 59
+        #   - 64D base (cell-type + 5 transitions) -> start 64
+        #   - 84D base (legacy, full 5x5 transition) -> start 84
         sparse_local = 0.0
         if last_obs.shape[0] >= 72:
-            sparse_local = max(_safe(51), _safe(57), _safe(63), _safe(69))
+            if last_obs.shape[0] >= 108:
+                sparse_start = 84
+            elif last_obs.shape[0] >= 88:
+                sparse_start = 64
+            elif last_obs.shape[0] >= 83:
+                sparse_start = 59
+            elif last_obs.shape[0] >= 78:
+                sparse_start = 54
+            else:
+                sparse_start = 48
+            sparse_local = max(
+                _safe(sparse_start + 3),
+                _safe(sparse_start + 9),
+                _safe(sparse_start + 15),
+                _safe(sparse_start + 21),
+            )
 
         risk = max(
             local_deadlock,
@@ -1923,7 +1944,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         print("\n" + "="*80 + "\n")
 
-    # Feature-Namen für das feste 54D DecisionPointObservation-Layout
+    # Feature-Namen für das feste DecisionPointObservation-Layout (64D)
     _OBS_FEATURE_NAMES = [
         "is_switch",   "hint_L",      "hint_F",      "hint_R",      "is_merge",
         "local_dl",
@@ -1939,15 +1960,104 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         "st_0","st_1","st_2","st_3","st_4","st_5","st_6",
         "act_DN","act_L","act_F","act_R","act_S",
         "priority_rank",
+        "ct_OUTSIDE","ct_FORWARD_ONLY","ct_MERGING","ct_SWITCH","ct_DONE",
+        "tr_FWD_FWD","tr_FWD_MRG","tr_FWD_SWI","tr_SWI_FWD","tr_MRG_FWD",
+    ]
+
+    # Short prose descriptions for each feature — same order as _OBS_FEATURE_NAMES
+    _OBS_FEATURE_DESC = [
+        # 0-5 Base
+        "Switch present (branching possible)",        # is_switch
+        "Shortest path goes Left",                    # hint_L
+        "Shortest path goes Forward",                 # hint_F
+        "Shortest path goes Right",                   # hint_R
+        "Merge point (track join) ahead",             # is_merge
+        "Deadlock detected at current position",      # local_dl
+        # 6-13 Left branch
+        "Left branch: progress toward target",        # swL_progress
+        "Left branch: deadlock risk signal",          # swL_dl_sig
+        "Left branch: number of switches on path",    # swL_switches
+        "Left branch: distance to target",            # swL_dist
+        "Left branch: target reachable via this arm", # swL_target
+        "Left branch: dead-end / abort detected",     # swL_abort
+        "Left branch: deadlock ahead",                # swL_dl_ahead
+        "Left branch: padding (unused slot)",         # swL_pad
+        # 14-21 Forward branch
+        "Fwd branch: progress toward target",         # swF_progress
+        "Fwd branch: deadlock risk signal",           # swF_dl_sig
+        "Fwd branch: number of switches on path",     # swF_switches
+        "Fwd branch: distance to target",             # swF_dist
+        "Fwd branch: target reachable",               # swF_target
+        "Fwd branch: dead-end / abort detected",      # swF_abort
+        "Fwd branch: deadlock ahead",                 # swF_dl_ahead
+        "Fwd branch: padding (unused slot)",          # swF_pad
+        # 22-29 Right branch
+        "Right branch: progress toward target",       # swR_progress
+        "Right branch: deadlock risk signal",         # swR_dl_sig
+        "Right branch: number of switches on path",   # swR_switches
+        "Right branch: distance to target",           # swR_dist
+        "Right branch: target reachable",             # swR_target
+        "Right branch: dead-end / abort detected",    # swR_abort
+        "Right branch: deadlock ahead",               # swR_dl_ahead
+        "Right branch: padding (unused slot)",        # swR_pad
+        # 30 Pad
+        "General padding (filler value)",             # pad
+        # 31-35 Merge-Forward
+        "Merge-Fwd: deadlock risk signal",            # mgF_dl_sig
+        "Merge-Fwd: number of switches on path",      # mgF_switches
+        "Merge-Fwd: target reachable",                # mgF_target
+        "Merge-Fwd: dead-end / abort detected",       # mgF_abort
+        "Merge-Fwd: deadlock ahead",                  # mgF_dl_ahead
+        # 36-40 Merge-Backward
+        "Merge-Back: deadlock risk signal",           # mgB_dl_sig
+        "Merge-Back: number of switches on path",     # mgB_switches
+        "Merge-Back: target reachable",               # mgB_target
+        "Merge-Back: dead-end / abort detected",      # mgB_abort
+        "Merge-Back: deadlock ahead",                 # mgB_dl_ahead
+        # 41-47 TrainState one-hot
+        "TrainState: READY_TO_DEPART",                # st_0
+        "TrainState: MALFUNCTION_OFF_MAP",            # st_1
+        "TrainState: MOVING",                         # st_2
+        "TrainState: STOPPED",                        # st_3
+        "TrainState: MALFUNCTION (on map)",           # st_4
+        "TrainState: WAITING",                        # st_5
+        "TrainState: DONE (reached target)",          # st_6
+        # 48-52 Last action one-hot
+        "Last action: DO_NOTHING",                    # act_DN
+        "Last action: turn Left",                     # act_L
+        "Last action: move Forward",                  # act_F
+        "Last action: turn Right",                    # act_R
+        "Last action: STOP",                          # act_S
+        # 53 Priority
+        "Priority rank: 0=nearest target, 1=farthest",  # priority_rank
+        # 54-58 Cell-type one-hot
+        "Cell type: OUTSIDE (off network)",           # ct_OUTSIDE
+        "Cell type: FORWARD_ONLY (straight track)",   # ct_FORWARD_ONLY
+        "Cell type: MERGING (track join)",            # ct_MERGING
+        "Cell type: SWITCH (branching point)",        # ct_SWITCH
+        "Cell type: DONE (target cell)",              # ct_DONE
+        # 59-63 Selected transitions (non-null in practice)
+        "Transition: FORWARD→FORWARD (straight run)",  # tr_FWD_FWD
+        "Transition: FORWARD→MERGE (approaching join)", # tr_FWD_MRG
+        "Transition: FORWARD→SWITCH (approaching branch)", # tr_FWD_SWI
+        "Transition: SWITCH→FORWARD (leaving branch)",  # tr_SWI_FWD
+        "Transition: MERGE→FORWARD (leaving join)",     # tr_MRG_FWD
     ]
 
     def _print_obs_statistics(self):
         """Master-Diagnostik-Report alle 100 Episoden — LLM-paste-ready."""
         W = "=" * 80
         n_names = len(self._OBS_FEATURE_NAMES)
+        n_descs = len(self._OBS_FEATURE_DESC)
 
         def fname(i):
             return self._OBS_FEATURE_NAMES[i] if i < n_names else f"feat_{i}"
+
+        def fdesc(i):
+            if i < n_descs:
+                return self._OBS_FEATURE_DESC[i]
+            # sparse-neighbor features have no fixed desc
+            return f"Nachbar-Feature #{i - n_names}" if i >= n_names else ""
 
         def row(label, value, unit="", status="", note=""):
             """Fixed-width table row: label | value | unit | status | note"""
@@ -1969,7 +2079,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         print(f"  MAPPO DIAGNOSTIC REPORT")
         print(f"  Episode : {self.episode_count}")
         print(f"  Interval: {self._obs_stat_interval} episodes")
-        print(f"  Context : Flatland 5-agent rail scheduling, DecisionPoint obs 54D")
+        print(f"  Context : Flatland 5-agent rail scheduling, DecisionPoint obs 64D")
         print(W)
 
         # ── 1) Episoden-Kennzahlen ─────────────────────────────────────────────
@@ -2170,10 +2280,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             print(f"    >0.50 = highly used  |  0.10-0.50 = moderate  "
                   f"|  <0.05 = nearly ignored  |  <0.01 = dead")
             print()
-            print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+")
+            print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+{'─'*44}+")
             print(f"  | {'Rk':>2} | {'[i]':>3} | {'Name':<20s} | {'abs_sens':>7} "
-                  f"| {'rel_imp':>7} | {'Bar (24-wide)':<24s} | {'Interpretation':<24s} |")
-            print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+")
+                  f"| {'rel_imp':>7} | {'Bar (24-wide)':<24s} | {'Interpretation':<24s} | {'Description':<42s} |")
+            print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+{'─'*44}+")
 
             def imp_note(rel):
                 if rel > 0.50: return "highly used by network"
@@ -2188,10 +2298,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 r    = sens_norm[i]
                 bar  = ('█' * int(r * 24)).ljust(24)
                 note = imp_note(r)
+                desc = fdesc(i)[:42]
                 print(f"  | {rank+1:2d} | [{i:2d}] | {fname(i):<20s} | "
-                      f"{s:7.5f} | {r:7.4f} | {bar} | {note:<24s} |")
+                      f"{s:7.5f} | {r:7.4f} | {bar} | {note:<24s} | {desc:<42s} |")
 
-            print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+")
+            print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+{'─'*44}+")
 
             dead_thresh = max_s * 0.01
             dead_feats  = [i for i in range(obs_dim) if sens[i] < dead_thresh]

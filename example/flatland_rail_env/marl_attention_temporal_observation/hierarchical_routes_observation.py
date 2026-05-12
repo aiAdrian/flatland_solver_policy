@@ -62,7 +62,7 @@ NEIGHBOR_IDX_TTC_NORM = 5
 class HierarchicalRoutesObservation(DecisionPointObservation):
     """Decision-point observation + sparse top-K classified neighbors block."""
 
-    OBS_SIZE = DecisionPointObservation.OBS_SIZE + NEIGHBOR_TOTAL  # 72
+    OBS_SIZE = DecisionPointObservation.OBS_SIZE + NEIGHBOR_TOTAL  # 64+24=88
 
     # Neighbor-classification reach radius (in grid cells, manhattan).
     LOCAL_RADIUS = 6

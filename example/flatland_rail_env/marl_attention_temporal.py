@@ -112,6 +112,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 
     def reset(self, env: Environment):
         self._env = env
+        env.raw_env._max_episode_steps =env.raw_env._max_episode_steps + 100
         self.switchAnalyser = RailroadSwitchAnalyser(env.raw_env)
         super(MARL_ATT_DecisionPointPolicy, self).reset(env)
         if self.use_deadlock_avoidance_policy:

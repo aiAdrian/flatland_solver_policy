@@ -5,7 +5,7 @@ DecisionPointObservation
 Observation builder focused on Flatland's decision points on the directed rail
 graph (nodes = (row, col, dir), edges = legal transitions).
 
-Feature layout (length = 54, all values in [0, 1]):
+Feature layout (length = 64, all values in [0, 1]):
 
     [ 0]      is_switch  — 1.0 if agent is at a diverging switch, else 0
     [ 1- 3]   shortest_path_hint (one-hot left/fwd/right)
@@ -23,6 +23,11 @@ Feature layout (length = 54, all values in [0, 1]):
     [41-47]   one-hot of agent.state.value (TrainState 0..6)
     [48-52]   one-hot of last saved action (DO_NOTHING/L/F/R/STOP)
     [53]      priority_rank — normalised rank by remaining path distance in [0,1]
+    [54-58]   cell_type one-hot (OUTSIDE, FORWARD_ONLY, MERGING, SWITCH, DONE)
+    [59-63]   5 selected cell-type transitions (current->next if moving forward):
+              [59] FWD->FWD  [60] FWD->MRG  [61] FWD->SWI
+              [62] SWI->FWD  [63] MRG->FWD
+              (only non-null transitions in practice; full 5x5 matrix was mostly zeros)
 
 Fixes vs. old layout:
   - [0] was scalar dt/8 (bitfield as float) → now binary is_switch flag.
@@ -50,7 +55,24 @@ _UNREACHABLE = -1.0
 
 
 class DecisionPointObservation(ObservationBuilder):
-    OBS_SIZE = 54
+    OBS_SIZE = 64
+    FEATURE_GROUPS_DOC = [
+        ("[0]", "is_switch", "1.0 if current node is a branching switch"),
+        ("[1-3]", "hint_L/F/R", "shortest-path direction hint one-hot"),
+        ("[4]", "is_merge", "1.0 if merge area is ahead"),
+        ("[5]", "local_deadlock", "binary head-on deadlock risk at current node"),
+        ("[6-13]", "swL_*", "left branch metrics (progress, deadlock, distance, abort, target)"),
+        ("[14-21]", "swF_*", "forward branch metrics"),
+        ("[22-29]", "swR_*", "right branch metrics"),
+        ("[30]", "pad", "reserved padding"),
+        ("[31-35]", "mgF_*", "merge-forward metrics"),
+        ("[36-40]", "mgB_*", "merge-backward metrics"),
+        ("[41-47]", "st_0..st_6", "TrainState one-hot"),
+        ("[48-52]", "act_DN/L/F/R/S", "last saved action one-hot"),
+        ("[53]", "priority_rank", "normalized rank by remaining path distance"),
+        ("[54-58]", "ct_*", "current cell-type one-hot (OUT, FWD, MRG, SWI, DONE)"),
+        ("[59-63]", "tr_*", "5 selected transitions: FWD->FWD/MRG/SWI, SWI->FWD, MRG->FWD"),
+    ]
 
     def __init__(self):
         super().__init__()
@@ -61,6 +83,9 @@ class DecisionPointObservation(ObservationBuilder):
         if not getattr(type(self), "_banner_printed", False):
             print(">> DecisionPointObservation loaded.")
             type(self)._banner_printed = True
+        if not getattr(type(self), "_feature_layout_printed", False):
+            self._print_feature_layout_doc()
+            type(self)._feature_layout_printed = True
 
     def set_env(self, env):
         self.env = env
@@ -71,6 +96,13 @@ class DecisionPointObservation(ObservationBuilder):
     @staticmethod
     def getObservationSize() -> int:
         return DecisionPointObservation.OBS_SIZE
+
+    @classmethod
+    def _print_feature_layout_doc(cls):
+        """One-time compact console doc for the 64D feature layout."""
+        print(">> Observation Layout (64D) - concise feature guide:")
+        for idx, name, desc in cls.FEATURE_GROUPS_DOC:
+            print(f"   {idx:<8} {name:<14} {desc}")
 
     @staticmethod
     def _encode_detect_deadlock(raw: float) -> float:
@@ -90,6 +122,49 @@ class DecisionPointObservation(ObservationBuilder):
         if deadlock_flag >= 1.0:
             return 1.0 if deadlock_flag >= 1.5 else 0.85
         return 0.0
+
+    @staticmethod
+    def _cell_type_index_from_decision_type(decision_type: int) -> int:
+        # Class order: OUTSIDE=0, FORWARD_ONLY=1, MERGING=2, SWITCH=3, DONE=4
+        if decision_type & 8:
+            return 4
+        if decision_type == 1:
+            return 0
+        if decision_type & 2:
+            return 3
+        if decision_type & 4:
+            return 2
+        return 1
+
+    def _is_merge_switch_ahead(self, pos, direction, transitions) -> bool:
+        merge_switch = False
+        for rel_dir in (-1, 0, 1):
+            ndir = (direction + rel_dir) % 4
+            if not transitions[ndir]:
+                continue
+            next_pos = get_new_position(pos, ndir)
+            ntransitions = self.env.rail.get_transitions(*next_pos, ndir)
+            if fast_count_nonzero(ntransitions) == 1:
+                for d in range(4):
+                    next_transitions = self.env.rail.get_transitions(*next_pos, d)
+                    if fast_count_nonzero(next_transitions) > 1:
+                        merge_switch = True
+                        break
+            if merge_switch:
+                break
+        return merge_switch
+
+    def _decision_type_at_position(self, pos, direction, target) -> int:
+        # Approximate next-step class at a given on-map node (row, col, dir).
+        if pos == target:
+            return 8
+        transitions = self.env.rail.get_transitions(*pos, direction)
+        decision_type = 0
+        if fast_count_nonzero(transitions) > 1:
+            decision_type += 2
+        if self._is_merge_switch_ahead(pos, direction, transitions):
+            decision_type += 4
+        return decision_type
 
     def get(self, handle: int = 0):
         features = np.zeros(self.feature_len, dtype=np.float32)
@@ -114,21 +189,7 @@ class DecisionPointObservation(ObservationBuilder):
         curr_dist_norm = float(curr_dist_raw) / max_dist
         transitions = self.env.rail.get_transitions(*pos, direction)
 
-        merge_switch = False
-        for rel_dir in (-1, 0, 1):
-            ndir = (direction + rel_dir) % 4
-            if not transitions[ndir]:
-                continue
-            next_pos = get_new_position(pos, ndir)
-            ntransitions = self.env.rail.get_transitions(*next_pos, ndir)
-            if fast_count_nonzero(ntransitions) == 1:
-                for d in range(4):
-                    next_transitions = self.env.rail.get_transitions(*next_pos, d)
-                    if fast_count_nonzero(next_transitions) > 1:
-                        merge_switch = True
-                        break
-            if merge_switch:
-                break
+        merge_switch = self._is_merge_switch_ahead(pos, direction, transitions)
 
         decision_type = 0
         if agent.state.name == "READY_TO_DEPART":
@@ -195,7 +256,7 @@ class DecisionPointObservation(ObservationBuilder):
                     features[base + 1] = self._encode_deadlock_signal(deadlock)
                     features[base + 2] = switches_norm
                     features[base + 3] = branch_dist_norm
-                    features[base + 4] = target_found
+                    features[base + 4] = float(np.clip(target_found, 0.0, 1.0))
                     features[base + 5] = abort
                     # deadlock_ahead: normalized binary (was: raw _detect_deadlock range -1..16)
                     features[base + 6] = self._encode_detect_deadlock(
@@ -220,7 +281,7 @@ class DecisionPointObservation(ObservationBuilder):
             opp_agents.update(seen_fwd)
             features[31] = self._encode_deadlock_signal(deadlock_fwd)
             features[32] = self._normalise_count(switches_fwd)
-            features[33] = target_found_fwd
+            features[33] = float(np.clip(target_found_fwd, 0.0, 1.0))
             features[34] = abort_fwd
             features[35] = self._encode_detect_deadlock(
                 self._detect_deadlock(handle, npos_fwd, forward_dir))
@@ -247,7 +308,7 @@ class DecisionPointObservation(ObservationBuilder):
                 opp_agents.update(seen_bwd)
                 features[36] = self._encode_deadlock_signal(deadlock_bwd)
                 features[37] = self._normalise_count(switches_bwd)
-                features[38] = target_found_bwd
+                features[38] = float(np.clip(target_found_bwd, 0.0, 1.0))
                 features[39] = abort_bwd
                 features[40] = self._encode_detect_deadlock(
                     self._detect_deadlock(handle, bwd_pos, bwd_dir))
@@ -265,6 +326,36 @@ class DecisionPointObservation(ObservationBuilder):
 
         # [53] priority_rank (was: explicit duplicate of [5] — wasted dimension)
         features[53] = priority_rank
+
+        # [54-58] current cell_type one-hot: OUTSIDE, FORWARD_ONLY, MERGING, SWITCH, DONE
+        curr_idx = self._cell_type_index_from_decision_type(decision_type)
+        features[54 + curr_idx] = 1.0
+
+        # [59-63] 5 selected transitions (current->next if moving forward).
+        # Only non-null transitions observed in practice; full 5x5 was ~72% zeros.
+        # Slot mapping: {(curr_idx, next_idx): feature_index}
+        #   FWD(1)->FWD(1)=59  FWD(1)->MRG(2)=60  FWD(1)->SWI(3)=61
+        #   SWI(3)->FWD(1)=62  MRG(2)->FWD(1)=63
+        _TR_SLOTS = {(1, 1): 59, (1, 2): 60, (1, 3): 61, (3, 1): 62, (2, 1): 63}
+        next_decision_type = decision_type
+        try:
+            if decision_type & 8:
+                next_decision_type = 8
+            elif decision_type == 1:
+                # OUTSIDE: entering map at initial node when moving forward.
+                next_decision_type = self._decision_type_at_position(pos, direction, target)
+            else:
+                if fast_count_nonzero(transitions) > 0:
+                    forward_dir = fast_argmax(transitions)
+                    next_pos = get_new_position(pos, forward_dir)
+                    next_decision_type = self._decision_type_at_position(next_pos, forward_dir, target)
+        except Exception:
+            next_decision_type = decision_type
+
+        next_idx = self._cell_type_index_from_decision_type(next_decision_type)
+        tr_slot = _TR_SLOTS.get((curr_idx, next_idx), None)
+        if tr_slot is not None:
+            features[tr_slot] = 1.0
 
         # NOTE: Coordination signals are computed in Policy Network via LSTM
         # Do NOT compute them here in observation
