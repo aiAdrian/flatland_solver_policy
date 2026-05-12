@@ -503,13 +503,15 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         use_deadlock_avoidance_policy=False,
         optimizer_mode=optimizer_mode
     )
-    # Stable late-phase settings: keep learning without policy collapse.
-    policy.surrogate_eps_clip = 0.12
-    policy.weight_entropy = 0.036
+    # Stabilized settings for early/mid training: lower KL spikes + stronger exploration.
+    policy.surrogate_eps_clip = 0.10
+    policy.weight_entropy = 0.045
+    policy.reward_scale = 0.06
+    policy.weight_loss = 1.4
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600
-    policy.ppo_target_kl = 0.03
-    policy.ppo_max_kl = 0.045
+    policy.ppo_target_kl = 0.025
+    policy.ppo_max_kl = 0.050
     policy.ppo_emergency_kl = 0.16
     policy.ppo_emergency_kl_hard = 0.24
     policy.ratio_guard_soft = 1.10
@@ -517,19 +519,19 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.ratio_guard_hard = 1.15
     policy.ratio_guard_hard_low = 0.85
     policy.max_hard_batches_before_lr_decay = 4
-    policy.hard_spike_streak_limit = 4
-    policy.actor_lr_min_factor = 0.60
+    policy.hard_spike_streak_limit = 3
+    policy.actor_lr_min_factor = 0.50
     policy.actor_lr_decay_on_instability = 0.88
     policy.max_eps_random = 0.12
     policy.decision_eps_floor = 0.04
     policy.use_decision_eps_floor = True
     # Sparse-switch maps: keep forward dominant and avoid forcing turn frequency.
-    policy.weight_action_diversity = 0.15
-    policy.forward_prob_soft_max = 0.85
-    policy.lr_prob_soft_min = 0.05
-    policy.idle_prob_soft_max = 0.40
+    policy.weight_action_diversity = 0.30
+    policy.forward_prob_soft_max = 0.58
+    policy.lr_prob_soft_min = 0.08
+    policy.idle_prob_soft_max = 0.26
     policy.idle_logit_penalty = 3.50
-    policy.stop_logit_penalty = 2.80
+    policy.stop_logit_penalty = 3.20
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
@@ -560,13 +562,15 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: f
         use_deadlock_avoidance_policy=True,
         optimizer_mode=optimizer_mode
     )
-    policy.surrogate_eps_clip = 0.12
-    policy.weight_entropy = 0.036
+    policy.surrogate_eps_clip = 0.10
+    policy.weight_entropy = 0.045
+    policy.reward_scale = 0.06
+    policy.weight_loss = 1.4
     policy.stability_guard_start_episode = 2600
     policy.stability_guard_hard_episode = 3800
     # Same anti-stall settings for shielded training.
-    policy.ppo_target_kl = 0.03
-    policy.ppo_max_kl = 0.045
+    policy.ppo_target_kl = 0.025
+    policy.ppo_max_kl = 0.050
     policy.ppo_emergency_kl = 0.16
     policy.ppo_emergency_kl_hard = 0.24
     policy.ratio_guard_soft = 1.10
@@ -575,18 +579,18 @@ def create_ma_ppo_agent_dp_DLA(observation_space: int, action_space: int, eps: f
     policy.ratio_guard_hard_low = 0.85
     policy.max_hard_batches_before_lr_decay = 4
     policy.hard_spike_streak_limit = 3
-    policy.actor_lr_min_factor = 0.60
+    policy.actor_lr_min_factor = 0.50
     policy.actor_lr_decay_on_instability = 0.88
     policy.max_eps_random = 0.12
     policy.decision_eps_floor = 0.04
     policy.use_decision_eps_floor = True
     # Sparse-switch maps: keep forward dominant and avoid forcing turn frequency.
-    policy.weight_action_diversity = 0.15
-    policy.forward_prob_soft_max = 0.85
-    policy.lr_prob_soft_min = 0.05
-    policy.idle_prob_soft_max = 0.40
+    policy.weight_action_diversity = 0.30
+    policy.forward_prob_soft_max = 0.58
+    policy.lr_prob_soft_min = 0.08
+    policy.idle_prob_soft_max = 0.26
     policy.idle_logit_penalty = 3.50
-    policy.stop_logit_penalty = 2.80
+    policy.stop_logit_penalty = 3.20
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
