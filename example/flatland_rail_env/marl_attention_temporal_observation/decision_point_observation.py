@@ -444,6 +444,13 @@ class DecisionPointObservation(ObservationBuilder):
         self.local_search_random_start_depth = 2
         self.local_search_max_side_branches = 1
         self.local_search_distance_bias = 2.0
+        # Optional advanced controls for deeper searches.
+        self.local_search_mode = "stochastic"  # stochastic | mcts
+        self.local_search_mcts_rollouts = 6
+        self.local_search_mcts_horizon = 4
+        self.local_search_ucb_c = 1.2
+        self.local_search_contract_depth = 7
+        self.local_search_max_nodes = 48
         self.env = None
         self.agent_map = None
         self._print_feature_layout_doc()
@@ -527,6 +534,123 @@ class DecisionPointObservation(ObservationBuilder):
             return 2
         return 3
 
+    def _safe_distance(self, handle, position, direction, distance_map, default=np.inf):
+        if distance_map is None:
+            return default
+        try:
+            return float(distance_map[handle, position[0], position[1], direction])
+        except Exception:
+            return default
+
+    def _mcts_rollout_score(self, handle, start_pos, start_dir, start_depth, horizon, distance_map):
+        """Small Monte-Carlo rollout score for one root branch.
+
+        Uses a light UCT-style policy over local successor choices to keep
+        selection robust while staying compute-bounded.
+        """
+        if self.env is None or self.env.rail is None:
+            return -1e9
+
+        pos = start_pos
+        direction = int(start_dir)
+        score = 0.0
+        max_steps = max(1, int(horizon))
+
+        for _ in range(max_steps):
+            dist = self._safe_distance(handle, pos, direction, distance_map)
+            if np.isfinite(dist):
+                score += 1.0 / (1.0 + dist)
+            else:
+                score -= 0.05
+
+            if self.agent_map is not None:
+                try:
+                    other_idx = int(self.agent_map[pos])
+                    if other_idx != -1 and other_idx != handle:
+                        score -= 0.7
+                        other_dir = self.env.agents[other_idx].direction
+                        if other_dir is not None and DecisionPointUtils.is_opposite_direction(direction, other_dir):
+                            score -= 0.8
+                except Exception:
+                    pass
+
+            try:
+                transitions = self.env.rail.get_transitions(*pos, direction)
+            except Exception:
+                score -= 0.5
+                break
+
+            choices = [nd for nd in range(4) if transitions[nd]]
+            if not choices:
+                score -= 1.0
+                break
+
+            # Soft distance-biased stochastic rollout policy.
+            cand = []
+            for nd in choices:
+                np_pos = get_new_position(pos, nd)
+                ndist = self._safe_distance(handle, np_pos, nd, distance_map)
+                cand.append((nd, np_pos, ndist))
+            dvals = np.array([c[2] if np.isfinite(c[2]) else 1000.0 for c in cand], dtype=np.float64)
+            dmin = float(np.min(dvals))
+            closeness = 1.0 / (1.0 + np.maximum(0.0, dvals - dmin))
+            alpha = max(0.1, float(self.local_search_distance_bias))
+            weights = np.power(closeness, alpha)
+            wsum = float(np.sum(weights))
+            probs = (weights / wsum) if np.isfinite(wsum) and wsum > 0 else np.full(len(cand), 1.0 / len(cand))
+            pick = int(np.random.choice(len(cand), p=probs))
+            direction = int(cand[pick][0])
+            pos = cand[pick][1]
+
+        # Small depth penalty so shorter informative branches are slightly preferred.
+        score -= 0.02 * float(start_depth)
+        return score
+
+    def _contract_corridor_segment(self, handle, pos, direction, depth, depth_limit):
+        """Compress linear corridor steps into one edge after contract depth.
+
+        Stops contraction at decision points, conflicts, or depth limit.
+        """
+        if self.env is None or self.env.rail is None:
+            return pos, int(direction), 1
+
+        contract_depth = max(0, int(self.local_search_contract_depth))
+        if depth < contract_depth:
+            return pos, int(direction), 1
+
+        cur_pos = pos
+        cur_dir = int(direction)
+        edge_len = 1
+
+        while (depth + edge_len) < depth_limit:
+            if self.agent_map is not None:
+                try:
+                    other_idx = int(self.agent_map[cur_pos])
+                    if other_idx != -1 and other_idx != handle:
+                        break
+                except Exception:
+                    break
+
+            try:
+                transitions = self.env.rail.get_transitions(*cur_pos, cur_dir)
+            except Exception:
+                break
+
+            next_dirs = [nd for nd in range(4) if transitions[nd]]
+            if len(next_dirs) != 1:
+                break
+
+            nd = int(next_dirs[0])
+            next_pos = get_new_position(cur_pos, nd)
+            cur_pos = next_pos
+            cur_dir = nd
+            edge_len += 1
+
+            if edge_len >= 6:
+                break
+
+        return cur_pos, cur_dir, edge_len
+
     def _select_local_search_branches(self, handle, depth, current_pos, transitions, distance_map):
         """Select branches for local search with depth-aware stochastic pruning.
 
@@ -570,6 +694,50 @@ class DecisionPointObservation(ObservationBuilder):
         if k_side <= 0:
             return [shortest]
 
+        # Optional MCTS-lite root action selection (flat UCT at current node).
+        if str(getattr(self, "local_search_mode", "stochastic")).lower() == "mcts":
+            rollout_budget = max(1, int(getattr(self, "local_search_mcts_rollouts", 6)))
+            rollout_horizon = max(1, int(getattr(self, "local_search_mcts_horizon", 4)))
+            ucb_c = max(0.01, float(getattr(self, "local_search_ucb_c", 1.2)))
+
+            stats = {}
+            for cand in normalized:
+                stats[cand[0]] = {"visits": 0, "value": 0.0, "cand": cand}
+
+            for _ in range(rollout_budget):
+                total_visits = sum(v["visits"] for v in stats.values()) + 1
+                best_dir = None
+                best_ucb = -1e18
+                for dkey, rec in stats.items():
+                    v = rec["visits"]
+                    mean = (rec["value"] / v) if v > 0 else 0.0
+                    ucb = mean + ucb_c * np.sqrt(np.log(float(total_visits)) / float(v + 1))
+                    if ucb > best_ucb:
+                        best_ucb = ucb
+                        best_dir = dkey
+
+                selected = stats[best_dir]["cand"]
+                roll_score = self._mcts_rollout_score(
+                    handle=handle,
+                    start_pos=selected[1],
+                    start_dir=selected[0],
+                    start_depth=depth + 1,
+                    horizon=rollout_horizon,
+                    distance_map=distance_map,
+                )
+                stats[best_dir]["visits"] += 1
+                stats[best_dir]["value"] += float(roll_score)
+
+            ordered = sorted(
+                normalized,
+                key=lambda c: ((stats[c[0]]["value"] / max(1, stats[c[0]]["visits"])), -c[2]),
+                reverse=True,
+            )
+            chosen = ordered[: 1 + k_side]
+            if shortest[0] not in [c[0] for c in chosen]:
+                chosen = [shortest] + chosen[:k_side]
+            return chosen
+
         dvals = np.array([s[2] for s in side], dtype=np.float64)
         dmin = float(np.min(dvals))
         closeness = 1.0 / (1.0 + np.maximum(0.0, dvals - dmin))
@@ -605,6 +773,7 @@ class DecisionPointObservation(ObservationBuilder):
             tree_edges = []
             seen_agents = set()
             visited_states = []
+            max_nodes = max(1, int(getattr(self, "local_search_max_nodes", 48)))
             distance_map = None
             try:
                 distance_map = self.env.distance_map.get()
@@ -614,6 +783,8 @@ class DecisionPointObservation(ObservationBuilder):
                 current_pos, current_dir, depth = frontier.pop()
                 if depth > depth_limit or (current_pos, current_dir) in visited:
                     continue
+                if len(tree_nodes) >= max_nodes:
+                    break
                 visited.add((current_pos, current_dir))
                 visited_states.append((int(current_pos[0]), int(current_pos[1]), int(current_dir), int(depth)))
                 try:
@@ -670,10 +841,20 @@ class DecisionPointObservation(ObservationBuilder):
                     distance_map=distance_map,
                 )
                 for next_dir, next_pos, _dist in selected:
+                    final_pos, final_dir, edge_len = self._contract_corridor_segment(
+                        handle=handle,
+                        pos=next_pos,
+                        direction=next_dir,
+                        depth=depth + 1,
+                        depth_limit=depth_limit,
+                    )
+                    next_depth = min(int(depth_limit), int(depth + edge_len))
+                    if next_depth <= depth:
+                        next_depth = depth + 1
                     edge_agents = []
                     if self.agent_map is not None:
                         try:
-                            nidx = self.agent_map[next_pos]
+                            nidx = self.agent_map[final_pos]
                             if nidx != -1 and nidx != handle:
                                 edge_agents.append(int(nidx))
                                 seen_agents.add(int(nidx))
@@ -682,16 +863,16 @@ class DecisionPointObservation(ObservationBuilder):
                     tree_edges.append({
                         "src_pos": current_pos,
                         "src_dir": int(current_dir),
-                        "dst_pos": next_pos,
-                        "dst_dir": int(next_dir),
+                        "dst_pos": final_pos,
+                        "dst_dir": int(final_dir),
                         "src_depth": int(depth),
-                        "dst_depth": int(depth + 1),
+                        "dst_depth": int(next_depth),
                         "rel_dir_bin": self._dir_to_rel_bin(current_dir, next_dir),
-                        "edge_len_cells": 1,
+                        "edge_len_cells": int(edge_len),
                         "agents_on_edge": edge_agents,
                         "has_oncoming_edge": bool(len(edge_agents) > 0),
                     })
-                    frontier.append((next_pos, next_dir, depth + 1))
+                    frontier.append((final_pos, final_dir, next_depth))
             return {
                 "nodes": tree_nodes,
                 "edges": tree_edges,

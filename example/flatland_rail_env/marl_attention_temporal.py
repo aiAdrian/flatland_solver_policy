@@ -367,6 +367,15 @@ TEMPORAL_WINDOW = 3  # 3 Frames -> Bewegung/Velocity wird durch Temporal-Attenti
 # 6 is a strong default on dense merge topologies; 5 is faster but may miss
 # deeper backward-inflow conflicts.
 LOCAL_TREE_SEARCH_DEPTH = 12
+LOCAL_TREE_RANDOM_START_DEPTH = 2
+LOCAL_TREE_MAX_SIDE_BRANCHES = 1
+LOCAL_TREE_DISTANCE_BIAS = 2.0
+LOCAL_TREE_MODE = 'stochastic'
+LOCAL_TREE_MCTS_ROLLOUTS = 6
+LOCAL_TREE_MCTS_HORIZON = 4
+LOCAL_TREE_UCB_C = 1.2
+LOCAL_TREE_CONTRACT_DEPTH = 7
+LOCAL_TREE_MAX_NODES = 48
 
 # High-success curriculum: bias training toward hard coordination cases
 # while keeping a small share of easy cases for stability.
@@ -407,8 +416,42 @@ if INCLUDE_5_AGENTS_IN_FINAL:
 # performs best with the extended layout.
 USE_HIERARCHICAL_OBS = True
 
-def create_temporal_obs_builder_object(debug: bool = False, search_depth: int = LOCAL_TREE_SEARCH_DEPTH):
+def create_temporal_obs_builder_object(
+    debug: bool = False,
+    search_depth: int = LOCAL_TREE_SEARCH_DEPTH,
+    random_start_depth: int = LOCAL_TREE_RANDOM_START_DEPTH,
+    max_side_branches: int = LOCAL_TREE_MAX_SIDE_BRANCHES,
+    distance_bias: float = LOCAL_TREE_DISTANCE_BIAS,
+    tree_mode: str = LOCAL_TREE_MODE,
+    mcts_rollouts: int = LOCAL_TREE_MCTS_ROLLOUTS,
+    mcts_horizon: int = LOCAL_TREE_MCTS_HORIZON,
+    ucb_c: float = LOCAL_TREE_UCB_C,
+    contract_depth: int = LOCAL_TREE_CONTRACT_DEPTH,
+    max_nodes: int = LOCAL_TREE_MAX_NODES,
+):
     """Factory for TemporalMultiAgentObservation"""
+    def _apply_tree_search_cfg(base_obs):
+        if hasattr(base_obs, 'search_depth'):
+            base_obs.search_depth = max(1, int(search_depth))
+        if hasattr(base_obs, 'local_search_random_start_depth'):
+            base_obs.local_search_random_start_depth = max(0, int(random_start_depth))
+        if hasattr(base_obs, 'local_search_max_side_branches'):
+            base_obs.local_search_max_side_branches = max(0, int(max_side_branches))
+        if hasattr(base_obs, 'local_search_distance_bias'):
+            base_obs.local_search_distance_bias = max(0.1, float(distance_bias))
+        if hasattr(base_obs, 'local_search_mode'):
+            base_obs.local_search_mode = str(tree_mode).lower()
+        if hasattr(base_obs, 'local_search_mcts_rollouts'):
+            base_obs.local_search_mcts_rollouts = max(1, int(mcts_rollouts))
+        if hasattr(base_obs, 'local_search_mcts_horizon'):
+            base_obs.local_search_mcts_horizon = max(1, int(mcts_horizon))
+        if hasattr(base_obs, 'local_search_ucb_c'):
+            base_obs.local_search_ucb_c = max(0.01, float(ucb_c))
+        if hasattr(base_obs, 'local_search_contract_depth'):
+            base_obs.local_search_contract_depth = max(0, int(contract_depth))
+        if hasattr(base_obs, 'local_search_max_nodes'):
+            base_obs.local_search_max_nodes = max(8, int(max_nodes))
+
     if USE_HIERARCHICAL_OBS:
         try:
             base = HierarchicalRoutesObservation(debug=debug, search_depth=search_depth)
@@ -416,6 +459,7 @@ def create_temporal_obs_builder_object(debug: bool = False, search_depth: int = 
             base = HierarchicalRoutesObservation()
             if hasattr(base, 'search_depth'):
                 base.search_depth = max(1, int(search_depth))
+        _apply_tree_search_cfg(base)
         try:
             return TemporalMultiAgentObservation(
                 temporal_window=TEMPORAL_WINDOW,
@@ -428,12 +472,18 @@ def create_temporal_obs_builder_object(debug: bool = False, search_depth: int = 
                 base_obs=base,
             )
     try:
-        return TemporalMultiAgentObservation(
+        obs = TemporalMultiAgentObservation(
             temporal_window=TEMPORAL_WINDOW,
             debug=debug,
         )
+        if hasattr(obs, 'base_obs'):
+            _apply_tree_search_cfg(obs.base_obs)
+        return obs
     except TypeError:
-        return TemporalMultiAgentObservation(temporal_window=TEMPORAL_WINDOW)
+        obs = TemporalMultiAgentObservation(temporal_window=TEMPORAL_WINDOW)
+        if hasattr(obs, 'base_obs'):
+            _apply_tree_search_cfg(obs.base_obs)
+        return obs
 
 
 def create_decider_agent(observation_space: int, action_space: int, eps: float = 0.0) -> LearningPolicy:
@@ -735,6 +785,79 @@ if __name__ == "__main__":
         dest='search_depth',
         help='Local tree search depth for observation builder (default: 6; recommended 5-7)'
     )
+    parser.add_argument(
+        '--tree_random_start_depth',
+        type=int,
+        default=LOCAL_TREE_RANDOM_START_DEPTH,
+        metavar='DEPTH',
+        dest='tree_random_start_depth',
+        help='From this tree depth onward, side branches are sampled (default: 2)'
+    )
+    parser.add_argument(
+        '--tree_max_side_branches',
+        type=int,
+        default=LOCAL_TREE_MAX_SIDE_BRANCHES,
+        metavar='K',
+        dest='tree_max_side_branches',
+        help='Maximum sampled side branches per node after shortest branch (default: 1)'
+    )
+    parser.add_argument(
+        '--tree_distance_bias',
+        type=float,
+        default=LOCAL_TREE_DISTANCE_BIAS,
+        metavar='ALPHA',
+        dest='tree_distance_bias',
+        help='Sampling bias toward shorter side branches; larger means stronger short-path bias (default: 2.0)'
+    )
+    parser.add_argument(
+        '--tree_mode',
+        type=str,
+        default=LOCAL_TREE_MODE,
+        choices=['stochastic', 'mcts'],
+        metavar='MODE',
+        dest='tree_mode',
+        help='Branch-selection mode after tree_random_start_depth: stochastic or mcts (default: stochastic)'
+    )
+    parser.add_argument(
+        '--tree_mcts_rollouts',
+        type=int,
+        default=LOCAL_TREE_MCTS_ROLLOUTS,
+        metavar='N',
+        dest='tree_mcts_rollouts',
+        help='MCTS-lite rollout budget per expanded node when tree_mode=mcts (default: 6)'
+    )
+    parser.add_argument(
+        '--tree_mcts_horizon',
+        type=int,
+        default=LOCAL_TREE_MCTS_HORIZON,
+        metavar='H',
+        dest='tree_mcts_horizon',
+        help='Rollout horizon in rail cells for tree_mode=mcts (default: 4)'
+    )
+    parser.add_argument(
+        '--tree_ucb_c',
+        type=float,
+        default=LOCAL_TREE_UCB_C,
+        metavar='C',
+        dest='tree_ucb_c',
+        help='Exploration constant for MCTS-lite UCB action selection (default: 1.2)'
+    )
+    parser.add_argument(
+        '--tree_contract_depth',
+        type=int,
+        default=LOCAL_TREE_CONTRACT_DEPTH,
+        metavar='DEPTH',
+        dest='tree_contract_depth',
+        help='From this depth onward linear corridors are contracted into one edge (default: 7)'
+    )
+    parser.add_argument(
+        '--tree_max_nodes',
+        type=int,
+        default=LOCAL_TREE_MAX_NODES,
+        metavar='N',
+        dest='tree_max_nodes',
+        help='Hard node budget for local tree search per agent step (default: 48)'
+    )
 
     args = parser.parse_args()
     mode = args.mode.lower()
@@ -753,6 +876,15 @@ if __name__ == "__main__":
     policy_mode = args.policy_mode.strip().lower()
     debug_mode = args.debug  # Capture debug flag
     search_depth = int(args.search_depth)
+    tree_random_start_depth = int(args.tree_random_start_depth)
+    tree_max_side_branches = int(args.tree_max_side_branches)
+    tree_distance_bias = float(args.tree_distance_bias)
+    tree_mode = str(args.tree_mode).lower()
+    tree_mcts_rollouts = int(args.tree_mcts_rollouts)
+    tree_mcts_horizon = int(args.tree_mcts_horizon)
+    tree_ucb_c = float(args.tree_ucb_c)
+    tree_contract_depth = int(args.tree_contract_depth)
+    tree_max_nodes = int(args.tree_max_nodes)
     do_training = mode != 'eval'
     do_rendering = rendering
     checkpoint_interval = 50
@@ -777,14 +909,60 @@ if __name__ == "__main__":
     if not (1 <= search_depth <= 12):
         print(f"ERROR: --search_depth must be between 1 and 12, got {search_depth}")
         sys.exit(1)
+    if not (0 <= tree_random_start_depth <= 12):
+        print(f"ERROR: --tree_random_start_depth must be between 0 and 12, got {tree_random_start_depth}")
+        sys.exit(1)
+    if not (0 <= tree_max_side_branches <= 3):
+        print(f"ERROR: --tree_max_side_branches must be between 0 and 3, got {tree_max_side_branches}")
+        sys.exit(1)
+    if not (0.1 <= tree_distance_bias <= 10.0):
+        print(f"ERROR: --tree_distance_bias must be between 0.1 and 10.0, got {tree_distance_bias}")
+        sys.exit(1)
+    if tree_mode not in ('stochastic', 'mcts'):
+        print(f"ERROR: --tree_mode must be one of ['stochastic', 'mcts'], got {tree_mode}")
+        sys.exit(1)
+    if not (1 <= tree_mcts_rollouts <= 64):
+        print(f"ERROR: --tree_mcts_rollouts must be between 1 and 64, got {tree_mcts_rollouts}")
+        sys.exit(1)
+    if not (1 <= tree_mcts_horizon <= 16):
+        print(f"ERROR: --tree_mcts_horizon must be between 1 and 16, got {tree_mcts_horizon}")
+        sys.exit(1)
+    if not (0.01 <= tree_ucb_c <= 4.0):
+        print(f"ERROR: --tree_ucb_c must be between 0.01 and 4.0, got {tree_ucb_c}")
+        sys.exit(1)
+    if not (0 <= tree_contract_depth <= 12):
+        print(f"ERROR: --tree_contract_depth must be between 0 and 12, got {tree_contract_depth}")
+        sys.exit(1)
+    if not (8 <= tree_max_nodes <= 256):
+        print(f"ERROR: --tree_max_nodes must be between 8 and 256, got {tree_max_nodes}")
+        sys.exit(1)
     min_eps = min(eps, min_eps)  # Use the lower of the two for safety
 
-    print(f"\n[Config] mode={mode}, eps={eps:.4f}, optimizer_mode={optimizer_mode}, policy_mode={policy_mode}, debug={debug_mode}, search_depth={search_depth}")
+    print(
+        f"\n[Config] mode={mode}, eps={eps:.4f}, optimizer_mode={optimizer_mode}, "
+        f"policy_mode={policy_mode}, debug={debug_mode}, search_depth={search_depth}, "
+        f"tree_mode={tree_mode}, tree_start={tree_random_start_depth}, tree_k={tree_max_side_branches}, "
+        f"tree_bias={tree_distance_bias:.2f}, tree_rollouts={tree_mcts_rollouts}, "
+        f"tree_horizon={tree_mcts_horizon}, tree_ucb_c={tree_ucb_c:.2f}, "
+        f"tree_contract_depth={tree_contract_depth}, tree_max_nodes={tree_max_nodes}"
+    )
     if USE_CURRICULUM_PHASES:
         print(f"[Config] curriculum_start_phase_index={start_from_phase} ({CURRICULUM_PHASES[start_from_phase]['name']})")
 
     environment = RailEnvironmentPersistable(
-        obs_builder_object_creator=lambda: create_temporal_obs_builder_object(debug=debug_mode, search_depth=search_depth),
+        obs_builder_object_creator=lambda: create_temporal_obs_builder_object(
+            debug=debug_mode,
+            search_depth=search_depth,
+            random_start_depth=tree_random_start_depth,
+            max_side_branches=tree_max_side_branches,
+            distance_bias=tree_distance_bias,
+            tree_mode=tree_mode,
+            mcts_rollouts=tree_mcts_rollouts,
+            mcts_horizon=tree_mcts_horizon,
+            ucb_c=tree_ucb_c,
+            contract_depth=tree_contract_depth,
+            max_nodes=tree_max_nodes,
+        ),
         n_cities=PURE_MARL_N_CITIES,
         grid_width=PURE_MARL_GRID_WIDTH,
         grid_height=PURE_MARL_GRID_HEIGHT,
@@ -813,7 +991,18 @@ if __name__ == "__main__":
 
     # Use the actual base-obs size so the policy gets a matching state_size
     # (64D for DecisionPointObservation, 88D for HierarchicalRoutesObservation).
-    _obs_builder_for_size = create_temporal_obs_builder_object(search_depth=search_depth)
+    _obs_builder_for_size = create_temporal_obs_builder_object(
+        search_depth=search_depth,
+        random_start_depth=tree_random_start_depth,
+        max_side_branches=tree_max_side_branches,
+        distance_bias=tree_distance_bias,
+        tree_mode=tree_mode,
+        mcts_rollouts=tree_mcts_rollouts,
+        mcts_horizon=tree_mcts_horizon,
+        ucb_c=tree_ucb_c,
+        contract_depth=tree_contract_depth,
+        max_nodes=tree_max_nodes,
+    )
     if hasattr(_obs_builder_for_size, 'get_observation_size'):
         _state_size = _obs_builder_for_size.get_observation_size()
     else:
