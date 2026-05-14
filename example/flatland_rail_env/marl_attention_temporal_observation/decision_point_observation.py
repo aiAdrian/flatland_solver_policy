@@ -451,6 +451,8 @@ class DecisionPointObservation(ObservationBuilder):
         self.local_search_ucb_c = 1.2
         self.local_search_contract_depth = 7
         self.local_search_max_nodes = 48
+        self.local_search_deadlock_probe_depth = 6
+        self.local_search_deadlock_max_states = 64
         self.env = None
         self.agent_map = None
         self._print_feature_layout_doc()
@@ -767,13 +769,26 @@ class DecisionPointObservation(ObservationBuilder):
             if start_pos is None or start_dir is None or self.env is None or self.env.rail is None:
                 print(f"[Warn] _local_search: Ungültige Startdaten für Agent {handle}.")
                 return {"nodes": [], "edges": [], "seen_agents": [], "visited_states": []}
-            visited = set()
+            best_depth_by_state = {}
             frontier = [(start_pos, start_dir, 0)]
             tree_nodes = []
             tree_edges = []
             seen_agents = set()
             visited_states = []
             max_nodes = max(1, int(getattr(self, "local_search_max_nodes", 48)))
+            transition_cache = {}
+            incoming_degree_cache = {}
+            incoming_agents_cache = {}
+            deadlock_cache = {}
+
+            def _get_transitions_cached(pos, direction):
+                key = (int(pos[0]), int(pos[1]), int(direction))
+                if key in transition_cache:
+                    return transition_cache[key]
+                trans = self.env.rail.get_transitions(int(pos[0]), int(pos[1]), int(direction))
+                transition_cache[key] = trans
+                return trans
+
             distance_map = None
             try:
                 distance_map = self.env.distance_map.get()
@@ -781,14 +796,16 @@ class DecisionPointObservation(ObservationBuilder):
                 distance_map = None
             while frontier:
                 current_pos, current_dir, depth = frontier.pop()
-                if depth > depth_limit or (current_pos, current_dir) in visited:
+                state_key = (int(current_pos[0]), int(current_pos[1]), int(current_dir))
+                prev_best = best_depth_by_state.get(state_key)
+                if depth > depth_limit or (prev_best is not None and depth >= prev_best):
                     continue
                 if len(tree_nodes) >= max_nodes:
                     break
-                visited.add((current_pos, current_dir))
+                best_depth_by_state[state_key] = int(depth)
                 visited_states.append((int(current_pos[0]), int(current_pos[1]), int(current_dir), int(depth)))
                 try:
-                    transitions = self.env.rail.get_transitions(*current_pos, current_dir)
+                    transitions = _get_transitions_cached(current_pos, current_dir)
                 except Exception as e:
                     print(f"[Warn] _local_search: Fehler bei get_transitions: {e}")
                     continue
@@ -808,14 +825,41 @@ class DecisionPointObservation(ObservationBuilder):
                     except Exception as e:
                         print(f"[Warn] _local_search: Fehler bei agent_map: {e}")
                 try:
-                    if self._incoming_degree(current_pos) > 1:
-                        incoming_agents = self._incoming_agent_handles(current_pos, handle)
+                    pos_key = (int(current_pos[0]), int(current_pos[1]))
+                    if pos_key in incoming_degree_cache:
+                        in_deg = incoming_degree_cache[pos_key]
+                    else:
+                        in_deg = self._incoming_degree(current_pos, transition_cache=transition_cache)
+                        incoming_degree_cache[pos_key] = in_deg
+
+                    if in_deg > 1:
+                        ia_key = (pos_key[0], pos_key[1], int(handle))
+                        if ia_key in incoming_agents_cache:
+                            incoming_agents = incoming_agents_cache[ia_key]
+                        else:
+                            incoming_agents = self._incoming_agent_handles(
+                                current_pos,
+                                handle,
+                                transition_cache=transition_cache,
+                            )
+                            incoming_agents_cache[ia_key] = incoming_agents
                         for a in incoming_agents:
                             seen_agents.add(int(a))
                 except Exception as e:
                     print(f"[Warn] _local_search: Fehler bei incoming-agent scan: {e}")
                 try:
-                    base_risk = self._calculate_deadlock_risk(handle, current_pos, current_dir)
+                    if state_key in deadlock_cache:
+                        base_risk = deadlock_cache[state_key]
+                    else:
+                        base_risk = self._calculate_deadlock_risk(
+                            handle,
+                            current_pos,
+                            current_dir,
+                            max_depth=int(getattr(self, "local_search_deadlock_probe_depth", 6)),
+                            max_states=int(getattr(self, "local_search_deadlock_max_states", 64)),
+                            transition_cache=transition_cache,
+                        )
+                        deadlock_cache[state_key] = base_risk
                 except Exception as e:
                     print(f"[Warn] _local_search: Fehler bei _calculate_deadlock_risk: {e}")
                     base_risk = 1.0
@@ -883,22 +927,38 @@ class DecisionPointObservation(ObservationBuilder):
             print(f"[Warn] _local_search: Schwerwiegender Fehler: {e}")
             return {"nodes": [], "edges": [], "seen_agents": [], "visited_states": []}
 
-    def _calculate_deadlock_risk(self, handle, pos, direction):
+    def _calculate_deadlock_risk(self, handle, pos, direction, max_depth=6, max_states=64, transition_cache=None):
         """Defensive Deadlock-Risk-Berechnung: Gibt bei Fehlern Risiko=1.0 zurück."""
         try:
             if pos is None or direction is None or self.env is None or self.env.rail is None:
                 print(f"[Warn] _calculate_deadlock_risk: Ungültige Eingaben für Agent {handle}.")
                 return 1.0
+
+            if transition_cache is None:
+                transition_cache = {}
+
+            def _get_transitions_cached(cell_pos, cell_dir):
+                key = (int(cell_pos[0]), int(cell_pos[1]), int(cell_dir))
+                if key in transition_cache:
+                    return transition_cache[key]
+                trans = self.env.rail.get_transitions(int(cell_pos[0]), int(cell_pos[1]), int(cell_dir))
+                transition_cache[key] = trans
+                return trans
+
             visited = set()
-            frontier = [(pos, direction)]
+            frontier = [(pos, direction, 0)]
             deadlock_risk = 0.0
             while frontier:
-                current_pos, current_dir = frontier.pop()
+                if len(visited) >= max(8, int(max_states)):
+                    break
+                current_pos, current_dir, depth = frontier.pop()
+                if depth > max(1, int(max_depth)):
+                    continue
                 if (current_pos, current_dir) in visited:
                     continue
                 visited.add((current_pos, current_dir))
                 try:
-                    transitions = self.env.rail.get_transitions(*current_pos, current_dir)
+                    transitions = _get_transitions_cached(current_pos, current_dir)
                 except Exception as e:
                     print(f"[Warn] _calculate_deadlock_risk: Fehler bei get_transitions: {e}")
                     deadlock_risk += 1.0
@@ -911,7 +971,7 @@ class DecisionPointObservation(ObservationBuilder):
                 for next_dir in range(4):
                     if transitions[next_dir]:
                         next_pos = get_new_position(current_pos, next_dir)
-                        frontier.append((next_pos, next_dir))
+                        frontier.append((next_pos, next_dir, depth + 1))
             return min(deadlock_risk / 10.0, 1.0)
         except Exception as e:
             print(f"[Warn] _calculate_deadlock_risk: Schwerwiegender Fehler: {e}")
@@ -957,15 +1017,26 @@ class DecisionPointObservation(ObservationBuilder):
         transitions = self.env.rail.get_transitions(*pos, direction)
         return fast_count_nonzero(transitions) > 1
 
-    def _incoming_degree(self, cell_pos) -> int:
+    def _incoming_degree(self, cell_pos, transition_cache=None) -> int:
         """Count incoming directed edges to a cell by local 4-neighborhood scan."""
+        if transition_cache is None:
+            transition_cache = {}
+
+        def _get_transitions_cached(pos, direction):
+            key = (int(pos[0]), int(pos[1]), int(direction))
+            if key in transition_cache:
+                return transition_cache[key]
+            trans = self.env.rail.get_transitions(int(pos[0]), int(pos[1]), int(direction))
+            transition_cache[key] = trans
+            return trans
+
         incoming_edges = set()
         for prev_dir in range(4):
             prev_pos = get_new_position(cell_pos, (prev_dir + 2) % 4)
             if prev_pos[0] < 0 or prev_pos[0] >= self.env.height or prev_pos[1] < 0 or prev_pos[1] >= self.env.width:
                 continue
             for d in range(4):
-                trans = self.env.rail.get_transitions(*prev_pos, d)
+                trans = _get_transitions_cached(prev_pos, d)
                 for nd in range(4):
                     if not trans[nd]:
                         continue
@@ -974,10 +1045,22 @@ class DecisionPointObservation(ObservationBuilder):
                         incoming_edges.add((prev_pos[0], prev_pos[1], d, nd))
         return len(incoming_edges)
 
-    def _incoming_agent_handles(self, cell_pos, handle_exclude: int) -> list:
+    def _incoming_agent_handles(self, cell_pos, handle_exclude: int, transition_cache=None) -> list:
         """Collect agents that can enter cell_pos through an incoming directed edge."""
         if self.agent_map is None:
             return []
+
+        if transition_cache is None:
+            transition_cache = {}
+
+        def _get_transitions_cached(pos, direction):
+            key = (int(pos[0]), int(pos[1]), int(direction))
+            if key in transition_cache:
+                return transition_cache[key]
+            trans = self.env.rail.get_transitions(int(pos[0]), int(pos[1]), int(direction))
+            transition_cache[key] = trans
+            return trans
+
         found = set()
         for prev_dir in range(4):
             prev_pos = get_new_position(cell_pos, (prev_dir + 2) % 4)
@@ -993,7 +1076,7 @@ class DecisionPointObservation(ObservationBuilder):
                 a_dir = self.env.agents[agent_idx].direction
                 if a_dir is None:
                     continue
-                trans = self.env.rail.get_transitions(*prev_pos, a_dir)
+                trans = _get_transitions_cached(prev_pos, a_dir)
                 for nd in range(4):
                     if not trans[nd]:
                         continue

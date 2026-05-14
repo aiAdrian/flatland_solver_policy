@@ -376,6 +376,8 @@ LOCAL_TREE_MCTS_HORIZON = 4
 LOCAL_TREE_UCB_C = 1.2
 LOCAL_TREE_CONTRACT_DEPTH = 7
 LOCAL_TREE_MAX_NODES = 48
+LOCAL_TREE_DEADLOCK_PROBE_DEPTH = 6
+LOCAL_TREE_DEADLOCK_MAX_STATES = 64
 
 # High-success curriculum: bias training toward hard coordination cases
 # while keeping a small share of easy cases for stability.
@@ -428,6 +430,8 @@ def create_temporal_obs_builder_object(
     ucb_c: float = LOCAL_TREE_UCB_C,
     contract_depth: int = LOCAL_TREE_CONTRACT_DEPTH,
     max_nodes: int = LOCAL_TREE_MAX_NODES,
+    deadlock_probe_depth: int = LOCAL_TREE_DEADLOCK_PROBE_DEPTH,
+    deadlock_max_states: int = LOCAL_TREE_DEADLOCK_MAX_STATES,
 ):
     """Factory for TemporalMultiAgentObservation"""
     def _apply_tree_search_cfg(base_obs):
@@ -451,6 +455,10 @@ def create_temporal_obs_builder_object(
             base_obs.local_search_contract_depth = max(0, int(contract_depth))
         if hasattr(base_obs, 'local_search_max_nodes'):
             base_obs.local_search_max_nodes = max(8, int(max_nodes))
+        if hasattr(base_obs, 'local_search_deadlock_probe_depth'):
+            base_obs.local_search_deadlock_probe_depth = max(1, int(deadlock_probe_depth))
+        if hasattr(base_obs, 'local_search_deadlock_max_states'):
+            base_obs.local_search_deadlock_max_states = max(8, int(deadlock_max_states))
 
     if USE_HIERARCHICAL_OBS:
         try:
@@ -858,6 +866,22 @@ if __name__ == "__main__":
         dest='tree_max_nodes',
         help='Hard node budget for local tree search per agent step (default: 48)'
     )
+    parser.add_argument(
+        '--tree_deadlock_probe_depth',
+        type=int,
+        default=LOCAL_TREE_DEADLOCK_PROBE_DEPTH,
+        metavar='DEPTH',
+        dest='tree_deadlock_probe_depth',
+        help='Depth cap for per-node deadlock probe used inside local search (default: 6)'
+    )
+    parser.add_argument(
+        '--tree_deadlock_max_states',
+        type=int,
+        default=LOCAL_TREE_DEADLOCK_MAX_STATES,
+        metavar='N',
+        dest='tree_deadlock_max_states',
+        help='State cap for per-node deadlock probe used inside local search (default: 64)'
+    )
 
     args = parser.parse_args()
     mode = args.mode.lower()
@@ -885,6 +909,8 @@ if __name__ == "__main__":
     tree_ucb_c = float(args.tree_ucb_c)
     tree_contract_depth = int(args.tree_contract_depth)
     tree_max_nodes = int(args.tree_max_nodes)
+    tree_deadlock_probe_depth = int(args.tree_deadlock_probe_depth)
+    tree_deadlock_max_states = int(args.tree_deadlock_max_states)
     do_training = mode != 'eval'
     do_rendering = rendering
     checkpoint_interval = 50
@@ -936,6 +962,12 @@ if __name__ == "__main__":
     if not (8 <= tree_max_nodes <= 256):
         print(f"ERROR: --tree_max_nodes must be between 8 and 256, got {tree_max_nodes}")
         sys.exit(1)
+    if not (1 <= tree_deadlock_probe_depth <= 12):
+        print(f"ERROR: --tree_deadlock_probe_depth must be between 1 and 12, got {tree_deadlock_probe_depth}")
+        sys.exit(1)
+    if not (8 <= tree_deadlock_max_states <= 512):
+        print(f"ERROR: --tree_deadlock_max_states must be between 8 and 512, got {tree_deadlock_max_states}")
+        sys.exit(1)
     min_eps = min(eps, min_eps)  # Use the lower of the two for safety
 
     print(
@@ -944,7 +976,8 @@ if __name__ == "__main__":
         f"tree_mode={tree_mode}, tree_start={tree_random_start_depth}, tree_k={tree_max_side_branches}, "
         f"tree_bias={tree_distance_bias:.2f}, tree_rollouts={tree_mcts_rollouts}, "
         f"tree_horizon={tree_mcts_horizon}, tree_ucb_c={tree_ucb_c:.2f}, "
-        f"tree_contract_depth={tree_contract_depth}, tree_max_nodes={tree_max_nodes}"
+        f"tree_contract_depth={tree_contract_depth}, tree_max_nodes={tree_max_nodes}, "
+        f"tree_deadlock_probe_depth={tree_deadlock_probe_depth}, tree_deadlock_max_states={tree_deadlock_max_states}"
     )
     if USE_CURRICULUM_PHASES:
         print(f"[Config] curriculum_start_phase_index={start_from_phase} ({CURRICULUM_PHASES[start_from_phase]['name']})")
@@ -962,6 +995,8 @@ if __name__ == "__main__":
             ucb_c=tree_ucb_c,
             contract_depth=tree_contract_depth,
             max_nodes=tree_max_nodes,
+            deadlock_probe_depth=tree_deadlock_probe_depth,
+            deadlock_max_states=tree_deadlock_max_states,
         ),
         n_cities=PURE_MARL_N_CITIES,
         grid_width=PURE_MARL_GRID_WIDTH,
@@ -1002,6 +1037,8 @@ if __name__ == "__main__":
         ucb_c=tree_ucb_c,
         contract_depth=tree_contract_depth,
         max_nodes=tree_max_nodes,
+        deadlock_probe_depth=tree_deadlock_probe_depth,
+        deadlock_max_states=tree_deadlock_max_states,
     )
     if hasattr(_obs_builder_for_size, 'get_observation_size'):
         _state_size = _obs_builder_for_size.get_observation_size()

@@ -7,6 +7,7 @@ Ziel:
 - klar sehen, was deterministisch ist und was lernbar ist
 - den `tree_payload` fuer lernbare Encoder korrekt nutzen
 - `search_depth` fachlich sinnvoll waehlen
+- tiefe Suchen performant halten (Sampling, Kontraktion, Node-Budget)
 
 ## 1. Gesamtidee in einem Satz
 
@@ -215,15 +216,43 @@ Empfohlene Fusion:
 - `h_policy = concat(h_obs, h_tree, h_comm)`
 - danach gemeinsamer MLP-Block fuer Actor/Critic Heads
 
-## 10. search_depth: fachliche Empfehlung
+## 10. Search-Performance: neue Steuerhebel
 
-`search_depth` ist ein Bias-Varianz-Performance-Hebel.
+Die lokale Suche unterstuetzt jetzt drei Performance-Hebel, die zusammen tiefe Baeume praktikabel machen:
+
+1. Branch-Selektion ab Tiefe X
+- `--tree_random_start_depth`
+- `--tree_max_side_branches`
+- `--tree_distance_bias`
+
+2. Optionales MCTS-lite fuer Branch-Auswahl
+- `--tree_mode stochastic|mcts`
+- `--tree_mcts_rollouts`
+- `--tree_mcts_horizon`
+- `--tree_ucb_c`
+
+3. Strukturkompression und hartes Budget
+- `--tree_contract_depth` (lineare Korridore zu einer Kante zusammenziehen)
+- `--tree_max_nodes` (maximale Knoten pro Agent/Step)
+
+4. Begrenzte Deadlock-Probes im Node-Scoring
+- `--tree_deadlock_probe_depth` (Suchtiefe pro Deadlock-Probe)
+- `--tree_deadlock_max_states` (maximale Zustaende pro Deadlock-Probe)
+
+Wichtig:
+- kuerzester Pfad bleibt immer erhalten
+- Kontraktion startet erst ab `tree_contract_depth`
+- `edge_len_cells` signalisiert dem Encoder, wie viele Zellen zusammengezogen wurden
+- Deadlock-Probe ist bewusst begrenzt, damit `_local_search` nicht durch teure Vollgraph-Scans dominiert wird
+
+## 11. search_depth: fachliche Empfehlung
+
+`search_depth` bleibt ein Bias-Varianz-Performance-Hebel, jetzt aber mit besserer Laufzeitkontrolle.
 
 Praxisleitfaden:
 - `depth = 4`: schnell, aber begrenzte Merge-Vorschau
-- `depth = 5`: guter Standard (aktueller Default)
-- `depth = 6`: besser fuer komplexe Merge-Backflow-Faelle
-- `depth >= 7`: oft teuer, nur wenn Profiling es erlaubt
+- `depth = 5..7`: stabiler Arbeitsbereich
+- `depth = 8..12`: mit Kontraktion/Budget gut nutzbar
 
 Empfohlenes Vorgehen:
 1. Grid-Sweep auf kleinen Batches (`depth in {4,5,6}`).
@@ -237,7 +266,52 @@ Empfohlenes Vorgehen:
 Regel:
 - Wenn viele Konflikte erst hinter dem ersten Merge sichtbar werden, ist `depth=5` oft knapp und `depth=6` sinnvoll.
 
-## 11. Deadlock-Erkennung und Logging
+Empfohlene Start-Presets:
+
+Preset A (schnell und robust):
+```bash
+--search_depth 8 \
+--tree_mode stochastic \
+--tree_random_start_depth 2 \
+--tree_max_side_branches 1 \
+--tree_distance_bias 2.5 \
+--tree_contract_depth 6 \
+--tree_max_nodes 40 \
+--tree_deadlock_probe_depth 5 \
+--tree_deadlock_max_states 48
+```
+
+Preset B (tiefer, immer noch kontrolliert):
+```bash
+--search_depth 12 \
+--tree_mode mcts \
+--tree_mcts_rollouts 8 \
+--tree_mcts_horizon 5 \
+--tree_ucb_c 1.2 \
+--tree_random_start_depth 2 \
+--tree_max_side_branches 1 \
+--tree_contract_depth 7 \
+--tree_max_nodes 48 \
+--tree_deadlock_probe_depth 6 \
+--tree_deadlock_max_states 64
+```
+
+Preset C (aggressiv auf Qualitaet, langsamer):
+```bash
+--search_depth 12 \
+--tree_mode mcts \
+--tree_mcts_rollouts 12 \
+--tree_mcts_horizon 6 \
+--tree_ucb_c 1.0 \
+--tree_random_start_depth 1 \
+--tree_max_side_branches 2 \
+--tree_contract_depth 8 \
+--tree_max_nodes 72 \
+--tree_deadlock_probe_depth 7 \
+--tree_deadlock_max_states 96
+```
+
+## 12. Deadlock-Erkennung und Logging
 
 Aktuell ist Deadlock-Erkennung an zwei Stellen relevant:
 - Observation/Utils fuer Deadlock-Signal in Features
@@ -250,7 +324,7 @@ Dafuer wurde ein Fallback im Solver eingebaut:
 
 Damit bleibt die Ausgabe `dead locks` aussagekraeftig.
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 Wenn deadlocks immer 0 sind:
 - pruefen, ob Agenten on-map sind (position gesetzt)
@@ -263,11 +337,19 @@ Wenn zu viele false positives auftreten:
 - Merge/Switch-Hotspots separat evaluieren
 
 Wenn Laufzeit zu hoch ist:
-- `search_depth` reduzieren
-- optional nur an decision-required Zustanden volle Suche fahren
-- Tree-Encoder-Batching optimieren
+- zuerst `tree_max_nodes` reduzieren (z. B. 48 -> 32)
+- dann `tree_contract_depth` verkleinern (z. B. 7 -> 6)
+- bei `tree_mode=mcts`: `tree_mcts_rollouts` senken
+- `tree_deadlock_probe_depth` und `tree_deadlock_max_states` senken
+- zuletzt `search_depth` reduzieren
 
-## 13. Fazit
+Wenn die Policy "zu kurzsichtig" wirkt:
+- `search_depth` erhoehen
+- `tree_contract_depth` erhoehen (spaeter kontrahieren)
+- bei `tree_mode=mcts`: `tree_mcts_horizon` leicht erhoehen
+- `tree_max_nodes` nicht zu klein waehlen
+
+## 14. Fazit
 
 Die aktuelle Architektur ist geeignet fuer alle denkbaren lokalen Baumformen:
 - unterschiedliche Tiefe
