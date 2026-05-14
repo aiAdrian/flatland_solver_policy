@@ -1338,7 +1338,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
     def _effective_clip_eps(self) -> float:
         # Narrow PPO trust region in late training to avoid destructive policy jumps.
         if self.episode_count < 200:
-            return min(0.12, float(self.surrogate_eps_clip))
+            # Early phase needs stronger actor movement to escape deadlock basins.
+            return min(0.15, float(self.surrogate_eps_clip))
         if self.episode_count < self.stability_guard_start_episode:
             return float(self.surrogate_eps_clip)
         if self.episode_count >= self.stability_guard_hard_episode:
@@ -1347,7 +1348,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
     def _effective_k_epochs(self) -> int:
         if self.episode_count < 200:
-            return 1
+            return min(2, int(self.K_epoch))
         if self.episode_count < 300:
             return min(2, int(self.K_epoch))
         if self.episode_count >= self.stability_guard_hard_episode:
@@ -1739,6 +1740,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 start_idx = batch_idx * self.batch_size
                 end_idx = min(start_idx + self.batch_size, samples_to_use)
                 batch_indices = indices[start_idx:end_idx]
+
+                # Skip tiny tail batches; they create very noisy gradients and
+                # unstable diagnostics (e.g. 2-10 sample action histograms).
+                if batch_indices.numel() < 16:
+                    continue
                 
                 batch_state_tuples = [all_state_tuples[i] for i in batch_indices]
                 batch_actions = all_actions[batch_indices]
@@ -1919,10 +1925,19 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 value_loss_scalar = float(value_loss_component.detach().item())
                 if value_loss_scalar > 0.90:
                     value_weight_eff *= 1.35
-                    policy_weight_eff *= 0.90
+                    policy_weight_eff *= 0.97
                 elif value_loss_scalar < 0.45:
                     value_weight_eff *= 0.90
                     policy_weight_eff *= 1.05
+
+                # When PPO is overly conservative (very low KL, ratio near 1,
+                # near-zero policy loss), softly boost actor weight.
+                if (
+                    abs(float(policy_loss_component.detach().item())) < 0.003
+                    and approx_kl < 0.010
+                    and abs(ratio_mean - 1.0) < 0.03
+                ):
+                    policy_weight_eff *= 1.15
 
                 loss = \
                     policy_weight_eff * policy_loss_component \
@@ -1950,13 +1965,13 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 grad_norm_actor = torch.nn.utils.clip_grad_norm_(
                     list(self.encoder_actor.parameters()) + 
                     list(self.actor_critic_model.actor.parameters()),
-                    max_norm=0.35
+                    max_norm=0.50
                 )
                 
                 grad_norm_critic = torch.nn.utils.clip_grad_norm_(
                     list(self.encoder_critic.parameters()) + 
                     list(self.actor_critic_model.critic.parameters()),
-                    max_norm=0.35
+                    max_norm=0.50
                 )
                 
                 grad_norm = max(grad_norm_actor.item(), grad_norm_critic.item())
