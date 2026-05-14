@@ -2416,38 +2416,37 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 vs   = f"{val:.4f} ±{pm:.4f}"
                 print(row(lbl, vs, unit, st, note) + " |")
 
-            tr_row("V_Loss (critic)",    vl_m, vl_s, "",    0.0, 0.30,
+            tr_row("V_Loss (critic)", vl_m, vl_s, "", 0.0, 0.30,
                    "critic fits returns",
                    "critic not converging")
-            tr_row("P_Loss (policy)",    pl_m, pl_s, "",   -0.5, 0.5,
+            tr_row("P_Loss (policy)", pl_m, pl_s, "", -0.5, 0.5,
                    "policy improving",
                    "gradient signal weak")
-            tr_row("Entropy",            en_m, en_s, "nat", self.entropy_floor, 2.0,
+            tr_row("Entropy", en_m, en_s, "nat", self.entropy_floor, 2.0,
                    "exploration ok",
                    f"below floor={self.entropy_floor:.2f}, collapse risk")
-            tr_row("KL divergence",      kl_m, kl_s, "",    0.0, self.ppo_target_kl * 1.5,
+            tr_row("KL divergence", kl_m, kl_s, "", 0.0, self.ppo_target_kl * 1.5,
                    "trust region ok",
                    f"exceeds target={self.ppo_target_kl:.3f}")
-            tr_row("PPO ratio mean",     rt_m, rt_s, "",    0.90, 1.15,
+            tr_row("PPO ratio mean", rt_m, rt_s, "", 0.90, 1.15,
                    "ratios stable",
                    "policy update too large/small")
-            tr_row("Advantage mean",     am_m, 0.0,  "",   -2.0, 2.0,
+            tr_row("Advantage mean", am_m, 0.0, "", -2.0, 2.0,
                    "centered ok",
                    "advantages heavily biased")
-            tr_row("Advantage std",      as_m, 0.0,  "",    0.5, 5.0,
+            tr_row("Advantage std", as_m, 0.0, "", 0.5, 5.0,
                    "signal present",
                    "signal too weak or exploding")
-            tr_row("GradNorm",           gn_m, gn_s, "",    0.0, 4.0,
+            tr_row("GradNorm", gn_m, gn_s, "", 0.0, 4.0,
                    "gradients stable",
                    "gradient instability")
-            tr_row("AuxDL loss",         aux_m, 0.0, "",    0.0, 0.8,
+            tr_row("AuxDL loss", aux_m, 0.0, "", 0.0, 0.8,
                    "deadlock head ok",
                    "deadlock head not converging")
-                 tr_row("Adiv gate ratio",    adg_m, adg_s, "frac", 0.05, 0.70,
-                     "diversity shaped at decisions",
-                     "too sparse/broad gating for diversity")
-            print(row("Returns range",
-                       f"{ret_min:+.2f}…{ret_max:+.2f}", "", "", "") + " |")
+            tr_row("Adiv gate ratio", adg_m, adg_s, "frac", 0.05, 0.70,
+                   "diversity shaped at decisions",
+                   "too sparse/broad gating for diversity")
+            print(row("Returns range", f"{ret_min:+.2f}…{ret_max:+.2f}", "", "", "") + " |")
             end_table()
 
             # Diagnose
