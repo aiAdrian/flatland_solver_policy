@@ -239,6 +239,9 @@ Die lokale Suche unterstuetzt jetzt mehrere Performance-Hebel, die zusammen tief
 - `--tree_deadlock_probe_depth` (Suchtiefe pro Deadlock-Probe)
 - `--tree_deadlock_max_states` (maximale Zustaende pro Deadlock-Probe)
 
+6. Numerische Stabilitaet der Tree-Features
+- `--tree_clip_features on|off`
+
 5. Adaptives Node-Budget pro Agent/Step
 - `--tree_adaptive_budget on|off`
 - `--tree_min_nodes`
@@ -265,6 +268,8 @@ Wichtig:
 - `edge_len_cells` signalisiert dem Encoder, wie viele Zellen zusammengezogen wurden
 - Deadlock-Probe ist bewusst begrenzt, damit `_local_search` nicht durch teure Vollgraph-Scans dominiert wird
 - adaptives Budget reduziert Kosten in einfachen Szenen ohne Konflikt-Qualitaet in harten Szenen zu verlieren
+- Knoten-Tiefe im serialisierten Tree wird mit `search_depth` normalisiert (nicht hart mit 5)
+- optionales Clipping (`tree_clip_features=on`) haelt den serialisierten Tree-Block in [0,1]
 
 ## 11. search_depth: fachliche Empfehlung
 
@@ -304,7 +309,8 @@ Preset A (schnell und robust):
 --tree_adaptive_conflict_bonus 7 \
 --tree_adaptive_depth_bonus 2 \
 --tree_deadlock_probe_depth 5 \
---tree_deadlock_max_states 48
+--tree_deadlock_max_states 48 \
+--tree_clip_features on
 ```
 
 Preset B (tiefer, immer noch kontrolliert):
@@ -324,7 +330,8 @@ Preset B (tiefer, immer noch kontrolliert):
 --tree_adaptive_conflict_bonus 8 \
 --tree_adaptive_depth_bonus 2 \
 --tree_deadlock_probe_depth 6 \
---tree_deadlock_max_states 64
+--tree_deadlock_max_states 64 \
+--tree_clip_features on
 ```
 
 Preset C (aggressiv auf Qualitaet, langsamer):
@@ -344,7 +351,8 @@ Preset C (aggressiv auf Qualitaet, langsamer):
 --tree_adaptive_conflict_bonus 0 \
 --tree_adaptive_depth_bonus 0 \
 --tree_deadlock_probe_depth 7 \
---tree_deadlock_max_states 96
+--tree_deadlock_max_states 96 \
+--tree_clip_features on
 ```
 
 ## 12. Deadlock-Erkennung und Logging

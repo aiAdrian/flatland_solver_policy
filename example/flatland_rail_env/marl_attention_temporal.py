@@ -383,6 +383,7 @@ LOCAL_TREE_ADAPTIVE_CONFLICT_BONUS = 8
 LOCAL_TREE_ADAPTIVE_DEPTH_BONUS = 2
 LOCAL_TREE_DEADLOCK_PROBE_DEPTH = 6
 LOCAL_TREE_DEADLOCK_MAX_STATES = 64
+LOCAL_TREE_CLIP_FEATURES = 'on'
 
 # High-success curriculum: bias training toward hard coordination cases
 # while keeping a small share of easy cases for stability.
@@ -442,6 +443,7 @@ def create_temporal_obs_builder_object(
     adaptive_depth_bonus: int = LOCAL_TREE_ADAPTIVE_DEPTH_BONUS,
     deadlock_probe_depth: int = LOCAL_TREE_DEADLOCK_PROBE_DEPTH,
     deadlock_max_states: int = LOCAL_TREE_DEADLOCK_MAX_STATES,
+    clip_tree_features: str = LOCAL_TREE_CLIP_FEATURES,
 ):
     """Factory for TemporalMultiAgentObservation"""
     def _apply_tree_search_cfg(base_obs):
@@ -479,6 +481,8 @@ def create_temporal_obs_builder_object(
             base_obs.local_search_deadlock_probe_depth = max(1, int(deadlock_probe_depth))
         if hasattr(base_obs, 'local_search_deadlock_max_states'):
             base_obs.local_search_deadlock_max_states = max(8, int(deadlock_max_states))
+        if hasattr(base_obs, 'local_tree_clip_features'):
+            base_obs.local_tree_clip_features = str(clip_tree_features).lower() == 'on'
 
     if USE_HIERARCHICAL_OBS:
         try:
@@ -943,6 +947,15 @@ if __name__ == "__main__":
         dest='tree_deadlock_max_states',
         help='State cap for per-node deadlock probe used inside local search (default: 64)'
     )
+    parser.add_argument(
+        '--tree_clip_features',
+        type=str,
+        default=LOCAL_TREE_CLIP_FEATURES,
+        choices=['on', 'off'],
+        metavar='MODE',
+        dest='tree_clip_features',
+        help='Clip serialized tree-node features to [0,1] before policy input (default: on)'
+    )
 
     args = parser.parse_args()
     mode = args.mode.lower()
@@ -977,6 +990,7 @@ if __name__ == "__main__":
     tree_adaptive_depth_bonus = int(args.tree_adaptive_depth_bonus)
     tree_deadlock_probe_depth = int(args.tree_deadlock_probe_depth)
     tree_deadlock_max_states = int(args.tree_deadlock_max_states)
+    tree_clip_features = str(args.tree_clip_features).lower()
     do_training = mode != 'eval'
     do_rendering = rendering
     checkpoint_interval = 50
@@ -1052,6 +1066,9 @@ if __name__ == "__main__":
     if not (8 <= tree_deadlock_max_states <= 512):
         print(f"ERROR: --tree_deadlock_max_states must be between 8 and 512, got {tree_deadlock_max_states}")
         sys.exit(1)
+    if tree_clip_features not in ('on', 'off'):
+        print(f"ERROR: --tree_clip_features must be one of ['on', 'off'], got {tree_clip_features}")
+        sys.exit(1)
     min_eps = min(eps, min_eps)  # Use the lower of the two for safety
 
     print(
@@ -1065,7 +1082,8 @@ if __name__ == "__main__":
         f"tree_adaptive_branch_bonus={tree_adaptive_branch_bonus}, "
         f"tree_adaptive_conflict_bonus={tree_adaptive_conflict_bonus}, "
         f"tree_adaptive_depth_bonus={tree_adaptive_depth_bonus}, "
-        f"tree_deadlock_probe_depth={tree_deadlock_probe_depth}, tree_deadlock_max_states={tree_deadlock_max_states}"
+        f"tree_deadlock_probe_depth={tree_deadlock_probe_depth}, tree_deadlock_max_states={tree_deadlock_max_states}, "
+        f"tree_clip_features={tree_clip_features}"
     )
     if USE_CURRICULUM_PHASES:
         print(f"[Config] curriculum_start_phase_index={start_from_phase} ({CURRICULUM_PHASES[start_from_phase]['name']})")
@@ -1090,6 +1108,7 @@ if __name__ == "__main__":
             adaptive_depth_bonus=tree_adaptive_depth_bonus,
             deadlock_probe_depth=tree_deadlock_probe_depth,
             deadlock_max_states=tree_deadlock_max_states,
+            clip_tree_features=tree_clip_features,
         ),
         n_cities=PURE_MARL_N_CITIES,
         grid_width=PURE_MARL_GRID_WIDTH,
@@ -1137,6 +1156,7 @@ if __name__ == "__main__":
         adaptive_depth_bonus=tree_adaptive_depth_bonus,
         deadlock_probe_depth=tree_deadlock_probe_depth,
         deadlock_max_states=tree_deadlock_max_states,
+        clip_tree_features=tree_clip_features,
     )
     if hasattr(_obs_builder_for_size, 'get_observation_size'):
         _state_size = _obs_builder_for_size.get_observation_size()

@@ -458,12 +458,18 @@ class DecisionPointObservation(ObservationBuilder):
         self.local_search_adaptive_depth_bonus = 2
         self.local_search_deadlock_probe_depth = 6
         self.local_search_deadlock_max_states = 64
+        self.local_tree_clip_features = True
         self.env = None
         self.agent_map = None
         self._print_feature_layout_doc()
 
     @staticmethod
-    def _serialize_tree_nodes(tree_data: list, tree_edges: list = None) -> np.ndarray:
+    def _serialize_tree_nodes(
+        tree_data: list,
+        tree_edges: list = None,
+        depth_limit: int = 5,
+        clip_to_unit: bool = True,
+    ) -> np.ndarray:
         """Serialize DFS-ordered tree nodes + incoming edge features into obs[35:155].
 
         Nodes must be in DFS pre-order (as produced by _local_search via frontier.pop()).
@@ -505,7 +511,8 @@ class DecisionPointObservation(ObservationBuilder):
             arr[base + 1] = min(1.0, float(node.get("num_transitions", 1)) / 3.0)
             arr[base + 2] = 1.0 if node.get("has_oncoming", False) else 0.0
             arr[base + 3] = min(1.0, float(node.get("backward_inflow_count", 0)) / 2.0)
-            arr[base + 4] = depth / 5.0  # depth_limit = 5
+            safe_depth_limit = max(1, int(depth_limit))
+            arr[base + 4] = min(1.0, depth / float(safe_depth_limit))
             arr[base + 5] = 1.0 if len(node.get("agents_encountered", [])) > 0 else 0.0
             # Incoming edge features (root at depth=0 has no incoming edge)
             if depth > 0:
@@ -518,6 +525,8 @@ class DecisionPointObservation(ObservationBuilder):
                     arr[base + 6] = 0.5  # default: forward if edge not found
             else:
                 arr[base + 6] = 0.5  # root: no turn (encode as forward)
+        if bool(clip_to_unit):
+            np.clip(arr, 0.0, 1.0, out=arr)
         return arr
 
     def set_env(self, env):
@@ -1402,7 +1411,12 @@ class DecisionPointObservation(ObservationBuilder):
                     raw_features[33] = float(np.mean(_cf))
                     raw_features[34] = float(np.mean(_br))
                     # Serialize tree nodes into obs[35:155] for LocalTreeEncoder
-                    tree_flat = self._serialize_tree_nodes(tree_data, tree_payload.get("edges", []))
+                    tree_flat = self._serialize_tree_nodes(
+                        tree_data,
+                        tree_payload.get("edges", []),
+                        depth_limit=self.search_depth,
+                        clip_to_unit=bool(getattr(self, "local_tree_clip_features", True)),
+                    )
                     raw_features[35:35 + len(tree_flat)] = tree_flat
                 except Exception as e:
                     print(f"[Warn] get: Fehler bei tree_data-Statistiken: {e}")
