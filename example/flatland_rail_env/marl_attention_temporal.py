@@ -739,6 +739,13 @@ if __name__ == "__main__":
     do_rendering = rendering
     checkpoint_interval = 50
     start_from_phase = 0
+    if USE_CURRICULUM_PHASES and mode in ('final', 'final_continue'):
+        phase_idx_by_name = {p['name']: idx for idx, p in enumerate(CURRICULUM_PHASES)}
+        if 'phase5_final' in phase_idx_by_name:
+            start_from_phase = phase_idx_by_name['phase5_final']
+        else:
+            start_from_phase = max(0, len(CURRICULUM_PHASES) - 1)
+            print("[Warn] phase5_final not found in CURRICULUM_PHASES. Falling back to last phase.")
 
     # Validate EPS range
     if not (0.0 <= eps <= 1.0):
@@ -750,6 +757,8 @@ if __name__ == "__main__":
     min_eps = min(eps, min_eps)  # Use the lower of the two for safety
 
     print(f"\n[Config] mode={mode}, eps={eps:.4f}, optimizer_mode={optimizer_mode}, policy_mode={policy_mode}, debug={debug_mode}")
+    if USE_CURRICULUM_PHASES:
+        print(f"[Config] curriculum_start_phase_index={start_from_phase} ({CURRICULUM_PHASES[start_from_phase]['name']})")
 
     environment = RailEnvironmentPersistable(
         obs_builder_object_creator=lambda: create_temporal_obs_builder_object(debug=debug_mode),
