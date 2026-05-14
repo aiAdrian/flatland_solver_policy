@@ -1,4 +1,6 @@
 import os
+import importlib.util
+import importlib
 from collections import deque
 from typing import Union, Dict
 
@@ -181,10 +183,7 @@ class BaseSolver:
             nbr_agents_window.append(self.env.get_num_agents())
             tot_steps_window.append(tot_steps)
 
-            deadlock_count = 0
-            if hasattr(self, '_reward_shaper') and self._reward_shaper is not None:
-                if hasattr(self._reward_shaper, 'get_last_episode_deadlock_count'):
-                    deadlock_count = int(self._reward_shaper.get_last_episode_deadlock_count())
+            deadlock_count = self._get_deadlock_count()
             deadlock_count_window.append(deadlock_count)
 
             b = int(np.round(50 * np.mean(terminate_window)))
@@ -268,10 +267,7 @@ class BaseSolver:
             nbr_agents_window.append(self.env.get_num_agents())
             tot_steps_window.append(tot_steps)
 
-            deadlock_count = 0
-            if hasattr(self, '_reward_shaper') and self._reward_shaper is not None:
-                if hasattr(self._reward_shaper, 'get_last_episode_deadlock_count'):
-                    deadlock_count = int(self._reward_shaper.get_last_episode_deadlock_count())
+            deadlock_count = self._get_deadlock_count()
             deadlock_count_window.append(deadlock_count)
 
             b = int(np.round(50 * np.mean(terminate_window)))
@@ -320,7 +316,7 @@ class BaseSolver:
                     print(f"\n💾 Checkpoint saved: Episode {episode}")
                     print(f"   Path: {checkpoint_path}")
                     print(f"   Last: {last_checkpoint_path}")
-                    print(f"   Recover with: python marl_attention_temporal.py final_continue\n", end='')
+                    print("   Recover with: python marl_attention_temporal.py final_continue\n", end='')
 
             if episode >= max_episodes:
                 break
@@ -351,3 +347,92 @@ class BaseSolver:
             filename = "training_output/{}_{}".format(self.get_name(), self.policy.get_name())
         if self.policy is not None:
             self.policy.load(filename)
+
+    def _get_deadlock_count(self) -> int:
+        """Return per-episode deadlock count.
+
+        Priority:
+        1) Use reward shaper metric if available.
+        2) Fallback to solver-level deadlock detection on the current env.
+        """
+        if hasattr(self, '_reward_shaper') and self._reward_shaper is not None:
+            if hasattr(self._reward_shaper, 'get_last_episode_deadlock_count'):
+                try:
+                    return int(self._reward_shaper.get_last_episode_deadlock_count())
+                except Exception:
+                    pass
+        return self._estimate_deadlock_count_from_env()
+
+    def _estimate_deadlock_count_from_env(self) -> int:
+        """Best-effort deadlock count independent of reward shaper.
+
+        This keeps training/eval logging meaningful when no reward shaper is used.
+        """
+        try:
+            raw_env = self.env.get_raw_env() if hasattr(self.env, 'get_raw_env') else getattr(self.env, 'raw_env', self.env)
+            if raw_env is None or not hasattr(raw_env, 'agents') or not hasattr(raw_env, 'rail'):
+                return 0
+            if not hasattr(raw_env, 'height') or not hasattr(raw_env, 'width'):
+                return 0
+
+            DecisionPointUtils = self._load_decision_point_utils()
+            if DecisionPointUtils is None:
+                return 0
+
+            agent_map = np.zeros((raw_env.height, raw_env.width), dtype=np.int32) - 1
+            for a in raw_env.agents:
+                if getattr(a, 'position', None) is not None:
+                    agent_map[a.position] = int(a.handle)
+
+            deadlock_handles = set()
+            for a in raw_env.agents:
+                pos = getattr(a, 'position', None)
+                direction = getattr(a, 'direction', None)
+                if pos is None or direction is None:
+                    continue
+                state = getattr(a, 'state', None)
+                state_name = getattr(state, 'name', '') if state is not None else ''
+                if state_name == 'DONE':
+                    continue
+                try:
+                    if DecisionPointUtils.is_local_deadlock(raw_env, a, agent_map):
+                        deadlock_handles.add(int(a.handle))
+                except Exception:
+                    continue
+
+            return int(len(deadlock_handles))
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _load_decision_point_utils():
+        """Load DecisionPointUtils without requiring global PYTHONPATH setup."""
+        try:
+            module = importlib.import_module("marl_attention_temporal_observation.decision_point_utils")
+            return getattr(module, "DecisionPointUtils", None)
+        except Exception:
+            pass
+
+        try:
+            this_dir = os.path.dirname(os.path.abspath(__file__))
+            module_path = os.path.abspath(
+                os.path.join(
+                    this_dir,
+                    "..",
+                    "example",
+                    "flatland_rail_env",
+                    "marl_attention_temporal_observation",
+                    "decision_point_utils.py",
+                )
+            )
+            if not os.path.exists(module_path):
+                return None
+
+            spec = importlib.util.spec_from_file_location("_dp_utils_dynamic", module_path)
+            if spec is None or spec.loader is None:
+                return None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return getattr(module, "DecisionPointUtils", None)
+        except Exception:
+            return None
