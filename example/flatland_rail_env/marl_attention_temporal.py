@@ -366,7 +366,7 @@ TEMPORAL_WINDOW = 3  # 3 Frames -> Bewegung/Velocity wird durch Temporal-Attenti
 # Local tree-search horizon for DecisionPointObservation.
 # 6 is a strong default on dense merge topologies; 5 is faster but may miss
 # deeper backward-inflow conflicts.
-LOCAL_TREE_SEARCH_DEPTH = 6
+LOCAL_TREE_SEARCH_DEPTH = 12
 
 # High-success curriculum: bias training toward hard coordination cases
 # while keeping a small share of easy cases for stability.
