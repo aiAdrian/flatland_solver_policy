@@ -451,6 +451,11 @@ class DecisionPointObservation(ObservationBuilder):
         self.local_search_ucb_c = 1.2
         self.local_search_contract_depth = 7
         self.local_search_max_nodes = 48
+        self.local_search_min_nodes = 24
+        self.local_search_adaptive_budget = True
+        self.local_search_adaptive_branch_bonus = 6
+        self.local_search_adaptive_conflict_bonus = 8
+        self.local_search_adaptive_depth_bonus = 2
         self.local_search_deadlock_probe_depth = 6
         self.local_search_deadlock_max_states = 64
         self.env = None
@@ -653,6 +658,73 @@ class DecisionPointObservation(ObservationBuilder):
 
         return cur_pos, cur_dir, edge_len
 
+    def _compute_adaptive_node_budget(
+        self,
+        handle,
+        start_pos,
+        start_dir,
+        depth_limit,
+        transition_cache,
+        incoming_degree_cache,
+    ):
+        """Compute per-step node budget for local search.
+
+        The budget is reduced in simple scenes and increased near conflicts,
+        while staying bounded in [min_nodes, max_nodes].
+        """
+        max_nodes = max(8, int(getattr(self, "local_search_max_nodes", 48)))
+        min_nodes = max(8, int(getattr(self, "local_search_min_nodes", 24)))
+        if min_nodes > max_nodes:
+            min_nodes = max_nodes
+
+        if not bool(getattr(self, "local_search_adaptive_budget", True)):
+            return max_nodes
+
+        def _get_transitions_cached(pos, direction):
+            key = (int(pos[0]), int(pos[1]), int(direction))
+            if key in transition_cache:
+                return transition_cache[key]
+            trans = self.env.rail.get_transitions(int(pos[0]), int(pos[1]), int(direction))
+            transition_cache[key] = trans
+            return trans
+
+        budget = min_nodes
+        try:
+            root_trans = _get_transitions_cached(start_pos, start_dir)
+            branch_count = int(fast_count_nonzero(root_trans))
+        except Exception:
+            branch_count = 1
+
+        branch_bonus_unit = max(0, int(getattr(self, "local_search_adaptive_branch_bonus", 6)))
+        budget += branch_bonus_unit * max(0, branch_count - 1)
+
+        depth_bonus_unit = max(0, int(getattr(self, "local_search_adaptive_depth_bonus", 2)))
+        budget += depth_bonus_unit * max(0, int(depth_limit) - 6)
+
+        start_key = (int(start_pos[0]), int(start_pos[1]))
+        try:
+            if start_key in incoming_degree_cache:
+                in_deg = incoming_degree_cache[start_key]
+            else:
+                in_deg = self._incoming_degree(start_pos, transition_cache=transition_cache)
+                incoming_degree_cache[start_key] = in_deg
+        except Exception:
+            in_deg = 0
+
+        if in_deg > 1:
+            conflict_bonus = max(0, int(getattr(self, "local_search_adaptive_conflict_bonus", 8)))
+            budget += conflict_bonus
+
+        if self.agent_map is not None:
+            try:
+                start_agent = int(self.agent_map[start_pos])
+                if start_agent != -1 and start_agent != handle:
+                    budget += max(0, int(getattr(self, "local_search_adaptive_conflict_bonus", 8)))
+            except Exception:
+                pass
+
+        return max(min_nodes, min(max_nodes, int(budget)))
+
     def _select_local_search_branches(self, handle, depth, current_pos, transitions, distance_map):
         """Select branches for local search with depth-aware stochastic pruning.
 
@@ -775,7 +847,6 @@ class DecisionPointObservation(ObservationBuilder):
             tree_edges = []
             seen_agents = set()
             visited_states = []
-            max_nodes = max(1, int(getattr(self, "local_search_max_nodes", 48)))
             transition_cache = {}
             incoming_degree_cache = {}
             incoming_agents_cache = {}
@@ -794,6 +865,14 @@ class DecisionPointObservation(ObservationBuilder):
                 distance_map = self.env.distance_map.get()
             except Exception:
                 distance_map = None
+            max_nodes = self._compute_adaptive_node_budget(
+                handle=handle,
+                start_pos=start_pos,
+                start_dir=start_dir,
+                depth_limit=depth_limit,
+                transition_cache=transition_cache,
+                incoming_degree_cache=incoming_degree_cache,
+            )
             while frontier:
                 current_pos, current_dir, depth = frontier.pop()
                 state_key = (int(current_pos[0]), int(current_pos[1]), int(current_dir))

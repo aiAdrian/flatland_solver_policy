@@ -376,6 +376,11 @@ LOCAL_TREE_MCTS_HORIZON = 4
 LOCAL_TREE_UCB_C = 1.2
 LOCAL_TREE_CONTRACT_DEPTH = 7
 LOCAL_TREE_MAX_NODES = 48
+LOCAL_TREE_MIN_NODES = 24
+LOCAL_TREE_ADAPTIVE_BUDGET = 'on'
+LOCAL_TREE_ADAPTIVE_BRANCH_BONUS = 6
+LOCAL_TREE_ADAPTIVE_CONFLICT_BONUS = 8
+LOCAL_TREE_ADAPTIVE_DEPTH_BONUS = 2
 LOCAL_TREE_DEADLOCK_PROBE_DEPTH = 6
 LOCAL_TREE_DEADLOCK_MAX_STATES = 64
 
@@ -430,6 +435,11 @@ def create_temporal_obs_builder_object(
     ucb_c: float = LOCAL_TREE_UCB_C,
     contract_depth: int = LOCAL_TREE_CONTRACT_DEPTH,
     max_nodes: int = LOCAL_TREE_MAX_NODES,
+    min_nodes: int = LOCAL_TREE_MIN_NODES,
+    adaptive_budget: str = LOCAL_TREE_ADAPTIVE_BUDGET,
+    adaptive_branch_bonus: int = LOCAL_TREE_ADAPTIVE_BRANCH_BONUS,
+    adaptive_conflict_bonus: int = LOCAL_TREE_ADAPTIVE_CONFLICT_BONUS,
+    adaptive_depth_bonus: int = LOCAL_TREE_ADAPTIVE_DEPTH_BONUS,
     deadlock_probe_depth: int = LOCAL_TREE_DEADLOCK_PROBE_DEPTH,
     deadlock_max_states: int = LOCAL_TREE_DEADLOCK_MAX_STATES,
 ):
@@ -455,6 +465,16 @@ def create_temporal_obs_builder_object(
             base_obs.local_search_contract_depth = max(0, int(contract_depth))
         if hasattr(base_obs, 'local_search_max_nodes'):
             base_obs.local_search_max_nodes = max(8, int(max_nodes))
+        if hasattr(base_obs, 'local_search_min_nodes'):
+            base_obs.local_search_min_nodes = max(8, int(min_nodes))
+        if hasattr(base_obs, 'local_search_adaptive_budget'):
+            base_obs.local_search_adaptive_budget = str(adaptive_budget).lower() == 'on'
+        if hasattr(base_obs, 'local_search_adaptive_branch_bonus'):
+            base_obs.local_search_adaptive_branch_bonus = max(0, int(adaptive_branch_bonus))
+        if hasattr(base_obs, 'local_search_adaptive_conflict_bonus'):
+            base_obs.local_search_adaptive_conflict_bonus = max(0, int(adaptive_conflict_bonus))
+        if hasattr(base_obs, 'local_search_adaptive_depth_bonus'):
+            base_obs.local_search_adaptive_depth_bonus = max(0, int(adaptive_depth_bonus))
         if hasattr(base_obs, 'local_search_deadlock_probe_depth'):
             base_obs.local_search_deadlock_probe_depth = max(1, int(deadlock_probe_depth))
         if hasattr(base_obs, 'local_search_deadlock_max_states'):
@@ -867,6 +887,47 @@ if __name__ == "__main__":
         help='Hard node budget for local tree search per agent step (default: 48)'
     )
     parser.add_argument(
+        '--tree_min_nodes',
+        type=int,
+        default=LOCAL_TREE_MIN_NODES,
+        metavar='N',
+        dest='tree_min_nodes',
+        help='Minimum node budget when adaptive budgeting is enabled (default: 24)'
+    )
+    parser.add_argument(
+        '--tree_adaptive_budget',
+        type=str,
+        default=LOCAL_TREE_ADAPTIVE_BUDGET,
+        choices=['on', 'off'],
+        metavar='MODE',
+        dest='tree_adaptive_budget',
+        help='Adaptive node budget mode: on lowers cost in simple scenes, off uses fixed max_nodes (default: on)'
+    )
+    parser.add_argument(
+        '--tree_adaptive_branch_bonus',
+        type=int,
+        default=LOCAL_TREE_ADAPTIVE_BRANCH_BONUS,
+        metavar='N',
+        dest='tree_adaptive_branch_bonus',
+        help='Node bonus per extra root branch for adaptive budgeting (default: 6)'
+    )
+    parser.add_argument(
+        '--tree_adaptive_conflict_bonus',
+        type=int,
+        default=LOCAL_TREE_ADAPTIVE_CONFLICT_BONUS,
+        metavar='N',
+        dest='tree_adaptive_conflict_bonus',
+        help='Node bonus for merge/conflict hotspots in adaptive budgeting (default: 8)'
+    )
+    parser.add_argument(
+        '--tree_adaptive_depth_bonus',
+        type=int,
+        default=LOCAL_TREE_ADAPTIVE_DEPTH_BONUS,
+        metavar='N',
+        dest='tree_adaptive_depth_bonus',
+        help='Node bonus per depth step above 6 in adaptive budgeting (default: 2)'
+    )
+    parser.add_argument(
         '--tree_deadlock_probe_depth',
         type=int,
         default=LOCAL_TREE_DEADLOCK_PROBE_DEPTH,
@@ -909,6 +970,11 @@ if __name__ == "__main__":
     tree_ucb_c = float(args.tree_ucb_c)
     tree_contract_depth = int(args.tree_contract_depth)
     tree_max_nodes = int(args.tree_max_nodes)
+    tree_min_nodes = int(args.tree_min_nodes)
+    tree_adaptive_budget = str(args.tree_adaptive_budget).lower()
+    tree_adaptive_branch_bonus = int(args.tree_adaptive_branch_bonus)
+    tree_adaptive_conflict_bonus = int(args.tree_adaptive_conflict_bonus)
+    tree_adaptive_depth_bonus = int(args.tree_adaptive_depth_bonus)
     tree_deadlock_probe_depth = int(args.tree_deadlock_probe_depth)
     tree_deadlock_max_states = int(args.tree_deadlock_max_states)
     do_training = mode != 'eval'
@@ -962,6 +1028,24 @@ if __name__ == "__main__":
     if not (8 <= tree_max_nodes <= 256):
         print(f"ERROR: --tree_max_nodes must be between 8 and 256, got {tree_max_nodes}")
         sys.exit(1)
+    if not (8 <= tree_min_nodes <= 256):
+        print(f"ERROR: --tree_min_nodes must be between 8 and 256, got {tree_min_nodes}")
+        sys.exit(1)
+    if tree_min_nodes > tree_max_nodes:
+        print(f"ERROR: --tree_min_nodes must be <= --tree_max_nodes, got {tree_min_nodes}>{tree_max_nodes}")
+        sys.exit(1)
+    if tree_adaptive_budget not in ('on', 'off'):
+        print(f"ERROR: --tree_adaptive_budget must be one of ['on', 'off'], got {tree_adaptive_budget}")
+        sys.exit(1)
+    if not (0 <= tree_adaptive_branch_bonus <= 32):
+        print(f"ERROR: --tree_adaptive_branch_bonus must be between 0 and 32, got {tree_adaptive_branch_bonus}")
+        sys.exit(1)
+    if not (0 <= tree_adaptive_conflict_bonus <= 32):
+        print(f"ERROR: --tree_adaptive_conflict_bonus must be between 0 and 32, got {tree_adaptive_conflict_bonus}")
+        sys.exit(1)
+    if not (0 <= tree_adaptive_depth_bonus <= 16):
+        print(f"ERROR: --tree_adaptive_depth_bonus must be between 0 and 16, got {tree_adaptive_depth_bonus}")
+        sys.exit(1)
     if not (1 <= tree_deadlock_probe_depth <= 12):
         print(f"ERROR: --tree_deadlock_probe_depth must be between 1 and 12, got {tree_deadlock_probe_depth}")
         sys.exit(1)
@@ -976,7 +1060,11 @@ if __name__ == "__main__":
         f"tree_mode={tree_mode}, tree_start={tree_random_start_depth}, tree_k={tree_max_side_branches}, "
         f"tree_bias={tree_distance_bias:.2f}, tree_rollouts={tree_mcts_rollouts}, "
         f"tree_horizon={tree_mcts_horizon}, tree_ucb_c={tree_ucb_c:.2f}, "
-        f"tree_contract_depth={tree_contract_depth}, tree_max_nodes={tree_max_nodes}, "
+        f"tree_contract_depth={tree_contract_depth}, tree_min_nodes={tree_min_nodes}, "
+        f"tree_max_nodes={tree_max_nodes}, tree_adaptive_budget={tree_adaptive_budget}, "
+        f"tree_adaptive_branch_bonus={tree_adaptive_branch_bonus}, "
+        f"tree_adaptive_conflict_bonus={tree_adaptive_conflict_bonus}, "
+        f"tree_adaptive_depth_bonus={tree_adaptive_depth_bonus}, "
         f"tree_deadlock_probe_depth={tree_deadlock_probe_depth}, tree_deadlock_max_states={tree_deadlock_max_states}"
     )
     if USE_CURRICULUM_PHASES:
@@ -995,6 +1083,11 @@ if __name__ == "__main__":
             ucb_c=tree_ucb_c,
             contract_depth=tree_contract_depth,
             max_nodes=tree_max_nodes,
+            min_nodes=tree_min_nodes,
+            adaptive_budget=tree_adaptive_budget,
+            adaptive_branch_bonus=tree_adaptive_branch_bonus,
+            adaptive_conflict_bonus=tree_adaptive_conflict_bonus,
+            adaptive_depth_bonus=tree_adaptive_depth_bonus,
             deadlock_probe_depth=tree_deadlock_probe_depth,
             deadlock_max_states=tree_deadlock_max_states,
         ),
@@ -1037,6 +1130,11 @@ if __name__ == "__main__":
         ucb_c=tree_ucb_c,
         contract_depth=tree_contract_depth,
         max_nodes=tree_max_nodes,
+        min_nodes=tree_min_nodes,
+        adaptive_budget=tree_adaptive_budget,
+        adaptive_branch_bonus=tree_adaptive_branch_bonus,
+        adaptive_conflict_bonus=tree_adaptive_conflict_bonus,
+        adaptive_depth_bonus=tree_adaptive_depth_bonus,
         deadlock_probe_depth=tree_deadlock_probe_depth,
         deadlock_max_states=tree_deadlock_max_states,
     )

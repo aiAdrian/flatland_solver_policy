@@ -218,7 +218,7 @@ Empfohlene Fusion:
 
 ## 10. Search-Performance: neue Steuerhebel
 
-Die lokale Suche unterstuetzt jetzt drei Performance-Hebel, die zusammen tiefe Baeume praktikabel machen:
+Die lokale Suche unterstuetzt jetzt mehrere Performance-Hebel, die zusammen tiefe Baeume praktikabel machen:
 
 1. Branch-Selektion ab Tiefe X
 - `--tree_random_start_depth`
@@ -239,11 +239,32 @@ Die lokale Suche unterstuetzt jetzt drei Performance-Hebel, die zusammen tiefe B
 - `--tree_deadlock_probe_depth` (Suchtiefe pro Deadlock-Probe)
 - `--tree_deadlock_max_states` (maximale Zustaende pro Deadlock-Probe)
 
+5. Adaptives Node-Budget pro Agent/Step
+- `--tree_adaptive_budget on|off`
+- `--tree_min_nodes`
+- `--tree_max_nodes`
+- `--tree_adaptive_branch_bonus`
+- `--tree_adaptive_conflict_bonus`
+- `--tree_adaptive_depth_bonus`
+
+Adaptive Budget Idee:
+- einfache Szenen: Budget nahe `tree_min_nodes`
+- Merge/Conflict-Hotspots und tiefere Suche: Budget steigt dynamisch
+- harte Obergrenze bleibt `tree_max_nodes`
+
+Praktisch verwendete Heuristik:
+- Start bei `tree_min_nodes`
+- + Bonus fuer zusaetzliche Root-Branches
+- + Bonus fuer Konflikt-/Merge-Umgebung
+- + Bonus fuer hohe `search_depth`
+- danach clamp in `[tree_min_nodes, tree_max_nodes]`
+
 Wichtig:
 - kuerzester Pfad bleibt immer erhalten
 - Kontraktion startet erst ab `tree_contract_depth`
 - `edge_len_cells` signalisiert dem Encoder, wie viele Zellen zusammengezogen wurden
 - Deadlock-Probe ist bewusst begrenzt, damit `_local_search` nicht durch teure Vollgraph-Scans dominiert wird
+- adaptives Budget reduziert Kosten in einfachen Szenen ohne Konflikt-Qualitaet in harten Szenen zu verlieren
 
 ## 11. search_depth: fachliche Empfehlung
 
@@ -272,11 +293,16 @@ Preset A (schnell und robust):
 ```bash
 --search_depth 8 \
 --tree_mode stochastic \
+--tree_adaptive_budget on \
+--tree_min_nodes 20 \
 --tree_random_start_depth 2 \
 --tree_max_side_branches 1 \
 --tree_distance_bias 2.5 \
 --tree_contract_depth 6 \
 --tree_max_nodes 40 \
+--tree_adaptive_branch_bonus 5 \
+--tree_adaptive_conflict_bonus 7 \
+--tree_adaptive_depth_bonus 2 \
 --tree_deadlock_probe_depth 5 \
 --tree_deadlock_max_states 48
 ```
@@ -285,6 +311,8 @@ Preset B (tiefer, immer noch kontrolliert):
 ```bash
 --search_depth 12 \
 --tree_mode mcts \
+--tree_adaptive_budget on \
+--tree_min_nodes 24 \
 --tree_mcts_rollouts 8 \
 --tree_mcts_horizon 5 \
 --tree_ucb_c 1.2 \
@@ -292,6 +320,9 @@ Preset B (tiefer, immer noch kontrolliert):
 --tree_max_side_branches 1 \
 --tree_contract_depth 7 \
 --tree_max_nodes 48 \
+--tree_adaptive_branch_bonus 6 \
+--tree_adaptive_conflict_bonus 8 \
+--tree_adaptive_depth_bonus 2 \
 --tree_deadlock_probe_depth 6 \
 --tree_deadlock_max_states 64
 ```
@@ -300,6 +331,8 @@ Preset C (aggressiv auf Qualitaet, langsamer):
 ```bash
 --search_depth 12 \
 --tree_mode mcts \
+--tree_adaptive_budget off \
+--tree_min_nodes 72 \
 --tree_mcts_rollouts 12 \
 --tree_mcts_horizon 6 \
 --tree_ucb_c 1.0 \
@@ -307,6 +340,9 @@ Preset C (aggressiv auf Qualitaet, langsamer):
 --tree_max_side_branches 2 \
 --tree_contract_depth 8 \
 --tree_max_nodes 72 \
+--tree_adaptive_branch_bonus 0 \
+--tree_adaptive_conflict_bonus 0 \
+--tree_adaptive_depth_bonus 0 \
 --tree_deadlock_probe_depth 7 \
 --tree_deadlock_max_states 96
 ```
@@ -337,7 +373,9 @@ Wenn zu viele false positives auftreten:
 - Merge/Switch-Hotspots separat evaluieren
 
 Wenn Laufzeit zu hoch ist:
+- `tree_adaptive_budget=on` setzen (falls aus)
 - zuerst `tree_max_nodes` reduzieren (z. B. 48 -> 32)
+- `tree_min_nodes` reduzieren (z. B. 24 -> 16)
 - dann `tree_contract_depth` verkleinern (z. B. 7 -> 6)
 - bei `tree_mode=mcts`: `tree_mcts_rollouts` senken
 - `tree_deadlock_probe_depth` und `tree_deadlock_max_states` senken
@@ -345,6 +383,7 @@ Wenn Laufzeit zu hoch ist:
 
 Wenn die Policy "zu kurzsichtig" wirkt:
 - `search_depth` erhoehen
+- `tree_min_nodes` erhoehen
 - `tree_contract_depth` erhoehen (spaeter kontrahieren)
 - bei `tree_mode=mcts`: `tree_mcts_horizon` leicht erhoehen
 - `tree_max_nodes` nicht zu klein waehlen
