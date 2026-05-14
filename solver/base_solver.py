@@ -165,6 +165,7 @@ class BaseSolver:
         terminate_window = deque(maxlen=checkpoint_interval)
         nbr_agents_window = deque(maxlen=checkpoint_interval)
         tot_steps_window = deque(maxlen=checkpoint_interval)
+        deadlock_count_window = deque(maxlen=checkpoint_interval)
 
         writer = None
         if write_summary:
@@ -180,14 +181,22 @@ class BaseSolver:
             nbr_agents_window.append(self.env.get_num_agents())
             tot_steps_window.append(tot_steps)
 
+            deadlock_count = 0
+            if hasattr(self, '_reward_shaper') and self._reward_shaper is not None:
+                if hasattr(self._reward_shaper, 'get_last_episode_deadlock_count'):
+                    deadlock_count = int(self._reward_shaper.get_last_episode_deadlock_count())
+            deadlock_count_window.append(deadlock_count)
+
             b = int(np.round(50 * np.mean(terminate_window)))
             done_bar = ['#'] * b + ['_'] * (50 - b)
 
             print(
-                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f}  \tdone: [{:^5.0f}/{:^5.0f}] : {:4.3f}  \t [{}]'.format(
+                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f}  \tdead locks  [{:^5.0f}/{:^5.0f}] : {:4.3f} : done [{:^5.0f}/{:^5.0f}] : {:4.3f}  \t [{}]'.format(
                     episode,
                     tot_reward,
                     np.mean(scores_window),
+                    deadlock_count, self.env.get_num_agents(),
+                    np.mean(deadlock_count_window),
                     tot_terminate * self.env.get_num_agents(), self.env.get_num_agents(),
                     np.mean(terminate_window),
                     ''.join(list(done_bar)),
@@ -199,6 +208,8 @@ class BaseSolver:
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_reward", np.mean(scores_window), episode)
                 writer.add_scalar(self.get_name() + "/evaluation_value_done", tot_terminate, episode)
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_done", np.mean(terminate_window), episode)
+                writer.add_scalar(self.get_name() + "/evaluation_value_deadlock_count", deadlock_count, episode)
+                writer.add_scalar(self.get_name() + "/evaluation_smoothed_deadlock_count", np.mean(deadlock_count_window), episode)
                 writer.add_scalar(self.get_name() + "/evaluation_value_nbr_agents", self.env.get_num_agents(), episode)
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_nbr_agents", np.mean(nbr_agents_window),
                                   episode)
@@ -227,11 +238,13 @@ class BaseSolver:
         terminate_window = deque(maxlen=checkpoint_interval)
         nbr_agents_window = deque(maxlen=checkpoint_interval)
         tot_steps_window = deque(maxlen=checkpoint_interval)
+        deadlock_count_window = deque(maxlen=checkpoint_interval)
 
         scores_window.extend([0] * checkpoint_interval)
         terminate_window.extend([0] * checkpoint_interval)
         nbr_agents_window.extend([0] * checkpoint_interval)
         tot_steps_window.extend([0] * checkpoint_interval)
+        deadlock_count_window.extend([0] * checkpoint_interval)
 
         writer = SummaryWriter(comment="_" + self.get_name() + "_training_" + self.policy.get_name())
         
@@ -255,14 +268,22 @@ class BaseSolver:
             nbr_agents_window.append(self.env.get_num_agents())
             tot_steps_window.append(tot_steps)
 
+            deadlock_count = 0
+            if hasattr(self, '_reward_shaper') and self._reward_shaper is not None:
+                if hasattr(self._reward_shaper, 'get_last_episode_deadlock_count'):
+                    deadlock_count = int(self._reward_shaper.get_last_episode_deadlock_count())
+            deadlock_count_window.append(deadlock_count)
+
             b = int(np.round(50 * np.mean(terminate_window)))
             done_bar = ['#'] * b + ['_'] * (50 - b)
 
             print(
-                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f} \tdone: [{:^5.0f}/{:^5.0f}] : {:4.3f} \t [{}] \t eps: {:7.3f} '.format(
+                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f} \tdead locks: [{:^5.0f}/{:^5.0f}] : {:4.3f} : done [{:^5.0f}/{:^5.0f}] : {:4.3f} \t [{}] \t eps: {:7.3f} '.format(
                     episode,
                     tot_reward,
                     np.mean(scores_window),
+                    deadlock_count, self.env.get_num_agents(),
+                    np.mean(deadlock_count_window),
                     tot_terminate * self.env.get_num_agents(), self.env.get_num_agents(),
                     np.mean(terminate_window),
                     ''.join(list(done_bar)),
@@ -274,6 +295,8 @@ class BaseSolver:
             writer.add_scalar(self.get_name() + "/training_smoothed_reward", np.mean(scores_window), episode)
             writer.add_scalar(self.get_name() + "/training_value_done", tot_terminate, episode)
             writer.add_scalar(self.get_name() + "/training_smoothed_done", np.mean(terminate_window), episode)
+            writer.add_scalar(self.get_name() + "/training_value_deadlock_count", deadlock_count, episode)
+            writer.add_scalar(self.get_name() + "/training_smoothed_deadlock_count", np.mean(deadlock_count_window), episode)
             writer.add_scalar(self.get_name() + "/training_value_nbr_agents", self.env.get_num_agents(), episode)
             writer.add_scalar(self.get_name() + "/training_smoothed_nbr_agents", np.mean(nbr_agents_window), episode)
             writer.add_scalar(self.get_name() + "/training_value_nbr_steps", tot_steps, episode)

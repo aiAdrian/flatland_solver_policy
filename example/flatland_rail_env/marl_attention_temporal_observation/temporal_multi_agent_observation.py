@@ -46,28 +46,59 @@ class TemporalMultiAgentObservation(ObservationBuilder):
     @staticmethod
     def _opponent_relevance_score(obs_vec: np.ndarray) -> float:
         """
-        Score opponent relevance using conflict-heavy features from
-        DecisionPointObservation layout (48D). Falls back gracefully if shorter.
+        Score opponent relevance using conflict-heavy features from the current
+        DecisionPointObservation layout (66D base, optional 90D hierarchical).
+        Falls back gracefully for shorter legacy layouts.
         """
         if obs_vec is None:
             return 0.0
         v = np.asarray(obs_vec, dtype=np.float32).reshape(-1)
-        if v.shape[0] < 43:
+        if v.shape[0] < 30:
             return float(np.linalg.norm(v, ord=1))
 
+        # 66D DecisionPoint layout:
+        # [0]  is_switch
+        # [5]  local_deadlock
+        # [7,15,23]  branch deadlock signals (L/F/R)
+        # [31,36]    merge deadlock signals (fwd/bwd)
+        # [65]       confirmed deadlock flag
+        # [30]       decision_required
         decision_strength = float(v[0])
-        branch_deadlock = float(v[5] + v[11] + v[17])
-        merge_deadlock = float(v[22] + v[26])
-        local_deadlock = float(v[42])
-        coordination_wait = float(v[43]) if v.shape[0] > 43 else 0.0
-        coordination_pressure = float(v[46]) if v.shape[0] > 46 else 0.0
+        decision_required = float(v[30]) if v.shape[0] > 30 else 0.0
+        branch_deadlock = float(
+            (v[7] if v.shape[0] > 7 else 0.0)
+            + (v[15] if v.shape[0] > 15 else 0.0)
+            + (v[23] if v.shape[0] > 23 else 0.0)
+        )
+        merge_deadlock = float(
+            (v[31] if v.shape[0] > 31 else 0.0)
+            + (v[36] if v.shape[0] > 36 else 0.0)
+        )
+        local_deadlock = float(v[65]) if v.shape[0] > 65 else float(v[5])
+
+        # Optional neighbor conflict context for 90D hierarchical obs:
+        # per-neighbor blocks at [66..89], each 6D: [exists,oncoming,merging,local,dist,ttc].
+        oncoming_pressure = 0.0
+        ttc_pressure = 0.0
+        if v.shape[0] >= 90:
+            neighbor_start = 66
+            block_size = 6
+            for i in range(4):
+                b = neighbor_start + i * block_size
+                exists = float(v[b])
+                if exists <= 0.0:
+                    continue
+                oncoming_pressure += float(v[b + 1])
+                ttc_pressure += float(v[b + 5])
+
         return (
-            0.2 * decision_strength +
-            1.0 * branch_deadlock +
-            1.0 * merge_deadlock +
-            1.5 * local_deadlock +
-            0.6 * coordination_wait +
-            0.6 * coordination_pressure
+            0.2 * decision_strength
+            + 0.25 * decision_required
+            + 1.0 * branch_deadlock
+            + 1.0 * merge_deadlock
+            + 1.5 * local_deadlock
+            + 0.7 * oncoming_pressure
+            + 0.5 * ttc_pressure
         )
 
     @staticmethod
@@ -75,8 +106,8 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         return DecisionPointObservation.getObservationSize()
 
     def get_observation_size(self) -> int:
-        """Instance-level size that respects the wrapped base_obs (e.g. 72D for
-        HierarchicalRoutesObservation)."""
+        """Instance-level size that respects the wrapped base_obs (e.g. 66D for
+        DecisionPointObservation or 90D for HierarchicalRoutesObservation)."""
         getter = getattr(self.base_obs, 'getObservationSize', None)
         if callable(getter):
             try:

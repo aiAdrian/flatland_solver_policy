@@ -5,7 +5,7 @@ Hierarchical Decider Policy for Flatland MARL
 Implements the architecture described in
 ``HIERARCHICAL_DECIDER_ARCHITECTURE.md``:
 
-* 4 specialist sub-modules (Routing / Merging / Deadlock / Comm) provide
+* 5 specialist sub-modules (Routing / Merging / Deadlock / Comm / Tree) provide
   embeddings + confidence scores.
 * A Decider (Actor-Critic MLP) fuses them and outputs a single
   Flatland-compatible action (5-way) plus a state value.
@@ -25,7 +25,7 @@ Compatible with the project's `Policy` API (see policy/policy.py):
 
 from collections import deque
 from time import perf_counter
-from typing import List, Tuple, Union
+from typing import Union
 
 import numpy as np
 import torch
@@ -46,11 +46,7 @@ from marl_attention_temporal_observation.decision_point_observation import (
 )
 from marl_attention_temporal_observation.hierarchical_routes_observation import (
     HierarchicalRoutesObservation,
-    NEIGHBOR_BLOCK_SIZE,
     NEIGHBOR_K,
-    NEIGHBOR_TOTAL,
-    NEIGHBOR_IDX_EXISTS,
-    NEIGHBOR_IDX_TTC_NORM,
 )
 
 
@@ -59,7 +55,7 @@ from marl_attention_temporal_observation.hierarchical_routes_observation import 
 # ============================================================================
 
 class RoutingSpecialist(nn.Module):
-    """Reads the 3 branch blocks (base[4-21]) plus decision_type/hint.
+    """Reads the 3 branch blocks (base[6-29]) plus decision_type/hint.
 
     Output: route_emb (32D) + soft route logits (3) + confidence (1)."""
 
@@ -118,7 +114,7 @@ class MergingSpecialist(nn.Module):
 
 
 class DeadlockSpecialist(nn.Module):
-    """Reads all risk features + LSTM context + comm.
+    """Reads all risk features + tree context + LSTM context + comm.
 
     Output: dl_emb (16D) + p_dl_1 (1) + p_dl_3 (1).
 
@@ -129,7 +125,8 @@ class DeadlockSpecialist(nn.Module):
     def __init__(self, ctx_dim: int, comm_dim: int, hidden_dim: int = 64, emb_dim: int = 16):
         super().__init__()
         # branch dl @5,11,17 + merge dl @22,26 + local @42 + coord pressure @46
-        self.in_dim = 7 + ctx_dim + comm_dim
+        # + tree context @64 (from DecisionPointObservation._local_search/TreeLSTM)
+        self.in_dim = 8 + ctx_dim + comm_dim
         self.net = nn.Sequential(
             nn.Linear(self.in_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -151,6 +148,7 @@ class DeadlockSpecialist(nn.Module):
                 base_obs[..., 26],
                 base_obs[..., 42],
                 base_obs[..., 46],
+                base_obs[..., 64],
             ],
             dim=-1,
         )
@@ -161,10 +159,48 @@ class DeadlockSpecialist(nn.Module):
         return emb, p1, p3
 
 
+class TreeSpecialist(nn.Module):
+    """Learns a compact representation of tree-derived context.
+
+    Input uses tree_ctx from observation slot [64] plus a small safety context.
+    Output: tree_emb (16D) + tree_conf (1).
+    """
+
+    def __init__(self, hidden_dim: int = 48, emb_dim: int = 16):
+        super().__init__()
+        # tree_ctx @64 + local_deadlock @5 + local_confirmed_deadlock @65 +
+        # merge flag @4 + decision_required @30
+        self.in_dim = 5
+        self.net = nn.Sequential(
+            nn.Linear(self.in_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, emb_dim),
+            nn.GELU(),
+        )
+        self.head_conf = nn.Linear(emb_dim, 1)
+        self.emb_dim = emb_dim
+
+    def forward(self, base_obs: torch.Tensor):
+        x = torch.stack(
+            [
+                base_obs[..., 64],
+                base_obs[..., 5],
+                base_obs[..., 65],
+                base_obs[..., 4],
+                base_obs[..., 30],
+            ],
+            dim=-1,
+        )
+        emb = self.net(x)
+        conf = torch.sigmoid(self.head_conf(emb))
+        return emb, conf
+
+
 class CommSpecialist(nn.Module):
     """Sparse multi-head attention over K=4 neighbor obs vectors + temporal.
 
-    Input per timestep: list of K=NEIGHBOR_K neighbor 72D obs vectors.
+    Input per timestep: list of K=NEIGHBOR_K neighbor 90D obs vectors.
     We project them, mask non-existing slots, and attend with self_query.
     """
 
@@ -211,7 +247,7 @@ class CommSpecialist(nn.Module):
 # ============================================================================
 
 class DeciderNetwork(nn.Module):
-    """The full shared network: encoder + 4 specialists + decider heads."""
+    """The full shared network: encoder + 5 specialists + decider heads."""
 
     def __init__(
         self,
@@ -244,12 +280,13 @@ class DeciderNetwork(nn.Module):
         self.merging = MergingSpecialist(comm_dim=comm_dim, hidden_dim=64, emb_dim=32)
         self.deadlock = DeadlockSpecialist(ctx_dim=ctx_dim, comm_dim=comm_dim,
                                            hidden_dim=64, emb_dim=16)
+        self.tree = TreeSpecialist(hidden_dim=48, emb_dim=16)
 
         # ---- Decider fusion ----
-        # Inputs: ctx + routing_emb + merging_emb + deadlock_emb + comm_emb +
+        # Inputs: ctx + routing_emb + merging_emb + deadlock_emb + tree_emb + comm_emb +
         #         scores: route_logits(3) + route_conf(1) + wait(1) + prio(1)
-        #                 + p_dl_1(1) + p_dl_3(1) + gate(1)  = 9 scalars
-        fused_dim = ctx_dim + 32 + 32 + 16 + comm_dim + 9
+        #                 + p_dl_1(1) + p_dl_3(1) + gate(1) + tree_conf(1) = 10 scalars
+        fused_dim = ctx_dim + 32 + 32 + 16 + 16 + comm_dim + 10
         self.fuse = nn.Sequential(
             nn.Linear(fused_dim, decider_hidden),
             nn.LayerNorm(decider_hidden),
@@ -276,10 +313,10 @@ class DeciderNetwork(nn.Module):
         ctx = self.encode_temporal(self_seq)
         comm_emb, gate = self.comm(neighbors_now, neighbor_mask, ctx)
 
-        base_now = self_seq[:, -1, : self.base_dim]  # [B, 48]
         route_emb, route_logits, route_conf = self.routing(self_seq[:, -1, :])
         merge_emb, wait_pres, prio = self.merging(self_seq[:, -1, :], comm_emb)
         dl_emb, p_dl_1, p_dl_3 = self.deadlock(self_seq[:, -1, :], ctx, comm_emb)
+        tree_emb, tree_conf = self.tree(self_seq[:, -1, :])
 
         scalars = torch.cat(
             [
@@ -290,10 +327,11 @@ class DeciderNetwork(nn.Module):
                 p_dl_1,                                # 1
                 p_dl_3,                                # 1
                 gate,                                  # 1
+                tree_conf,                             # 1
             ],
             dim=-1,
         )
-        fused = torch.cat([ctx, route_emb, merge_emb, dl_emb, comm_emb, scalars], dim=-1)
+        fused = torch.cat([ctx, route_emb, merge_emb, dl_emb, tree_emb, comm_emb, scalars], dim=-1)
         h = self.fuse(fused)
         action_logits = self.actor(h)
         value = self.critic(h).squeeze(-1)
@@ -306,6 +344,7 @@ class DeciderNetwork(nn.Module):
             "route_conf": route_conf.squeeze(-1),
             "wait_pres": wait_pres.squeeze(-1),
             "prio": prio.squeeze(-1),
+            "tree_conf": tree_conf.squeeze(-1),
         }
         return action_logits, value, aux
 
@@ -452,6 +491,7 @@ class DeciderPPOPolicy(LearningPolicy):
         p_routing  = _np(self.net.routing)
         p_merging  = _np(self.net.merging)
         p_deadlock = _np(self.net.deadlock)
+        p_tree     = _np(self.net.tree)
         p_comm     = _np(self.net.comm)
         p_fuse     = _np(self.net.fuse)
         p_actor    = _np(self.net.actor)
@@ -474,6 +514,7 @@ class DeciderPPOPolicy(LearningPolicy):
         print(f"  Routing specialist              {p_routing:>10,d}      route_emb[32] + 3 logits + conf")
         print(f"  Merging specialist              {p_merging:>10,d}      merge_emb[32] + wait + prio")
         print(f"  Deadlock specialist             {p_deadlock:>10,d}      dl_emb[16] + p_dl_1 + p_dl_3")
+        print(f"  Tree specialist                 {p_tree:>10,d}      tree_emb[16] + tree_conf")
         print(f"  Comm specialist (K={NEIGHBOR_K}, heads=4)  {p_comm:>10,d}      comm_emb[{self.net.comm_dim}] + gate (sparse attn)")
         print(f"  Decider fuse MLP                {p_fuse:>10,d}      h[128]")
         print(f"  Actor head                      {p_actor:>10,d}      action_logits[{action_size}]")
@@ -562,10 +603,9 @@ class DeciderPPOPolicy(LearningPolicy):
 
     def act(self, handle: int, state, eps: float = 0.0) -> int:
         legal = self._legal_action_mask(handle)
-        # Epsilon-greedy with FORWARD-bias: in early training the policy
-        # softmax is near-uniform which oversamples WAIT/STOP. Bias exploration
-        # toward MOVE_FORWARD so the agents actually move and the critic can
-        # see reward signal.
+        # Epsilon-greedy: keep exploration movement-oriented, but do not
+        # over-bias it toward MOVE_FORWARD. The previous forward preference
+        # caused the policy to under-explore lateral conflict resolution.
         eps_eff = min(float(eps) if eps is not None else 0.0, self.max_eps_random)
         if eps_eff > 0.0 and np.random.rand() < eps_eff:
             move_candidates = []
@@ -573,7 +613,7 @@ class DeciderPPOPolicy(LearningPolicy):
                 if legal[a] > 0.5:
                     move_candidates.append(int(a))
             if len(move_candidates) > 0:
-                if int(RailEnvActions.MOVE_FORWARD) in move_candidates and np.random.rand() < 0.8:
+                if int(RailEnvActions.MOVE_FORWARD) in move_candidates and np.random.rand() < 0.35:
                     return int(RailEnvActions.MOVE_FORWARD)
                 return int(np.random.choice(move_candidates))
             legal_idx = np.where(legal > 0.5)[0]
@@ -585,6 +625,16 @@ class DeciderPPOPolicy(LearningPolicy):
             logits = logits.squeeze(0)
             legal_t = torch.from_numpy(legal).to(self.device)
             logits = logits.masked_fill(legal_t < 0.5, -1e9)
+
+            # Gentle anti-forward bias: when lateral movement is legal, nudge
+            # the policy to consider it instead of collapsing into straight
+            # motion on every decision point.
+            if (
+                legal[RailEnvActions.MOVE_LEFT] > 0.5
+                or legal[RailEnvActions.MOVE_RIGHT] > 0.5
+            ):
+                forward_penalty = float(getattr(self, 'forward_logit_penalty', 0.12))
+                logits[RailEnvActions.MOVE_FORWARD] -= forward_penalty
 
             dist = Categorical(logits=logits)
             action = dist.sample().item()

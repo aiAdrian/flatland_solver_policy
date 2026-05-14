@@ -225,7 +225,7 @@ nur die **innere Architektur** (Specialists + Decider) ist neu.
   │  ┌────────────────────┐   ┌────────────────────┐  ┌─────────────────┐  │
   │  │ DecisionPointObs   │   │ Route-Enumerator   │  │ Sparse-Selector │  │
   │  │ (Switch-Logik)     │   │ (max 4 Routen)     │  │ K=4 Nachbarn    │  │
-  │  │ → 48D base         │   │ → 4×8D routes      │  │ + Klassen       │  │
+    │  │ → 66D base         │   │ → 4×6D neighbors   │  │ + Klassen       │  │
   │  └────────┬───────────┘   └─────────┬──────────┘  └────────┬────────┘  │
   └───────────┼─────────────────────────┼──────────────────────┼───────────┘
               │                         │                      │
@@ -445,7 +445,7 @@ Critic-Loss (V vs Returns)
 
 | Pfad | Quelle | Ziel | Inhalt |
 |---|---|---|---|
-| **Lokale Obs** | Flatland-Env | Specialists | 48D base + 4×8D routes |
+| **Lokale Obs** | Flatland-Env | Specialists | 66D base + 4×6D neighbors |
 | **Self-History** | Eigene letzte Obs | LSTM → Specialists | Bewegungs-Trends |
 | **Cross-Agent (t-1)** | Comm-Buffer | CommSpecialist | K=4 × 3 × 16D Nachrichten |
 | **Action** | Decider | Flatland-Env | 5-way action |
@@ -528,8 +528,8 @@ Die Netzwerk-Gewichte θ haben **keine Dimension, die von N abhängt**:
 
 | Komponente | Input-Shape | N drin? |
 |---|---|---|
-| Specialists (Routing/Merging/Deadlock) | `[batch, 48D]` + `[batch, 4×8D]` (Routen) | ❌ |
-| LSTM | `[batch, T, 48D]` (eigene Historie) | ❌ |
+| Specialists (Routing/Merging/Deadlock) | `[batch, 66D]` + `[batch, 4×6D]` (Nachbarn) | ❌ |
+| LSTM | `[batch, T, 66D]` (eigene Historie) | ❌ |
 | CommSpecialist | `[batch, K=4, 16D]` | ❌ **K ist fix**, nicht N |
 | Decider (MLP) | `[batch, 162D]` | ❌ |
 
@@ -655,12 +655,12 @@ Update 07.05.2026
 # 📊 OBSERVATION FEATURES DOCUMENTATION
 # =============================================================================
 # 
-# Das MARL-Modell erhält für jeden Agenten eine 72D Observation pro Zeitschritt,
+# Das MARL-Modell erhält für jeden Agenten eine 90D Observation pro Zeitschritt,
 # die in 3 zeitliche Frames gepuffert wird (TEMPORAL_WINDOW = 3).
 # Der Agent sieht somit die letzten 3 Timesteps, um Bewegungen & Intentions zu erkennen.
 #
 # ═══════════════════════════════════════════════════════════════════════════
-# 1. BASE OBSERVATION (48D) - DecisionPointObservation
+# 1. BASE OBSERVATION (66D) - DecisionPointObservation
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # [0] DECISION TYPE (1D) - normalized to [0, 1]
@@ -781,7 +781,7 @@ Update 07.05.2026
 #   Frame 2: aktueller Step
 #
 # VELOCITY FEATURES (EMERGENT, nicht explizit berechnet):
-#   Der LSTM-Encoder SIEHT NUR die 3 rohen 72D Observation-Vektoren (obs_t-2, obs_t-1, obs_t).
+#   Der LSTM-Encoder SIEHT NUR die 3 rohen 90D Observation-Vektoren (obs_t-2, obs_t-1, obs_t).
 #   Diese werden zuerst in 128D Embeddings projiziert [obs_encoder: Linear→LN→LeakyReLU].
 #   Der LSTM verarbeitet dann: emb_t-2 → emb_t-1 → emb_t (3×128D Sequenz)
 #   KEINE expliziten Deltas! Der LSTM muss selbst lernen, dass:

@@ -1,99 +1,164 @@
 # Flatland Multi-Agent Observations – Übersicht & Feature-Design
 
-## Update April 2026 (aktueller Stand)
+## Update Mai 2026 (aktueller Stand)
 
-Dieses Dokument wurde auf den aktuellen Trainingsstand erweitert.
+Dieses Dokument wurde für den aktuellen Trainingsstand aktualisiert.
 
-### Update April 2026 (Decision-Point Oberversion)
+### TreeLSTM + Decider (Lernpfad und Attention)
 
-Neu im aktuellen Stand:
+Dieser Abschnitt beschreibt die genaue Einbindung des Tree-Moduls und welche
+Teile trainierbar sind.
 
-1. `DecisionPointObservation` liefert jetzt **48D** mit klareren, NN-freundlichen Signalen:
-    - `decision_type` wird auf `[0,1]` normalisiert (`raw/8`).
-    - Branch-Feature `*_curr_dist` wurde auf **branch-spezifischen Progress-Gain** umgestellt:
-      - `progress_gain = max(curr_dist_norm - branch_dist_norm, 0)`.
-    - DFS-Deadlockflags werden auf ein eindeutiges **Risikosignal in `[0,1]`** gemappt.
-    - Neu: 5 Koordinationsfeatures (`wait_intent`, `go_intent`, `priority`, `conflict_pressure`, `yield_hint`) als weiche Kommunikationshinweise.
+#### 1) Datenfluss in der Observation
 
-2. `TemporalMultiAgentObservation` wurde robuster gemacht:
-    - Handle-sicheres Mapping (kein Index/Handle-Mismatch mehr).
-    - Gegnerlisten werden optional auf `max_opponents` begrenzt (Top-K nach Konfliktrelevanz).
+1. In `DecisionPointObservation._local_search(...)` wird ab der Agent-Position
+   ein lokaler Suchbaum bis `search_depth` aufgebaut.
+2. Pro besuchtem Knoten werden u. a. gespeichert:
+   - `depth`
+   - `num_transitions`
+   - `deadlock_risk`
+   - `agents_encountered`
+   - `has_oncoming`
+3. Diese Knotenliste (`tree_data`) geht in `TreeLSTM.aggregate(tree_data)`.
+4. Das Ergebnis wird als `tree_ctx` in Feature-Slot **[64]** geschrieben.
 
-3. Ziel der Änderung:
-    - Weniger Rauschen durch irrelevante Gegner.
-    - Mehr eindeutige Konflikt-/Fortschrittssignale an Entscheidungspunkten.
-    - Stabilere Attention-Nutzung bei mehreren Agenten.
+#### 2) Was lernt und was lernt NICHT?
 
-### Was wurde neu eingebaut?
+- **Nicht trainierbar (deterministisch):** `marl_attention_temporal_observation/tree_lstm.py`
+  - Das Modul ist ein fester Numpy-Aggregator (gewichtete Mittelung),
+    keine Torch-Parameter, kein Backprop.
+- **Trainierbar:** `TreeSpecialist` in `decider_policy.py`
+  - Liest `tree_ctx` aus Slot [64] plus Sicherheitskontext ([5], [65], [4], [30]).
+  - Erzeugt `tree_emb` + `tree_conf` und wird über PPO (AdamW) mitoptimiert.
 
-1. **Optionaler LSTM-Encoder im MAPPO-Stack (Python-only)**
-     - In `marl_attention_temporal_mappo.py` gibt es jetzt zwei Encoder-Varianten mit gleicher Schnittstelle:
-         - `TemporalTransformerEncoder`
-         - `TemporalLSTMEncoder` (neu)
-     - Beide unterstützen:
-         - `forward_agent(temporal_seq, handle)`
-         - `forward_batch(temporal_sequences)`
+#### 3) Wie kommt Tree-Kontext in die Policy-Entscheidung?
 
-2. **Encoder-Auswahl über Parameter**
-     - Der Parameter-Tuple `MARL_ATTENTION_TEMPORAL_MAPPO_Param` enthält jetzt zusätzlich:
-         - `encoder_type`
-     - Gültige Werte:
-         - `'transformer'`
-         - `'lstm'`
+In `DeciderNetwork.forward(...)`:
 
-3. **Aktive Konfiguration im Experiment**
-     - In `marl_attention_temporal.py` ist aktuell gesetzt:
-         - `encoder_type='lstm'`
-     - Damit läuft das Training derzeit **aktiv mit LSTM**.
+1. `tree_emb, tree_conf = self.tree(self_seq[:, -1, :])`
+2. `tree_conf` wird an die Skalare angehängt.
+3. `tree_emb` wird in den Fusionsvektor aufgenommen.
+4. Der fusionierte Vektor geht in Actor/Critic.
 
-### Warum ist das relevant für die Observation?
+Damit beeinflusst `tree_ctx` direkt die Action-Logits und den Value.
 
-- `TemporalMultiAgentObservation` liefert eine zeitliche Sequenz pro Agent:
-    - `[(obs_t-2, opp_t-2), (obs_t-1, opp_t-1), (obs_t, opp_t)]`
-- Der neue LSTM-Encoder verarbeitet genau diese Sequenz und bildet daraus einen robusteren Zeitkontext.
-- Dadurch werden aufeinanderfolgende Situationen (Annähern, Warten, Konfliktaufbau) besser nutzbar als bei rein statischer Einzelbeobachtung.
+#### 4) Attention-Anbindung der gesehenen Agenten
 
-### Technische Integration (Kurz)
+- Alle in `_local_search` angetroffenen Agenten (`agents_encountered`) werden
+  in `get(...)` zu `local_search_seen_agents` gesammelt.
+- Diese Handles werden in `opp_agents` gemerged und als
+  `agent.cur_opp_agent_handles` zurückgegeben.
+- Der temporale Wrapper / Hierarchical-Observation baut daraus die
+  Opponent-Liste für die Kommunikations-Features.
+- Die Comm-Schicht (`CommSpecialist`, MultiheadAttention) nutzt diese
+  Opponent-Informationen für die sparse Nachbarschafts-Attention.
 
-- **Keine C++-Abhängigkeit**: vollständig Python/PyTorch-basiert.
-- **Kein API-Bruch**:
-    - Actor/Critic-Trainingspfad bleibt gleich.
-    - Nur die Encoder-Instanz wird je nach `encoder_type` gewählt.
-- **Fallback-Verhalten**:
-    - Wenn `encoder_type` nicht gesetzt ist, bleibt Standard auf `'transformer'`.
+Kurzfassung:
+- Tree-Aggregator liefert das Signal (`tree_ctx`).
+- TreeSpecialist lernt die Nutzung dieses Signals.
+- Opponent-Handles aus lokaler Suche fließen in den Attention-Kontext.
 
-### Konfigurationsbeispiel
+### Hauptobservationen (aktuelle Versionen)
 
-```python
-ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
-        hidden_size=128,
-        batch_size=512,
-        learning_rate=3e-4,
-        discount=0.99,
-        gae_lambda=0.97,
-        use_gpu=True,
-        max_episodes_in_training_memory=50,
-        k_epochs=3,
-        batch_fraction=0.4,
-        max_batches_per_training=12,
-        temporal_window=3,
-        encoder_type='lstm',
-)
-```
+1. **`DecisionPointObservation`** — **66D** Decision-Point-basierte Beobachtung:
+    - **[0-5]**: Basis-Switches & Entscheidungstypen (is_switch, hints, is_merge, local_deadlock)
+    - **[6-29]**: Branch-Metriken (3 Zweige × 8 Features: progress, deadlock_signal mit Inverse-Decay, distance, abort, target, etc.)
+    - **[30]**: decision_required Flag (nur bei MERGING/SWITCH gesetzt für Policy-Gating)
+    - **[31-40]**: Merge-Metriken (forward/backward sub-blocks mit inverse-decay deadlock_signal)
+    - **[41-47]**: TrainState one-hot (7 Dimensionen) — **FIX Mai 2026: Jetzt immer korrekt gesetzt**
+    - **[48-52]**: Last action one-hot (5 Aktionen) — **CRITICAL FIX Mai 2026: Bedingungslos gesetzt, nicht mehr im Guard-Block**
+    - **[53]**: priority_rank (normalisierter Rang nach Restdistanz)
+    - **[54-58]**: Cell-Type one-hot (OUTSIDE, FORWARD_ONLY, MERGING, SWITCH, DONE)
+    - **[59-63]**: Transitions one-hot (5 Übergänge zwischen Zelltypen)
+    - **[64]**: Reserved (ungenutzter Platzhalter)
+    - **[65]**: **Confirmed Deadlock Flag** — 1.0 wenn Rückstau im voraus erkannt via `DecisionPointUtils.detect_corridor_blockage()`, 0.0 sonst
 
-### Erwartete Wirkung im Training
+2. **`TemporalMultiAgentObservation`** — Zeitfenster über `DecisionPointObservation`:
+    - Liefert Sequenz: `[(obs_{t-2}, opp_{t-2}), (obs_{t-1}, opp_{t-1}), (obs_t, opp_t)]` — je 66D observation
+    - Nutzt Temporal Transformer/LSTM für Bewegungsmuster-Erkennung
+    - Handle-sicheres Mapping (keine Index/Handle-Verwechselung mehr)
 
-- Besseres Ausnutzen zeitlicher Muster in Entscheidungspunkten.
-- Stabilere lokale Entscheidungen bei 4-5 Agenten (weniger chaotische Umschaltungen).
-- Solider Kompromiss aus Einfachheit und Effektivität ohne zusätzliche Over-Engineering-Schichten.
+### Was hat sich seit April 2026?
+
+**Mai 2026 — Kritische Architektur-Fixes für Kooperation & Deadlock-Erkennung:**
+
+1. **Deadlock-Signal Encoding (Issue #1)** ✅
+  - **ALT:** `_encode_deadlock_signal()` konvertierte Distanzen zu Binary (0/1)
+  - **NEU:** Inverse-Decay Encoding: `1.0 / (1.0 + distance/4.0)`
+  - **Impact:** Policy kann jetzt zwischen "Deadlock 1 Schritt weg" (Warnung 1.0) vs "Deadlock 16 Schritte weg" (Warnung 0.06) unterscheiden
+  - **Betroffen:** Features [7, 15, 23, 31, 36] (deadlock_signal in allen Blöcken)
+
+2. **Opponent-Awareness Vollständigkeit (Issue #2)** ✅
+  - **ALT:** Nur Agenten auf Branches wurden gesammelt (visited during DFS)
+  - **NEU:** Agenten am **aktuellen Knoten** werden explizit hinzugefügt vor Branch-Enumeration
+  - **Impact:** Head-on Konflikte und Merge-Blockaden werden nun erkannt
+  - **Code:** Neue Loop über `self.env.agents` um pos == current_pos zu prüfen (Zeile ~260)
+
+3. **Backward-Merge Enumeration Robustheit (Issue #3)** ✅
+  - **ALT:** `for d in range(1, 4)` — skipped direction 0, early break
+  - **NEU:** `for d in range(4)` — alle Richtungen, kein early break
+  - **Impact:** Merge-Topologie wird vollständig erfasst
+  - **Code:** Zeile ~306-321 (decision_point_observation.py)
+
+4. **Deadlock-Timeout Logik Sicherheit (Issue #4)** ✅
+  - **ALT:** Bei Timeout (s >= max_steps): `return 0` (als safe behandelt — falsch!)
+  - **NEU:** Bei Timeout: `return s` (als Deadlock-Verdacht behandelt)
+  - **Impact:** Lange Korridore (>128 Schritte) werden nicht falsch als sicher klassifiziert
+  - **Code:** decision_point_utils.py Zeile ~161-162
+
+5. **Action Features Bug Fix (Critical)** ✅
+  - **ALT:** Features [48-52] waren **immer 0** weil Guard `if agent.action_saver.is_action_saved:` immer False
+  - **NEU:** Features werden **bedingungslos gesetzt** (Default DO_NOTHING wenn nicht gespeichert)
+  - **Impact:** Critic kann jetzt Aktionsverteilungen lernen statt nur Konstante 0 zu sehen
+  - **Code:** decision_point_observation.py Zeile ~333-340
+
+6. **TrainState Features Konsistenz** ✅
+  - **ALT:** Features [41-47] waren oft 0 (State nicht korrekt gespeichert)
+  - **NEU:** State wird immer aus `agent.state.value` gespeichert (keine bedingten Guards mehr)
+  - **Impact:** Network sieht Agent States konsistent
+   
+7. **Policy Decision-Point Gating** ✅
+  - Feature [30] `decision_required` wird jetzt **nur bei echten Entscheidungen (MERGING/SWITCH) gesetzt**
+  - MARL_ATT_DecisionPointPolicy nutzt dies um deterministische MOVE_FORWARD (OUTSIDE/FORWARD_ONLY) zu erzwingen
+  - Sparse Reward-Signal wird nicht mehr auf nicht-Entscheidungszellen verschwendet
+
+**Fazit:** Alle 4 Hauptprobleme (binäres Deadlock-Signal, unvollständige Opponent-Erkennung, Merge-Enumeration, Timeout-Logik) wurden behoben. Zusätzlich 2 kritische Feature-Bugs (Action one-hot, TrainState).
+
+---
+
+**Dezember 2024 - April 2026 — Vorherige Updates:**
+
+- **[65] Deadlock-Feature:** Recursive cycle detection (nicht nur "head-on")
+  - Folgt Blockade-Ketten um Zyklen zu erkennen
+  - Max 128 Schritte Lookahead auf obligatorischen Korridoren
+  - Penalisiert in Reward-Sharern
+  
+- **DecisionPointUtils:** Zentrale Utility-Klasse für Deadlock-Logik
+  - Statische Methoden: `is_local_deadlock()`, `detect_corridor_blockage()`, `is_opposite_direction()`
+
+### Deadlock-Detection Details
+
+**Szenario-Erkennung:**
+1. Agent läuft in obligatorischen Korridor (nur 1 Übergang pro Zelle)
+2. Trifft auf anderen Agenten
+3. Check:
+   - **Gegenrichtung?** → Sofort Deadlock erkannt
+   - **Gleiche Richtung, aber selbst blockiert?** → Rekursiv den blockierenden Agenten prüfen
+   - **Bereits gesehen?** → Zyklus erkannt → Deadlock
+
+**False-Positive-Vermeidung:**
+- Schalter/Branches unterbrechen die Blockade-Verfolgung
+- Blockierter Agent mit Fluchtroute: KEIN Deadlock
+- Max 128 Schritte: Verhindert Endlosschleifen im Code
 
 > **Klassen im Überblick**
 > | Klasse | Größe | Zweck |
 > |---|---|---|
 > | `ExperimentalObservation` | 30D | Basisbeobachtung für jeden Agenten |
 > | `SimplifiedPathThreeTierObservation` | 57D | Drei Pfad-Tiers (links/geradeaus/rechts) |
-> | `DecisionPointObservation` | 42D | Entscheidungsbasierte Beobachtung an Weichen/Merges |
-> | `TemporalMultiAgentObservation` | T × 42D | Zeitfenster über `DecisionPointObservation` |
+> | `DecisionPointObservation` | **66D** | Entscheidungsbasierte Beobachtung an Weichen/Merges + Deadlock-Flag |
+> | `TemporalMultiAgentObservation` | T × 66D | Zeitfenster über `DecisionPointObservation` |
+> | `DecisionPointUtils` | — | Shared Deadlock-Detection-Logic |
 
 ---
 
@@ -129,8 +194,8 @@ Teilt die Umgebung in drei Pfadsegmente auf: links, geradeaus, rechts. Jedes Seg
 ## 3. DecisionPointObservation
 
 **Klasse:** `DecisionPointObservation(ObservationBuilder)`  
-**Feature-Größe:** **42D**  
-**Rückgabe von `get(handle)`:** `(features: np.array[42], opp_agent_handles: list[int])`
+**Feature-Größe:** **66D** (erweitert Mai 2026)
+**Rückgabe von `get(handle)`:** `(features: np.array[66], opp_agent_handles: list[int])`
 
 Spezialisierte Beobachtung für die drei zentralen Entscheidungssituationen im Flatland:
 
@@ -147,80 +212,100 @@ Spezialisierte Beobachtung für die drei zentralen Entscheidungssituationen im F
 
 ---
 
-### Feature-Tabelle (42 Features)
+### Feature-Layout (66 Features — Mai 2026 Update)
 
-#### Block A – Allgemein (immer befüllt)
+#### Block A – Switch-Analyse (31-47, nur wenn `decision_type & 2`)
 
-| Index | Name | Beschreibung |
-|---|---|---|
-| 0 | `decision_type` | Entscheidungstyp (siehe Tabelle oben) |
-| 1 | `hint_left` | One-hot: linke Richtung ist optimal (kürzester Pfad via `distance_map`) |
-| 2 | `hint_forward` | One-hot: Geradeaus ist optimal |
-| 3 | `hint_right` | One-hot: rechte Richtung ist optimal |
+Für jede der drei Richtungen (L/F/R) ein **8er-Block**:
 
-#### Block B – Switch-Analyse (nur wenn `decision_type & 2`)
-
-Für jede der drei Richtungen (links/geradeaus/rechts) ein 6er-Block. Nicht erreichbare Richtung → alle Werte `-1`.
-
-| Index | rel_dir | Name | Beschreibung |
+| Index | Base | Name | Beschreibung |
 |---|---|---|---|
-| 4 | links | `left_curr_dist` | Aktuelle Distanz zum Ziel **vor** dem Schritt |
-| 5 | links | `left_deadlock` | Deadlock-Flag aus DFS (0=frei, 1=Gegenverkehr, 2=Selbst-Block) |
-| 6 | links | `left_switches` | Anzahl Weichen auf dem DFS-Pfad |
-| 7 | links | `left_dist` | Maximale DFS-Distanz entlang des Pfades |
-| 8 | links | `left_target_found` | 1 wenn Ziel auf diesem Pfad erreicht |
-| 9 | links | `left_abort` | 1 wenn DFS wegen `max_steps` abgebrochen |
-| 10 | gerade | `fwd_curr_dist` | Aktuelle Distanz zum Ziel |
-| 11 | gerade | `fwd_deadlock` | Deadlock-Flag |
-| 12 | gerade | `fwd_switches` | Anzahl Weichen |
-| 13 | gerade | `fwd_dist` | Maximale DFS-Distanz |
-| 14 | gerade | `fwd_target_found` | Ziel gefunden |
-| 15 | gerade | `fwd_abort` | DFS abgebrochen |
-| 16 | rechts | `right_curr_dist` | Aktuelle Distanz zum Ziel |
-| 17 | rechts | `right_deadlock` | Deadlock-Flag |
-| 18 | rechts | `right_switches` | Anzahl Weichen |
-| 19 | rechts | `right_dist` | Maximale DFS-Distanz |
-| 20 | rechts | `right_target_found` | Ziel gefunden |
-| 21 | rechts | `right_abort` | DFS abgebrochen |
+| 6-13 | 6 | `sw_L_*` | Linker Zweig: progress_gain, deadlock_signal, switches_norm, dist_norm, target_found, abort, deadlock_ahead, valid |
+| 14-21 | 14 | `sw_F_*` | Geradeaus-Zweig: [wie Links] |
+| 22-29 | 22 | `sw_R_*` | Rechter Zweig: [wie Links] |
 
-#### Block C – Merge/Crossing-Analyse (nur wenn `decision_type & 4`)
+**WICHTIG - Mai 2026 Update:** Die `deadlock_signal` Features (Indizes 7, 15, 23) verwenden jetzt **Inverse-Decay-Encoding** statt Binary:
+```python
+deadlock_signal = 1.0 / (1.0 + deadlock_distance / 4.0)
+# Deadlock 1 Schritt weg → 1.0 (höchste Warnung)
+# Deadlock 4 Schritte weg → 0.2
+# Deadlock 16 Schritte weg → 0.06
+# Kein Deadlock → 0.0
+```
+Dies ermöglicht dem Netzwerk, Deadlocks nach Entfernung zu differenzieren, statt sie als Binary zu behandeln.
+
+#### Block B – Basis-Infos (0-5, immer)
 
 | Index | Name | Beschreibung |
 |---|---|---|
-| 22 | `merge_deadlock_fwd` | Deadlock vorwärts (nächste Zelle Richtung Weiche) |
-| 23 | `merge_switches_fwd` | Anzahl Weichen vorwärts |
-| 24 | `merge_target_fwd` | Ziel auf Vorwärtspfad erreicht |
-| 25 | `merge_abort_fwd` | DFS abgebrochen (vorwärts) |
-| 26 | `merge_deadlock_bwd` | Deadlock rückwärts (Pfad des einmündenden Agenten) |
-| 27 | `merge_switches_bwd` | Anzahl Weichen rückwärts |
-| 28 | `merge_target_bwd` | Ziel auf Rückwärtspfad (immer 0 bei backward_trace) |
-| 29 | `merge_abort_bwd` | DFS abgebrochen (rückwärts) |
+| 0 | `is_switch` | Binary: 1.0 wenn an Weiche, else 0.0 |
+| 1-3 | `hint_L/F/R` | One-hot: optimale Richtung laut distance_map |
+| 4 | `is_merge` | Binary: 1.0 wenn Merge-Zone voraus, else 0.0 |
+| 5 | `local_deadlock` | Binary: 1.0 wenn Deadlock am aktuellen Knoten erkannt, else 0.0 |
 
-> **Hinweis Merge-Rückwärts:** Die rückwärtige DFS (`backward_trace=True`) mittelt die Ergebnisse **aller Alternativen** an Weichen (statt die beste zu nehmen). Dies modelliert die Unsicherheit, welchen Weg ein anderer Agent nehmen wird.
+#### Block C – Merge/Crossing-Analyse (31-40, nur wenn `decision_type & 4`)
 
-#### Block D – Agentenstatus (immer befüllt, One-hot via `agent.state.value`)
-
-| Index | State-Wert | Name |
+| Index | Name | Beschreibung |
 |---|---|---|
-| 30 | 0 | `state_WAITING` |
-| 31 | 1 | `state_READY_TO_DEPART` |
-| 32 | 2 | `state_MALFUNCTION_OFF_MAP` |
-| 33 | 3 | `state_MOVING` |
-| 34 | 4 | `state_STOPPED` |
-| 35 | 5 | `state_MALFUNCTION` |
-| 36 | 6 | `state_DONE` |
+| 31 | `mgF_dl_sig` | Merge Forward: deadlock_signal (Inverse-Decay wie oben) |
+| 32 | `mgF_switches` | Merge Forward: normalized switch count |
+| 33 | `mgF_target` | Merge Forward: target found? (0/1) |
+| 34 | `mgF_abort` | Merge Forward: DFS abbruch flag |
+| 35 | `mgF_dl_ahead` | Merge Forward: deadlock_ahead binary |
+| 36 | `mgB_dl_sig` | Merge Backward: deadlock_signal |
+| 37 | `mgB_switches` | Merge Backward: normalized switch count |
+| 38 | `mgB_target` | Merge Backward: target found? (0/1) |
+| 39 | `mgB_abort` | Merge Backward: DFS abort flag |
+| 40 | `mgB_dl_ahead` | Merge Backward: deadlock_ahead binary |
 
-#### Block E – Letzte Aktion (One-hot via `agent.action_saver.saved_action`)
+**WICHTIG - Mai 2026 Update:** Backward-Merge Enumeration wurde erweitert um alle 4 Richtungen zu prüfen (vorher nur 1-3), um Merge-Topologie vollständig zu erfassen.
 
-| Index | Action-Wert | Name |
+#### Block D – Agent State (41-47, One-hot)
+
+| Index | State | Beschreibung |
 |---|---|---|
-| 37 | 0 | `action_DO_NOTHING` |
-| 38 | 1 | `action_MOVE_LEFT` |
-| 39 | 2 | `action_MOVE_FORWARD` |
-| 40 | 3 | `action_MOVE_RIGHT` |
-| 41 | 4 | `action_STOP_MOVING` ⚠️ |
+| 41 | `st_0` | READY_TO_DEPART |
+| 42 | `st_1` | MALFUNCTION_OFF_MAP |
+| 43 | `st_2` | MOVING |
+| 44 | `st_3` | STOPPED |
+| 45 | `st_4` | MALFUNCTION |
+| 46 | `st_5` | WAITING |
+| 47 | `st_6` | DONE |
 
-> ⚠️ **Index 41 Konflikt:** Feature [41] wird zuerst mit dem lokalen Deadlock-Flag (`_detect_deadlock`) beschrieben und danach ggf. durch `STOP_MOVING` (action=4) überschrieben. Effektiv enthält [41] entweder `1.0` (Aktion war STOP) oder den Deadlock-Wert (wenn Aktion nicht gespeichert oder nicht STOP).
+**WICHTIG - Mai 2026 Fix:** Diese Features waren früher oft konstant 0 weil `agent.state` nicht korrekt gespeichert war. Nun werden sie immer gesetzt (Default auf st_0 falls unbekannt).
+
+#### Block E – Last Action (48-52, One-hot)
+
+| Index | Action | Beschreibung |
+|---|---|---|
+| 48 | `act_DN` | DO_NOTHING |
+| 49 | `act_L` | MOVE_LEFT |
+| 50 | `act_F` | MOVE_FORWARD |
+| 51 | `act_R` | MOVE_RIGHT |
+| 52 | `act_S` | STOP_MOVING |
+
+**CRITICAL FIX - Mai 2026:** Diese Features waren früher **immer 0** weil der Guard `if agent.action_saver.is_action_saved:` immer False war. Jetzt:
+- Default zu `act_DN` (Index 48 = 1.0) wenn keine Aktion gespeichert
+- Features werden **bedingungslos gesetzt** (nicht mehr im Guard-Block)
+- Dies ermöglicht dem Critic, Aktionsverteilungen zu lernen
+
+#### Block F – Dezisionsmerkmale & Nebenfunktionen (53-65)
+
+| Index | Name | Beschreibung |
+|---|---|---|
+| 53 | `priority_rank` | Normalized rank by remaining path distance [0,1] |
+| 54-58 | `ct_*` | Cell Type One-hot: OUTSIDE, FORWARD_ONLY, MERGING, SWITCH, DONE |
+| 59-63 | `tr_*` | 5 selected transitions: FWD→FWD, FWD→MRG, FWD→SWI, SWI→FWD, MRG→FWD |
+| 64 | `reserved` | Placeholder (unused, kept for backward compatibility) |
+| 65 | `deadlock` | **Confirmed deadlock flag: 1.0 wenn Rückstau im voraus erkannt, 0.0 sonst** |
+
+#### Block G – Decision Required (30, zentral für Policy-Gating)
+
+| Index | Name | Beschreibung |
+|---|---|---|
+| 30 | `decision_required` | **1.0 nur wenn (decision_type & 2) OR (decision_type & 4), else 0.0** |
+
+**WICHTIG - Mai 2026 Policy Integration:** Dieses Feature wird von MARL_ATT_DecisionPointPolicy verwendet um zu entscheiden, ob echte Entscheidungen getroffen werden (MERGING/SWITCH) oder ob deterministische MOVE_FORWARD (OUTSIDE/FORWARD_ONLY) angewendet wird.
 
 ---
 
@@ -239,7 +324,7 @@ _navigate_direction(handle, start_pos, start_dir, target, backward_trace, max_st
 |---|---|
 | `count` | Gesamtzahl besuchter Zellen (Abbruch bei ≥ `max_steps`) |
 | `visited` | Menge aller `(pos, dir)` Paare (Zyklenerkennung) |
-| `seen_agents` | Alle auf dem Pfad gesehenen Agenten-Handles |
+| `seen_agents` | Alle auf dem Pfad gesehenen Agenten-Handles + **NEUE Mai 2026: auch Agenten am aktuellen Knoten** |
 
 **Abbruchbedingungen (in Reihenfolge):**
 1. `count >= max_steps` → `abort=1`
@@ -301,7 +386,7 @@ TemporalMultiAgentObservation(temporal_window=3, base_obs='DecisionPointObservat
 
 | Eigenschaft | `ExperimentalObservation` | `DecisionPointObservation` | `TemporalMultiAgentObservation` |
 |---|---|---|---|
-| Größe | 30D | 42D | T × 42D |
+| Größe | 30D | **66D** (Mai 2026: erweitert) | T × 66D |
 | Entscheidungslogik | Keine | DFS an Weichen/Merges | via Basis-Obs |
 | Gegner-Info | Nein | Handles in Rückgabe | Obs-Vektoren aller Gegner |
 | Zeitliche Tiefe | Nein | Nein | Ja (T Schritte) |
@@ -376,6 +461,41 @@ TemporalMultiAgentObservation(temporal_window=3, base_obs='DecisionPointObservat
 ### Entscheidungsfindung & DFS-Logik (Algorithmus-Details)
 
 Die Methode `_navigate_direction` ist das Herzstück der Entscheidungslogik. Sie implementiert eine rekursive Tiefensuche (Depth-First Search, DFS), um für jede relevante Richtung (links, geradeaus, rechts, rückwärts) den Pfad zum Ziel zu analysieren und dabei Deadlocks, Weichen, Zielerreichung und Abbruchbedingungen zu erkennen.
+### MERGING Decision-Point Logic (Mai 2026 Architektur)
+
+**Szenario: Agent vor Merge-Punkt**
+
+Ein Agent ist eine Zelle vor einer Weiche, in die ein anderer Agent einfädelt. Das ist `decision_type & 4 = MERGING`.
+
+Die Observation liefert:
+- **Forward Evaluate:** Wenn **ich** geradeaus fahre, what happens?
+  - [31-35]: Deadlock Risk, Switches, Target, Abort, Deadlock_Ahead
+- **Backward Evaluate:** Wenn der **andere Agent** einfädelt, what is sein Risk?
+  - [36-40]: Sein Deadlock Risk, Switches, Target, Abort, Deadlock_Ahead
+
+**Mai 2026 Improvement:** Features [36] `mgB_dl_sig` nutzt jetzt **Inverse-Decay**, nicht Binary:
+- Wenn gegner Agent 1 Schritt bis Deadlock: Warnung = 1.0 (sehr hoch!)
+- Wenn gegner Agent 8 Schritte bis Deadlock: Warnung = 0.33 (weniger kritisch)
+- Wenn gegner Agent safe: Warnung = 0.0
+
+**Kooperations-Potential:**
+- Agent mit niedriger Forward-Risk (low [31]) kann **DO_NOTHING** machen um anderer Agent durchzulassen
+- Agent mit niedriger Backward-Risk (low [36]) kann aggressiv fahren
+- **Policy lernt:** Wenn `mgB_dl_sig[36] > 0.8` → machen Sie Platz! DO_NOTHING
+- **Policy lernt:** Wenn `swF_dl_sig[15] > 0.8` → fahren Sie nicht geradeaus, Deadlock voraus!
+
+#### Opponent-Awareness für Kooperation (Mai 2026 Fix #2)
+
+Die Returned `opp_agent_handles` Liste wird jetzt **vollständig gefüllt:**
+1. Agenten auf allen 3 Branches (L/F/R) — von DFS besucht
+2. **NEU:** Agenten am **aktuellen Knoten** — können sofort kollidieren
+3. **NEU:** Agenten am **nächsten Knoten im Merge** — können blockieren
+
+Die `TemporalMultiAgentObservation` wrapper nutzt diese Liste um die 66D Observations der K=4 wichtigsten Gegner zu sammeln.
+
+**Result:** Attention Transformer sieht nicht nur Pfad-Informationen, sondern die **echten Gegner-Agenten** die Konflikte verursachen.
+
+---
 
 
 #### Algorithmus in verständlicher Prosa

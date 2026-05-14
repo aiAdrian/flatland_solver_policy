@@ -12,7 +12,7 @@ For every transition we capture a tuple
 
 where:
     - `temporal_state` is the same T-step sequence the DeciderNetwork sees
-      (T=3 wrapped HierarchicalRoutesObservation, 72D each).
+    (T=3 wrapped HierarchicalRoutesObservation, 90D each).
     - `teacher_action` is the integer action the heuristic chose.
     - `action_mask` is the 5-D legal-action mask we ALSO use during PPO,
       derived from the rail transitions at the agent's current cell.

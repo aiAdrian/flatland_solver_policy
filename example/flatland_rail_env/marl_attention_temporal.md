@@ -31,7 +31,7 @@ Traditional approaches rely on hand-crafted heuristics (e.g., shortest-path plan
 This work introduces **EXP008: Temporal Transformer Policy** with the following contributions:
 
 1. **Hierarchical Temporal-Spatial Attention**: A two-level architecture that processes temporal observation sequences (3 timesteps) to capture movement dynamics
-2. **Velocity-Augmented Observations**: Extension of base observation space (30D → 33D) with computed velocity features
+2. **Hierarchical Decision Observations**: Full 66D decision-point state, extended to 90D when sparse neighbor context is included
 3. **Success-Weighted Experience Replay**: Novel sampling strategy that prioritizes successful episodes with 5× weight and applies recency-based sampling
 4. **Empirical Validation**: Comprehensive comparison against baseline policies in single-agent scenarios
 
@@ -41,11 +41,13 @@ Previous snapshot-based policies (EXP006) suffered from:
 - ❌ **Collision blindness**: Cannot predict collisions without velocity information
 - ❌ **Trajectory discontinuity**: No temporal consistency in action sequences
 - ❌ **Reactive behavior**: Cannot anticipate opponent movements
+- ❌ **Deadlock-blindness**: No way to detect confirmed corridor blockage cycles
 
 The Temporal Transformer addresses these limitations by:
 - ✅ Observing 3-timestep windows: `[obs_{t-2}, obs_{t-1}, obs_t]`
 - ✅ Computing velocity features: `[dx, dy, angular_velocity]`
 - ✅ Two-level attention: Temporal (movement patterns) + Spatial (agent interactions)
+- ✅ Explicit deadlock feature [65] via recursive corridor cycle detection
 
 ---
 
@@ -73,8 +75,8 @@ The core innovation is a **4-level hierarchical encoder** that processes tempora
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                   │
 │  LEVEL 1: Observation Encoder                                    │
-│    Input:  33D observation (30D base + 3D velocity)             │
-│    Layer:  Linear(33 → 128) + LayerNorm + LeakyReLU(0.01)      │
+│    Input:  66D decision-point obs or 90D hierarchical obs      │
+│    Layer:  Linear(66/90 → 128) + LayerNorm + LeakyReLU(0.01)  │
 │    Output: Spatial embeddings (128D per timestep)                │
 │                                                                   │
 │  LEVEL 2: Temporal Self-Attention                               │
@@ -163,7 +165,7 @@ Where `angular_vel ∈ {-0.5, 0.0, 0.5, 1.0}` represents:
 - `0.5`: Right turn
 - `1.0`: U-turn / reversal
 
-**Total Observation Dimensionality**: 33D per timestep × 3 timesteps = 99D input sequence
+**Total Observation Dimensionality**: 66D or 90D per timestep × 3 timesteps
 
 ### 3.3 Training Algorithm: Proximal Policy Optimization (PPO)
 
@@ -253,6 +255,10 @@ We compare against three baseline approaches:
 - **Smoothed Completion Rate**: Exponential moving average (α=0.05)
 - **Episode Reward**: Cumulative reward over episode
 - **Training Time**: Wall-clock time for 1000 episodes
+- **Deadlock Count** (NEW): Per-episode deadlock detections via `DecisionPointUtils.is_local_deadlock()`
+  - Tracked with running average (`smoothed_deadlock_count`) in TensorBoard
+  - Supported by both reward shapers: `FlatlandPBRSShaper` and `SimpleDoneRewardShaper`
+  - Provides early warning of corridor blockage cycles
 
 ### 4.4 Training Protocol
 
@@ -610,7 +616,7 @@ python test_exp008.py --episodes 1000 --seed 42
 
 *End of Paper*
 
-**Total: 33D per timestep**
+**Total: 66D per timestep**
 
 ---
 
@@ -633,7 +639,7 @@ class TemporalMultiAgentObservation:
             ...
         ]
         
-        Each obs is 33D numpy array
+        Each obs is a 66D or 90D numpy array
         """
 ```
 
@@ -658,7 +664,7 @@ def forward_agent(self, temporal_seq: List, handle: int):
     
     Args:
         temporal_seq: [(obs_t-2, opp_t-2), (obs_t-1, opp_t-1), (obs_t, opp_t)]
-                     Each obs is 33D numpy array
+                     Each obs is a 66D or 90D numpy array
     
     Returns:
         context_embedding: (128,) - Temporal + Spatial Context
@@ -887,7 +893,7 @@ print(f"Temporal attention weights: {temporal_attn[0, :, -1]}")
 
 | Feature | Exp006 | **Exp007** |
 |---------|--------|-----------|
-| Observation | Single snapshot (37D) | **Temporal sequence (3×33D)** |
+| Observation | Single snapshot (66D/90D) | **Temporal sequence (3×66D/90D)** |
 | Velocity | ❌ Not available | **✅ dx, dy, angular_vel** |
 | Movement Context | ❌ None | **✅ Temporal Attention** |
 | Encoder Architecture | MAEncoderWithAttention | **TemporalTransformerEncoder** |

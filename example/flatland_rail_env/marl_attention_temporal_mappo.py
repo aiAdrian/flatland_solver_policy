@@ -70,7 +70,7 @@ class TemporalTransformerEncoder(nn.Module):
     🚀 INNOVATION: Hierarchical Temporal-Spatial Transformer
     
     Architecture:
-    1. Observation Encoder: Maps 33D obs → 128D embedding
+    1. Observation Encoder: Maps 70D or 90D obs → 128D embedding
     2. TEMPORAL Attention: Links t-2, t-1, t → learns movement patterns
     3. SPATIAL Attention: Links self + opponents → learns interactions
     4. Output Projection: Final 128D context embedding
@@ -82,7 +82,7 @@ class TemporalTransformerEncoder(nn.Module):
     """
     
     def __init__(self, 
-                 obs_dim: int,           # 33D (30 base + 3 velocity)
+                 obs_dim: int,           # 70D DecisionPoint or 90D HierarchicalRoutes
                  hidden_dim: int,        # 128D
                  num_heads: int = 4,
                  temporal_window: int = 3,
@@ -234,7 +234,7 @@ class TemporalTransformerEncoder(nn.Module):
         
         Args:
             temporal_seq: [(obs_t-2, opp_t-2), (obs_t-1, opp_t-1), (obs_t, opp_t)]
-                         Each obs is 33D numpy array
+                         Each obs is a 70D or 90D numpy array
             handle: Agent handle (for debugging)
         
         Returns:
@@ -247,7 +247,7 @@ class TemporalTransformerEncoder(nn.Module):
         # Extract self observations over time
         self_obs_sequence = []  # Will be [emb_t-2, emb_t-1, emb_t]
         for obs_self, _ in temporal_seq:
-            obs_t = self._to_1d_tensor(obs_self)  # (33,)
+            obs_t = self._to_1d_tensor(obs_self)  # (70/90,)
             emb_t = self.obs_encoder(obs_t)       # (128,)
             self_obs_sequence.append(emb_t)
         
@@ -284,8 +284,8 @@ class TemporalTransformerEncoder(nn.Module):
         # Encode opponents (current timestep only)
         opp_embeddings = []
         for opp_obs in current_opponents:
-            opp_t = self._to_1d_tensor(opp_obs)  # (33,)
-            # Take only base observation (first 33D)
+            opp_t = self._to_1d_tensor(opp_obs)  # (70/90,)
+            # Take only base observation slice matching obs_dim.
             if opp_t.shape[0] > self.obs_dim:
                 opp_base = opp_t[:self.obs_dim]
             else:
@@ -502,12 +502,22 @@ class TemporalLSTMEncoder(nn.Module):
         self.comm_intent_embedding = nn.Parameter(torch.randn(3, hidden_dim) * 0.02)
         self.comm_norm = nn.LayerNorm(hidden_dim)
         self.comm_dropout = nn.Dropout(p=0.10)
+
+        # Learnable tree aggregator: combines merge/deadlock context with
+        # local-search tree summaries from DecisionPointObservation.
+        self._tree_slots = [38, 41, 43, 46, 64, 66, 67, 68, 69]
+        self.tree_proj = nn.Linear(len(self._tree_slots), hidden_dim, bias=True)
+        self.tree_norm = nn.LayerNorm(hidden_dim)
+
         self.last_comm_reg = torch.tensor(0.0, device=self.device)
         self.last_comm_gate_mean = 0.0
         self.last_comm_intent_mean = [0.0, 0.0, 0.0]
         self.last_comm_valid_count = 0
 
         self._init_weights()
+        # Override tree_proj to near-zero init: starts neutral, learns gradually.
+        nn.init.normal_(self.tree_proj.weight, 0.0, 0.01)
+        nn.init.zeros_(self.tree_proj.bias)
         self.to(self.device)
 
     def _init_weights(self):
@@ -575,6 +585,12 @@ class TemporalLSTMEncoder(nn.Module):
         temporal_output, _ = self.temporal_lstm(self_seq_tensor)
         self_temporal_context = temporal_output[0, -1, :]
 
+        # Learnable tree context: project raw tree stats into hidden space.
+        last_obs_t = self._to_1d_tensor(temporal_seq[-1][0])
+        tree_raw = last_obs_t[self._tree_slots]
+        tree_emb = torch.tanh(self.tree_proj(tree_raw))
+        self_temporal_context = self.tree_norm(self_temporal_context + tree_emb)
+
         _, current_opponents = temporal_seq[-1]
         opp_embeddings = []
         for opp_obs in current_opponents:
@@ -631,6 +647,12 @@ class TemporalLSTMEncoder(nn.Module):
         temporal_output, _ = self.temporal_lstm(self_embeddings)
         self_temporal_contexts = temporal_output[:, -1, :]
 
+        # Learnable tree context (batch): project raw tree stats from last-timestep obs.
+        last_obs_b = all_self_obs_tensor[:, -1, :]               # (B, obs_dim)
+        tree_raw_b = last_obs_b[:, self._tree_slots]             # (B, 9)
+        tree_emb_b = torch.tanh(self.tree_proj(tree_raw_b))      # (B, hidden_dim)
+        self_temporal_contexts = self.tree_norm(self_temporal_contexts + tree_emb_b)
+
         final_embeddings = []
         comm_regs = []
         comm_gate_means = []
@@ -686,7 +708,10 @@ class TemporalLSTMEncoder(nn.Module):
     def load(self, filename: str):
         state_file = filename + ".temporal_encoder"
         if os.path.exists(state_file):
-            self.load_state_dict(torch.load(state_file, map_location=self.device))
+            sd = torch.load(state_file, map_location=self.device)
+            missing, unexpected = self.load_state_dict(sd, strict=False)
+            if missing:
+                print(f"[TemporalLSTMEncoder] New weights (fresh init): {missing}")
 
 
 # =============================================================================
@@ -811,7 +836,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.episode_count = 0
         self.optimizer_mode = optimizer_mode.lower()  # 'single' or 'multiple'
 
-        self.state_size = state_size  # 33D per timestep
+        self.state_size = state_size  # temporal obs size per timestep (70D/90D)
         self.action_size = action_size
         self.num_heads = 4
 
@@ -1245,8 +1270,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
     def _extract_deadlock_label_from_temporal_state(temporal_state) -> float:
         """Build a robust [0,1] deadlock-risk label from next-state features.
 
-        Works with both 48D DecisionPointObservation and 72D
-        HierarchicalRoutesObservation (base 48D + sparse neighbors).
+        Works with both 70D DecisionPointObservation and 90D
+        HierarchicalRoutesObservation (70D base + sparse neighbors).
         """
         try:
             last_obs = np.asarray(temporal_state[-1][0], dtype=np.float32).reshape(-1)
@@ -1278,24 +1303,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         # Optional extra cues in hierarchical sparse-neighbor block.
         # Per-neighbor 6D block: index +3 == local conflict flag.
-        # Support old/new base observation sizes:
-        #   - 48D base  -> start 48
-        #   - 54D base  -> start 54
-        #   - 59D base (cell-type one-hot) -> start 59
-        #   - 64D base (cell-type + 5 transitions) -> start 64
-        #   - 84D base (legacy, full 5x5 transition) -> start 84
+        # Current supported layouts:
+        #   - 70D base -> no sparse block
+        #   - 90D base -> sparse block starts at 70
         sparse_local = 0.0
-        if last_obs.shape[0] >= 72:
-            if last_obs.shape[0] >= 108:
-                sparse_start = 84
-            elif last_obs.shape[0] >= 88:
-                sparse_start = 64
-            elif last_obs.shape[0] >= 83:
-                sparse_start = 59
-            elif last_obs.shape[0] >= 78:
-                sparse_start = 54
-            else:
-                sparse_start = 48
+        if last_obs.shape[0] >= 90:
+            sparse_start = 70
             sparse_local = max(
                 _safe(sparse_start + 3),
                 _safe(sparse_start + 9),
@@ -1741,13 +1754,13 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 grad_norm_actor = torch.nn.utils.clip_grad_norm_(
                     list(self.encoder_actor.parameters()) + 
                     list(self.actor_critic_model.actor.parameters()),
-                    max_norm=0.6
+                    max_norm=0.35
                 )
                 
                 grad_norm_critic = torch.nn.utils.clip_grad_norm_(
                     list(self.encoder_critic.parameters()) + 
                     list(self.actor_critic_model.critic.parameters()),
-                    max_norm=0.6
+                    max_norm=0.35
                 )
                 
                 grad_norm = max(grad_norm_actor.item(), grad_norm_critic.item())
@@ -1949,12 +1962,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         "is_switch",   "hint_L",      "hint_F",      "hint_R",      "is_merge",
         "local_dl",
         "swL_progress","swL_dl_sig",  "swL_switches","swL_dist",
-        "swL_target",  "swL_abort",   "swL_dl_ahead","swL_pad",
+        "swL_target",  "swL_abort",   "swL_dl_ahead","valid_left",
         "swF_progress","swF_dl_sig",  "swF_switches","swF_dist",
-        "swF_target",  "swF_abort",   "swF_dl_ahead","swF_pad",
+        "swF_target",  "swF_abort",   "swF_dl_ahead","valid_forward",
         "swR_progress","swR_dl_sig",  "swR_switches","swR_dist",
-        "swR_target",  "swR_abort",   "swR_dl_ahead","swR_pad",
-        "pad",
+        "swR_target",  "swR_abort",   "swR_dl_ahead","valid_right",
+        "decision_required",
         "mgF_dl_sig",  "mgF_switches","mgF_target",  "mgF_abort",  "mgF_dl_ahead",
         "mgB_dl_sig",  "mgB_switches","mgB_target",  "mgB_abort",  "mgB_dl_ahead",
         "st_0","st_1","st_2","st_3","st_4","st_5","st_6",
@@ -1981,7 +1994,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         "Left branch: target reachable via this arm", # swL_target
         "Left branch: dead-end / abort detected",     # swL_abort
         "Left branch: deadlock ahead",                # swL_dl_ahead
-        "Left branch: padding (unused slot)",         # swL_pad
+        "Left branch: valid action from current cell",# valid_left
         # 14-21 Forward branch
         "Fwd branch: progress toward target",         # swF_progress
         "Fwd branch: deadlock risk signal",           # swF_dl_sig
@@ -1990,7 +2003,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         "Fwd branch: target reachable",               # swF_target
         "Fwd branch: dead-end / abort detected",      # swF_abort
         "Fwd branch: deadlock ahead",                 # swF_dl_ahead
-        "Fwd branch: padding (unused slot)",          # swF_pad
+        "Fwd branch: valid action from current cell", # valid_forward
         # 22-29 Right branch
         "Right branch: progress toward target",       # swR_progress
         "Right branch: deadlock risk signal",         # swR_dl_sig
@@ -1999,9 +2012,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         "Right branch: target reachable",             # swR_target
         "Right branch: dead-end / abort detected",    # swR_abort
         "Right branch: deadlock ahead",               # swR_dl_ahead
-        "Right branch: padding (unused slot)",        # swR_pad
-        # 30 Pad
-        "General padding (filler value)",             # pad
+        "Right branch: valid action from current cell", # valid_right
+        # 30 Decision
+        "Decision required at current cell",          # decision_required
         # 31-35 Merge-Forward
         "Merge-Fwd: deadlock risk signal",            # mgF_dl_sig
         "Merge-Fwd: number of switches on path",      # mgF_switches
@@ -2047,8 +2060,34 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
     def _print_obs_statistics(self):
         """Master-Diagnostik-Report alle 100 Episoden — LLM-paste-ready."""
         W = "=" * 80
+        C_RESET = "\033[0m"
+        C_BOLD = "\033[1m"
+        C_RED = "\033[91m"
+        C_GREEN = "\033[92m"
+        C_YELLOW = "\033[93m"
+        C_BLUE = "\033[94m"
+        C_CYAN = "\033[96m"
         n_names = len(self._OBS_FEATURE_NAMES)
         n_descs = len(self._OBS_FEATURE_DESC)
+
+        def color(text, code):
+            return f"{code}{text}{C_RESET}"
+
+        def status_text(status):
+            if status == "OK":
+                return color(status, C_GREEN)
+            if status == "WARN":
+                return color(status, C_YELLOW)
+            if status == "ALERT":
+                return color(status, C_RED)
+            return status
+
+        def severity(val, lo_ok, hi_ok, hi_alert=None):
+            if lo_ok <= val <= hi_ok:
+                return "OK"
+            if hi_alert is not None and val > hi_alert:
+                return "ALERT"
+            return "WARN"
 
         def fname(i):
             return self._OBS_FEATURE_NAMES[i] if i < n_names else f"feat_{i}"
@@ -2062,11 +2101,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         def row(label, value, unit="", status="", note=""):
             """Fixed-width table row: label | value | unit | status | note"""
             return (f"  | {label:<22s} | {value:>12s} | {unit:<6s} | "
-                    f"{status:<4s} | {note}")
+                    f"{status_text(status):<13s} | {note}")
 
         def hdr(title):
             print(f"\n  +{'─'*78}+")
-            print(f"  | {title:<78s}|")
+            print(f"  | {color(title, C_CYAN):<87s}|")
             print(f"  +{'─'*22}+{'─'*14}+{'─'*8}+{'─'*6}+{'─'*26}+")
             print(f"  | {'Metric':<22s} | {'Value':>12s} | {'Unit':<6s} | "
                   f"{'St':<4s} | {'Interpretation':<24s} |")
@@ -2075,8 +2114,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         def end_table():
             print(f"  +{'─'*22}+{'─'*14}+{'─'*8}+{'─'*6}+{'─'*26}+")
 
-        print(f"\n{W}")
-        print(f"  MAPPO DIAGNOSTIC REPORT")
+        print(f"\n{color(W, C_BLUE)}")
+        print(f"  {color('MAPPO DIAGNOSTIC REPORT', C_BOLD + C_CYAN)}")
         print(f"  Episode : {self.episode_count}")
         print(f"  Interval: {self._obs_stat_interval} episodes")
         print(f"  Context : Flatland 5-agent rail scheduling, DecisionPoint obs 64D")
@@ -2099,8 +2138,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
             hdr(f"SECTION 1 — EPISODE PERFORMANCE  (n={len(r_arr)} episodes)")
             def ep_row(lbl, val, unit, lo_ok, hi_ok, note_ok, note_warn):
-                st = "OK" if lo_ok <= val <= hi_ok else "WARN"
-                note = note_ok if lo_ok <= val <= hi_ok else note_warn
+                st = severity(val, lo_ok, hi_ok)
+                note = note_ok if st == "OK" else note_warn
                 print(row(lbl, f"{val:+.3f}", unit, st, note) + " |")
             ep_row("Reward mean",     float(r_arr.mean()),  "scaled", -200,  200,
                    "normal range", "check reward shaping")
@@ -2130,11 +2169,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 issues.append(f"Reward std {r_arr.std():.1f} very high: "
                                "environment outcomes highly stochastic or policy random")
             if issues:
-                print(f"\n  EPISODE ISSUES:")
+                print(f"\n  {color('EPISODE ISSUES:', C_YELLOW)}")
                 for iss in issues:
-                    print(f"    WARN  {iss}")
+                    print(f"    {color('WARN', C_YELLOW)}  {iss}")
             else:
-                print(f"\n    OK  No episode-level issues.")
+                print(f"\n    {color('OK', C_GREEN)}  No episode-level issues.")
 
         self._ep_stat_buf['reward'].clear()
         self._ep_stat_buf['done_frac'].clear()
@@ -2165,8 +2204,15 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 f"lr_factor={self.actor_lr_factor:.3f})")
 
             def tr_row(lbl, val, pm, unit, lo_ok, hi_ok, note_ok, note_warn):
-                st   = "OK" if lo_ok <= val <= hi_ok else "WARN"
-                note = note_ok if lo_ok <= val <= hi_ok else note_warn
+                hi_alert = None
+                if lbl == "GradNorm":
+                    hi_alert = 20.0
+                elif lbl == "Entropy":
+                    hi_alert = None
+                elif lbl == "V_Loss (critic)":
+                    hi_alert = 2.0
+                st = severity(val, lo_ok, hi_ok, hi_alert=hi_alert)
+                note = note_ok if st == "OK" else note_warn
                 vs   = f"{val:.4f} ±{pm:.4f}"
                 print(row(lbl, vs, unit, st, note) + " |")
 
@@ -2238,11 +2284,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     "Reduce LR or add gradient clipping.")
 
             if issues:
-                print(f"\n  TRAINING ISSUES ({len(issues)}):")
+                print(f"\n  {color(f'TRAINING ISSUES ({len(issues)}):', C_YELLOW)}")
                 for iss in issues:
-                    print(f"    WARN  {iss}")
+                    print(f"    {color('WARN', C_YELLOW)}  {iss}")
             else:
-                print(f"\n    OK  No training-level issues.")
+                print(f"\n    {color('OK', C_GREEN)}  No training-level issues.")
 
         # Log episode-level aggregated metrics to TensorBoard
         if n_b > 0:
@@ -2264,7 +2310,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             self._stat_buf[key].clear()
 
         # ── 3) Feature Importance ──────────────────────────────────────────────
-        print(f"\n{W}")
+        print(f"\n{color(W, C_BLUE)}")
         try:
             W_mat = self.encoder_actor.obs_encoder[0].weight.detach().cpu().numpy()
             sens   = np.abs(W_mat).mean(axis=0)
@@ -2312,10 +2358,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 print(f"  Dead features   : {len(dead_feats)} ignored "
                       f"({', '.join(fname(i) for i in dead_feats[:8])}"
                       f"{'…' if len(dead_feats) > 8 else ''})")
-                print(f"  WARN  Dead features waste network capacity and may indicate "
+                print(f"  {color('WARN', C_YELLOW)}  Dead features waste network capacity and may indicate "
                       f"structural issues in the observation.")
             else:
-                print(f"  OK  All features contribute to network (>=1% sensitivity).")
+                print(f"  {color('OK', C_GREEN)}  All features contribute to network (>=1% sensitivity).")
 
         except Exception as exc:
             print(f"  (Feature importance not available: {exc})")
@@ -2332,7 +2378,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             stds  = data.std(axis=0)
             RANGE_TOL = 0.05
 
-            print(f"\n{W}")
+            print(f"\n{color(W, C_BLUE)}")
             print(f"  SECTION 4 — OBSERVATION SANITY  (N={N} frames, D={D} features)")
             print()
 
@@ -2381,7 +2427,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             print(f"  +{'─'*30}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*6}+")
 
             if not oor and not dead:
-                print(f"  OK  All features in [0,1], none constant.")
+                print(f"  {color('OK', C_GREEN)}  All features in [0,1], none constant.")
             if dups:
                 print(f"\n  Duplicate pairs (|corr|>0.99):")
                 for a, b, c in dups:
@@ -2394,26 +2440,46 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                       f"local_dl={means[5]:.3f}  priority_rank={means[53]:.3f}")
 
             if obs_issues:
-                print(f"\n  OBS ISSUES:")
+                print(f"\n  {color('OBS ISSUES:', C_YELLOW)}")
                 for iss in obs_issues:
-                    print(f"    WARN  {iss}")
+                    print(f"    {color('WARN', C_YELLOW)}  {iss}")
             else:
-                print(f"  OK  No observation sanity issues.")
+                print(f"  {color('OK', C_GREEN)}  No observation sanity issues.")
         else:
             self._obs_stat_buffer.clear()
 
         # ── 5) Copilot summary block ───────────────────────────────────────────
-        print(f"\n{W}")
-        print(f"  SECTION 5 — COPILOT INTERNAL TRIAGE")
+        print(f"\n{color(W, C_BLUE)}")
+        print(f"  {color('SECTION 5 — COPILOT INTERNAL TRIAGE', C_BOLD + C_CYAN)}")
         print(f"  Compact block for direct next-action decisions:")
         print(f"  {'─'*76}")
 
         all_issues = issues + obs_issues
         issue_text = (("\n".join(f"  - {x}" for x in all_issues))
                       if all_issues else "  - None detected.")
+        overall = "OK"
+        if ep_done_mean < 0.20 or en_m < self.entropy_floor or gn_m > 20.0:
+            overall = "ALERT"
+        elif all_issues:
+            overall = "WARN"
+
+        suggestions = []
+        if ep_done_mean < 0.20:
+            suggestions.append("1. DONE zu niedrig: `weight_entropy +0.02`, `decision_eps_floor +0.02`, `max_eps_random +0.02`")
+        if en_m < self.entropy_floor:
+            suggestions.append("2. Entropie-Kollaps: Idle/Stop weniger hart bestrafen und Exploration offen halten")
+        if gn_m > 5.0:
+            suggestions.append("3. Gradienten zu hoch: `learning_rate * 0.75` und `reward_scale -0.01`")
+        if vl_m > 0.80:
+            suggestions.append("4. Critic zu hoch: Reward-Skala klein halten und frischen Neustart statt Continue bevorzugen")
+        if not suggestions:
+            suggestions.append("1. Keine akute Anpassung noetig, weitertrainieren und DONE/Deadlocks beobachten")
+
         print(
             f"  PROFILE: MAPPO Flatland 5-agent | Episode={self.episode_count}\n"
             f"  OBS: DecisionPoint54 + temporal LSTM + comm-attn\n"
+            f"\n"
+            f"  OVERALL: {status_text(overall)}\n"
             f"\n"
             f"  METRICS:\n"
             f"  done_mean={ep_done_mean:.3f} done_std={ep_done_std:.3f} "
@@ -2432,10 +2498,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             f"\n"
             f"  ISSUES:\n{issue_text}\n"
             f"\n"
-            f"  NEXT_ACTION: output top-3 code-level changes with concrete parameter deltas."
+            f"  VORSCHLAG:\n  " + "\n  ".join(suggestions)
         )
         print(f"  {'─'*76}")
-        print(f"{W}\n")
+        print(f"{color(W, C_BLUE)}\n")
 
     def _apply_episode_end_bonus(self, episode_memory, done_count, num_agents):
         """Apply cooperative episode-end shaping — PER AGENT ONLY.
@@ -2483,8 +2549,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             # 🎯 ONLY process agents with done==True in their final transition
             if not done:
                 continue
-
-            deadlock_risk = float(np.clip(aux_dl, 0.0, 1.0))
+            
+            deadlock_risk = max(state[0][0][65], next_state[0][0][65])  # max of local and next-step risk signals
             delta = per_done_agent_bonus - (DEADLOCK_PENALTY_PER_AGENT_MAX * deadlock_risk)
             delta = float(np.clip(delta, PER_AGENT_DELTA_MIN, PER_AGENT_DELTA_MAX))
             # Store: (handle, ..., delta) — exactly ONE entry per done agent

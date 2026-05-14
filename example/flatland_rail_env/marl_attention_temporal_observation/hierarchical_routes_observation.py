@@ -8,24 +8,24 @@ Designed to feed the Decider policy with `Specialist` sub-modules
 (see HIERARCHICAL_DECIDER_ARCHITECTURE.md, sections 4-5).
 
 Output per `get(handle)`:
-    (feature_vector_72D, opp_handles_list)
+    (feature_vector_90D, opp_handles_list)
 
-Layout of the 72D vector:
+Layout of the 90D vector:
 
-    [ 0 - 47]  Base 48D from DecisionPointObservation (unchanged):
+    [ 0 - 65]  Base 66D from DecisionPointObservation (unchanged):
                - decision_type, shortest-path-hint, 3 branch blocks (route info!),
                  2 merge blocks, state/action one-hots, local deadlock,
                  coordination soft-signals.
-    [48 - 71]  Sparse neighbor block: K=4 classified neighbors x 6D each.
+    [66 - 89]  Sparse neighbor block: K=4 classified neighbors x 6D each.
 
 Per-neighbor 6D layout:
     [exists, class_oncoming, class_merging, class_local, distance_norm, ttc_norm]
 
 Notes
 -----
-* Routes are already represented in base[4-21] (3 branches x 6D). We do NOT
-  duplicate them here - Flatland has at most 3 outgoing transitions at a
-  decision point. Specialists read base[4-21] directly.
+* Routes are already represented in base[6-29] (3 branches x 8D). We do NOT
+    duplicate them here - Flatland has at most 3 outgoing transitions at a
+    decision point. Specialists read base[6-29] directly.
 * The list `opp_handles_list` is the SAME K=4 ordering (after relevance sort).
   The Decider policy uses it to look up the K=4 most relevant agents'
   `global_metric` vectors from its CommBuffer.
@@ -62,7 +62,7 @@ NEIGHBOR_IDX_TTC_NORM = 5
 class HierarchicalRoutesObservation(DecisionPointObservation):
     """Decision-point observation + sparse top-K classified neighbors block."""
 
-    OBS_SIZE = DecisionPointObservation.OBS_SIZE + NEIGHBOR_TOTAL  # 64+24=88
+    OBS_SIZE = DecisionPointObservation.OBS_SIZE + NEIGHBOR_TOTAL
 
     # Neighbor-classification reach radius (in grid cells, manhattan).
     LOCAL_RADIUS = 6
@@ -86,15 +86,11 @@ class HierarchicalRoutesObservation(DecisionPointObservation):
     # Main hook
     # ------------------------------------------------------------------
     def get(self, handle: int = 0) -> Tuple[np.ndarray, List[int]]:
-        # 1) Base features from parent. The parent uses `self.feature_len` for
-        # allocation, which we overrode to 72 -> parent already returns a 72D
-        # vector with [48..71] zero. We use it as our buffer.
+        # 1) Base features vom Parent holen (vollständiges 66D-Layout)
         base_features, opp_handles = super().get(handle)
-        feat = np.zeros(self.feature_len, dtype=np.float32)
-        cap = min(int(np.asarray(base_features).shape[0]), self.feature_len)
-        feat[:cap] = np.asarray(base_features, dtype=np.float32)[:cap]
-        # Make absolutely sure neighbor block is zeroed before we fill it.
-        feat[DecisionPointObservation.OBS_SIZE :] = 0.0
+        feat = np.zeros(self.OBS_SIZE, dtype=np.float32)
+        cap = min(len(base_features), self.OBS_SIZE - NEIGHBOR_TOTAL)
+        feat[:cap] = base_features[:cap]
 
         agent = self.env.agents[handle]
         pos = agent.position if agent.position is not None else agent.initial_position
