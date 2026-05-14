@@ -363,6 +363,10 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 
 # Globale Variable für die temporale Fenstergröße
 TEMPORAL_WINDOW = 3  # 3 Frames -> Bewegung/Velocity wird durch Temporal-Attention nutzbar
+# Local tree-search horizon for DecisionPointObservation.
+# 6 is a strong default on dense merge topologies; 5 is faster but may miss
+# deeper backward-inflow conflicts.
+LOCAL_TREE_SEARCH_DEPTH = 6
 
 # High-success curriculum: bias training toward hard coordination cases
 # while keeping a small share of easy cases for stability.
@@ -403,13 +407,15 @@ if INCLUDE_5_AGENTS_IN_FINAL:
 # performs best with the extended layout.
 USE_HIERARCHICAL_OBS = True
 
-def create_temporal_obs_builder_object(debug: bool = False):
+def create_temporal_obs_builder_object(debug: bool = False, search_depth: int = LOCAL_TREE_SEARCH_DEPTH):
     """Factory for TemporalMultiAgentObservation"""
     if USE_HIERARCHICAL_OBS:
         try:
-            base = HierarchicalRoutesObservation(debug=debug)
+            base = HierarchicalRoutesObservation(debug=debug, search_depth=search_depth)
         except TypeError:
             base = HierarchicalRoutesObservation()
+            if hasattr(base, 'search_depth'):
+                base.search_depth = max(1, int(search_depth))
         try:
             return TemporalMultiAgentObservation(
                 temporal_window=TEMPORAL_WINDOW,
@@ -548,15 +554,16 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         train_frequency=10,
         optimizer_mode=optimizer_mode
     )
-    # Stabilized settings for early/mid training: lower KL spikes + stronger exploration.
-    policy.surrogate_eps_clip = 0.12
-    policy.weight_entropy = 0.05
-    policy.reward_scale = 0.12  # Increased: done_bonus=30 >> deadlock=-3.6 (ratio 8.3x)
+    # Convergence-focused settings: avoid frozen policy updates and promote
+    # meaningful exploration in high-deadlock traffic.
+    policy.surrogate_eps_clip = 0.15
+    policy.weight_entropy = 0.07
+    policy.reward_scale = 0.14
     policy.weight_loss = 1.2
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600
-    policy.ppo_target_kl = 0.025
-    policy.ppo_max_kl = 0.050
+    policy.ppo_target_kl = 0.030
+    policy.ppo_max_kl = 0.060
     policy.ppo_emergency_kl = 0.16
     policy.ppo_emergency_kl_hard = 0.24
     policy.ratio_guard_soft = 1.10
@@ -565,18 +572,18 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.ratio_guard_hard_low = 0.85
     policy.max_hard_batches_before_lr_decay = 4
     policy.hard_spike_streak_limit = 3
-    policy.actor_lr_min_factor = 0.50
+    policy.actor_lr_min_factor = 0.60
     policy.actor_lr_decay_on_instability = 0.88
-    policy.max_eps_random = 0.08
-    policy.decision_eps_floor = 0.05
+    policy.max_eps_random = 0.14
+    policy.decision_eps_floor = 0.10
     policy.use_decision_eps_floor = True
-    # DONE-only on sparse maps: do not fight naturally high forward usage.
-    policy.weight_action_diversity = 0.05
-    policy.forward_prob_soft_max = 0.85
+    # Encourage non-forward alternatives at conflict points.
+    policy.weight_action_diversity = 0.08
+    policy.forward_prob_soft_max = 0.75
     policy.lr_prob_soft_min = 0.08
-    policy.idle_prob_soft_max = 0.26
-    policy.idle_logit_penalty = 1.40
-    policy.stop_logit_penalty = 1.20
+    policy.idle_prob_soft_max = 0.22
+    policy.idle_logit_penalty = 1.65
+    policy.stop_logit_penalty = 1.35
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
@@ -624,6 +631,8 @@ if __name__ == "__main__":
   python marl_attention_temporal.py final_continue --eps 0.0
   python marl_attention_temporal.py --train final --eps 0.0
   python marl_attention_temporal.py final --eps 0.0
+  python marl_attention_temporal.py final --eps 0.2 --min_eps 0.05 --search_depth 6
+  python marl_attention_temporal.py final --eps 0.2 --min_eps 0.05 --search_depth 7
 """
     )
     parser.add_argument(
@@ -660,19 +669,19 @@ if __name__ == "__main__":
     parser.add_argument(
         '--eps',
         type=float,
-        default=1.0,
+        default=0.2,
         metavar='EPS_VALUE',
         dest='eps',
-        help='Exploration floor for epsilon-greedy in [0.0, 1.0] (default: 1.0)'
+        help='Exploration floor for epsilon-greedy in [0.0, 1.0] (default: 0.2)'
     )
 
     parser.add_argument(
         '--min_eps',
         type=float,
-        default=0.001,
+        default=0.05,
         metavar='MIN_EPS_VALUE',
         dest='min_eps',
-        help='Minimum exploration floor for epsilon-greedy in [0.0, 1.0] (default: 0.001)'
+        help='Minimum exploration floor for epsilon-greedy in [0.0, 1.0] (default: 0.05)'
     )
 
     parser.add_argument(
@@ -718,6 +727,14 @@ if __name__ == "__main__":
         dest='debug',
         help='Enable debug mode for DecisionPointObservation (default: off)'
     )
+    parser.add_argument(
+        '--search_depth',
+        type=int,
+        default=LOCAL_TREE_SEARCH_DEPTH,
+        metavar='DEPTH',
+        dest='search_depth',
+        help='Local tree search depth for observation builder (default: 6; recommended 5-7)'
+    )
 
     args = parser.parse_args()
     mode = args.mode.lower()
@@ -735,6 +752,7 @@ if __name__ == "__main__":
     rendering = bool(args.rendering)
     policy_mode = args.policy_mode.strip().lower()
     debug_mode = args.debug  # Capture debug flag
+    search_depth = int(args.search_depth)
     do_training = mode != 'eval'
     do_rendering = rendering
     checkpoint_interval = 50
@@ -754,14 +772,21 @@ if __name__ == "__main__":
     if not (0.0 <= min_eps <= 1.0):
         print(f"ERROR: --min_eps must be between 0.0 and 1.0, got {min_eps}")
         sys.exit(1)
+    if do_training and eps <= 0.0:
+        print("[Warn] eps=0.0 in training can freeze policy exploration. Auto-setting eps=0.2 and min_eps>=0.05.")
+        eps = 0.2
+        min_eps = max(min_eps, 0.05)
+    if not (1 <= search_depth <= 12):
+        print(f"ERROR: --search_depth must be between 1 and 12, got {search_depth}")
+        sys.exit(1)
     min_eps = min(eps, min_eps)  # Use the lower of the two for safety
 
-    print(f"\n[Config] mode={mode}, eps={eps:.4f}, optimizer_mode={optimizer_mode}, policy_mode={policy_mode}, debug={debug_mode}")
+    print(f"\n[Config] mode={mode}, eps={eps:.4f}, optimizer_mode={optimizer_mode}, policy_mode={policy_mode}, debug={debug_mode}, search_depth={search_depth}")
     if USE_CURRICULUM_PHASES:
         print(f"[Config] curriculum_start_phase_index={start_from_phase} ({CURRICULUM_PHASES[start_from_phase]['name']})")
 
     environment = RailEnvironmentPersistable(
-        obs_builder_object_creator=lambda: create_temporal_obs_builder_object(debug=debug_mode),
+        obs_builder_object_creator=lambda: create_temporal_obs_builder_object(debug=debug_mode, search_depth=search_depth),
         n_cities=PURE_MARL_N_CITIES,
         grid_width=PURE_MARL_GRID_WIDTH,
         grid_height=PURE_MARL_GRID_HEIGHT,
@@ -790,7 +815,7 @@ if __name__ == "__main__":
 
     # Use the actual base-obs size so the policy gets a matching state_size
     # (64D for DecisionPointObservation, 88D for HierarchicalRoutesObservation).
-    _obs_builder_for_size = create_temporal_obs_builder_object()
+    _obs_builder_for_size = create_temporal_obs_builder_object(search_depth=search_depth)
     if hasattr(_obs_builder_for_size, 'get_observation_size'):
         _state_size = _obs_builder_for_size.get_observation_size()
     else:

@@ -25,6 +25,7 @@ class BaseSolver:
             self.activate_rendering()
 
         self.max_steps = np.inf
+        self._last_episode_agent_status = None
 
     def get_name(self) -> str:
         raise NotImplementedError
@@ -152,6 +153,7 @@ class BaseSolver:
                                                                          training_mode)
         policy.end_episode(train=training_mode)
         self.after_episode_ends()
+        self._last_episode_agent_status = self._compute_episode_agent_status()
         return tot_reward, tot_terminate, tot_steps
 
     def perform_evaluation(self,
@@ -220,6 +222,9 @@ class BaseSolver:
 
             if episode >= max_episodes:
                 break
+
+            if episode % checkpoint_interval == 0:
+                self._print_tree_search_diagnostics(episode)
 
         print('\ndone.')
 
@@ -313,6 +318,7 @@ class BaseSolver:
                 self.save_policy(filename=last_checkpoint_path)
                 
                 if episode % checkpoint_interval == 0:
+                    self._print_tree_search_diagnostics(episode)
                     print(f"\n💾 Checkpoint saved: Episode {episode}")
                     print(f"   Path: {checkpoint_path}")
                     print(f"   Last: {last_checkpoint_path}")
@@ -361,7 +367,16 @@ class BaseSolver:
                     return int(self._reward_shaper.get_last_episode_deadlock_count())
                 except Exception:
                     pass
-        return self._estimate_deadlock_count_from_env()
+
+        local_deadlocks = self._estimate_deadlock_count_from_env()
+        if local_deadlocks > 0:
+            return int(local_deadlocks)
+
+        # Fallback proxy: agents that are still on-map and not DONE at episode end.
+        # This catches practical gridlock cases where strict corridor-deadlock
+        # logic is too conservative and returns 0.
+        status = self._last_episode_agent_status or {}
+        return int(status.get('unfinished_on_map', 0))
 
     def _estimate_deadlock_count_from_env(self) -> int:
         """Best-effort deadlock count independent of reward shaper.
@@ -436,3 +451,88 @@ class BaseSolver:
             return getattr(module, "DecisionPointUtils", None)
         except Exception:
             return None
+
+    def _compute_episode_agent_status(self) -> Dict[str, int]:
+        """Collect lightweight end-of-episode status counters."""
+        status = {
+            'total_agents': 0,
+            'done_agents': 0,
+            'unfinished_agents': 0,
+            'unfinished_on_map': 0,
+        }
+        try:
+            raw_env = self.env.get_raw_env() if hasattr(self.env, 'get_raw_env') else getattr(self.env, 'raw_env', self.env)
+            agents = getattr(raw_env, 'agents', []) if raw_env is not None else []
+            status['total_agents'] = int(len(agents))
+            for a in agents:
+                state = getattr(a, 'state', None)
+                state_name = getattr(state, 'name', '') if state is not None else ''
+                on_map = getattr(a, 'position', None) is not None
+                if state_name == 'DONE':
+                    status['done_agents'] += 1
+                else:
+                    status['unfinished_agents'] += 1
+                    if on_map:
+                        status['unfinished_on_map'] += 1
+        except Exception:
+            pass
+        return status
+
+    def _print_tree_search_diagnostics(self, episode: int):
+        """Optional diagnostics for local-tree + seen-agent communication context."""
+        try:
+            raw_env = self.env.get_raw_env() if hasattr(self.env, 'get_raw_env') else getattr(self.env, 'raw_env', self.env)
+            tree_dict = getattr(raw_env, 'dev_tree_dict', None) if raw_env is not None else None
+            status = self._last_episode_agent_status or {}
+
+            print("\n[TreeDiag] Episode {}".format(episode))
+            print("  Agents: total={total} done={done} unfinished={undone} unfinished_on_map={uon}".format(
+                total=status.get('total_agents', 0),
+                done=status.get('done_agents', 0),
+                undone=status.get('unfinished_agents', 0),
+                uon=status.get('unfinished_on_map', 0),
+            ))
+
+            if not isinstance(tree_dict, dict) or len(tree_dict) == 0:
+                print("  Tree payload: unavailable (env.dev_tree_dict empty)")
+                return
+
+            num_agents_payload = len(tree_dict)
+            node_counts = []
+            edge_counts = []
+            seen_counts = []
+            max_depths = []
+            oncoming_nodes = 0
+            total_nodes = 0
+
+            for payload in tree_dict.values():
+                nodes = payload.get('nodes', []) if isinstance(payload, dict) else []
+                edges = payload.get('edges', []) if isinstance(payload, dict) else []
+                seen = payload.get('seen_agents', []) if isinstance(payload, dict) else []
+
+                node_counts.append(len(nodes))
+                edge_counts.append(len(edges))
+                seen_counts.append(len(seen))
+
+                local_max_depth = 0
+                for n in nodes:
+                    d = int(n.get('depth', 0))
+                    if d > local_max_depth:
+                        local_max_depth = d
+                    if bool(n.get('has_oncoming', False)):
+                        oncoming_nodes += 1
+                    total_nodes += 1
+                max_depths.append(local_max_depth)
+
+            mean_nodes = float(np.mean(node_counts)) if node_counts else 0.0
+            mean_edges = float(np.mean(edge_counts)) if edge_counts else 0.0
+            mean_seen = float(np.mean(seen_counts)) if seen_counts else 0.0
+            max_depth = int(max(max_depths)) if max_depths else 0
+            oncoming_ratio = (float(oncoming_nodes) / float(total_nodes)) if total_nodes > 0 else 0.0
+
+            print("  Tree payload agents={} mean_nodes={:.2f} mean_edges={:.2f} mean_seen_agents={:.2f}".format(
+                num_agents_payload, mean_nodes, mean_edges, mean_seen
+            ))
+            print("  Tree structure max_depth={} oncoming_node_ratio={:.3f}".format(max_depth, oncoming_ratio))
+        except Exception as e:
+            print(f"[TreeDiag] failed: {e}")

@@ -69,8 +69,8 @@ class HierarchicalRoutesObservation(DecisionPointObservation):
     # Conflict look-ahead horizon for ONCOMING / MERGING detection.
     CONFLICT_HORIZON = 6
 
-    def __init__(self, top_k: int = NEIGHBOR_K, local_radius: int = 6):
-        super().__init__()
+    def __init__(self, top_k: int = NEIGHBOR_K, local_radius: int = 6, search_depth: int = 5, debug: bool = False):
+        super().__init__(debug=debug, search_depth=search_depth)
         self.feature_len = HierarchicalRoutesObservation.OBS_SIZE
         self.top_k = int(top_k)
         self.LOCAL_RADIUS = int(local_radius)
