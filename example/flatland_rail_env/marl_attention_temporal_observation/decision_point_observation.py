@@ -438,6 +438,12 @@ class DecisionPointObservation(ObservationBuilder):
         self.search_depth = max(1, int(search_depth))
         self.observation_profile = observation_profile
         self.use_trainable_tree_encoder = bool(use_trainable_tree_encoder)
+        # Local-tree search control to avoid branch explosion at higher depths.
+        # Up to depth 1: expand all transitions.
+        # From depth >= 2: always keep shortest-path branch and sample side branches.
+        self.local_search_random_start_depth = 2
+        self.local_search_max_side_branches = 1
+        self.local_search_distance_bias = 2.0
         self.env = None
         self.agent_map = None
         self._print_feature_layout_doc()
@@ -521,6 +527,64 @@ class DecisionPointObservation(ObservationBuilder):
             return 2
         return 3
 
+    def _select_local_search_branches(self, handle, depth, current_pos, transitions, distance_map):
+        """Select branches for local search with depth-aware stochastic pruning.
+
+        Strategy:
+        - depth < random_start_depth: keep all valid branches
+        - depth >= random_start_depth:
+          1) always keep shortest branch (distance-map)
+          2) sample limited side branches with short-branch bias
+        """
+        candidates = []
+        for next_dir in range(4):
+            if not transitions[next_dir]:
+                continue
+            next_pos = get_new_position(current_pos, next_dir)
+            dist = np.inf
+            if distance_map is not None:
+                try:
+                    dist = float(distance_map[handle, next_pos[0], next_pos[1], next_dir])
+                except Exception:
+                    dist = np.inf
+            candidates.append((next_dir, next_pos, dist))
+
+        if len(candidates) <= 1:
+            return candidates
+
+        if depth < int(self.local_search_random_start_depth):
+            return candidates
+
+        finite_dists = [c[2] for c in candidates if np.isfinite(c[2])]
+        fallback_large = (max(finite_dists) + 1.0) if finite_dists else 1.0
+        normalized = []
+        for c in candidates:
+            d = c[2] if np.isfinite(c[2]) else fallback_large
+            normalized.append((c[0], c[1], d))
+
+        normalized.sort(key=lambda x: x[2])
+        shortest = normalized[0]
+        side = normalized[1:]
+
+        k_side = min(int(self.local_search_max_side_branches), len(side))
+        if k_side <= 0:
+            return [shortest]
+
+        dvals = np.array([s[2] for s in side], dtype=np.float64)
+        dmin = float(np.min(dvals))
+        closeness = 1.0 / (1.0 + np.maximum(0.0, dvals - dmin))
+        alpha = max(0.1, float(self.local_search_distance_bias))
+        weights = np.power(closeness, alpha)
+        wsum = float(np.sum(weights))
+        if wsum <= 0.0 or not np.isfinite(wsum):
+            probs = np.full(len(side), 1.0 / len(side), dtype=np.float64)
+        else:
+            probs = weights / wsum
+
+        idx = np.random.choice(len(side), size=k_side, replace=False, p=probs)
+        chosen_side = [side[int(i)] for i in np.atleast_1d(idx)]
+        return [shortest] + chosen_side
+
     def _local_search(self, handle, start_pos, start_dir, depth_limit):
         """Robuste, defensive lokale Suche mit strukturierter Baum-Rückgabe.
 
@@ -541,6 +605,11 @@ class DecisionPointObservation(ObservationBuilder):
             tree_edges = []
             seen_agents = set()
             visited_states = []
+            distance_map = None
+            try:
+                distance_map = self.env.distance_map.get()
+            except Exception:
+                distance_map = None
             while frontier:
                 current_pos, current_dir, depth = frontier.pop()
                 if depth > depth_limit or (current_pos, current_dir) in visited:
@@ -593,31 +662,36 @@ class DecisionPointObservation(ObservationBuilder):
                     "backward_inflow_count": len(incoming_agents),
                 }
                 tree_nodes.append(node_info)
-                for next_dir in range(4):
-                    if transitions[next_dir]:
-                        next_pos = get_new_position(current_pos, next_dir)
-                        edge_agents = []
-                        if self.agent_map is not None:
-                            try:
-                                nidx = self.agent_map[next_pos]
-                                if nidx != -1 and nidx != handle:
-                                    edge_agents.append(int(nidx))
-                                    seen_agents.add(int(nidx))
-                            except Exception as e:
-                                print(f"[Warn] _local_search: Fehler bei edge-agent scan: {e}")
-                        tree_edges.append({
-                            "src_pos": current_pos,
-                            "src_dir": int(current_dir),
-                            "dst_pos": next_pos,
-                            "dst_dir": int(next_dir),
-                            "src_depth": int(depth),
-                            "dst_depth": int(depth + 1),
-                            "rel_dir_bin": self._dir_to_rel_bin(current_dir, next_dir),
-                            "edge_len_cells": 1,
-                            "agents_on_edge": edge_agents,
-                            "has_oncoming_edge": bool(len(edge_agents) > 0),
-                        })
-                        frontier.append((next_pos, next_dir, depth + 1))
+                selected = self._select_local_search_branches(
+                    handle=handle,
+                    depth=depth,
+                    current_pos=current_pos,
+                    transitions=transitions,
+                    distance_map=distance_map,
+                )
+                for next_dir, next_pos, _dist in selected:
+                    edge_agents = []
+                    if self.agent_map is not None:
+                        try:
+                            nidx = self.agent_map[next_pos]
+                            if nidx != -1 and nidx != handle:
+                                edge_agents.append(int(nidx))
+                                seen_agents.add(int(nidx))
+                        except Exception as e:
+                            print(f"[Warn] _local_search: Fehler bei edge-agent scan: {e}")
+                    tree_edges.append({
+                        "src_pos": current_pos,
+                        "src_dir": int(current_dir),
+                        "dst_pos": next_pos,
+                        "dst_dir": int(next_dir),
+                        "src_depth": int(depth),
+                        "dst_depth": int(depth + 1),
+                        "rel_dir_bin": self._dir_to_rel_bin(current_dir, next_dir),
+                        "edge_len_cells": 1,
+                        "agents_on_edge": edge_agents,
+                        "has_oncoming_edge": bool(len(edge_agents) > 0),
+                    })
+                    frontier.append((next_pos, next_dir, depth + 1))
             return {
                 "nodes": tree_nodes,
                 "edges": tree_edges,

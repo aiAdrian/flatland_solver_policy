@@ -559,11 +559,11 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.surrogate_eps_clip = 0.15
     policy.weight_entropy = 0.07
     policy.reward_scale = 0.14
-    policy.weight_loss = 1.2
+    policy.weight_loss = 1.45
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600
-    policy.ppo_target_kl = 0.030
-    policy.ppo_max_kl = 0.060
+    policy.ppo_target_kl = 0.035
+    policy.ppo_max_kl = 0.070
     policy.ppo_emergency_kl = 0.16
     policy.ppo_emergency_kl_hard = 0.24
     policy.ratio_guard_soft = 1.10
@@ -574,16 +574,16 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.hard_spike_streak_limit = 3
     policy.actor_lr_min_factor = 0.60
     policy.actor_lr_decay_on_instability = 0.88
-    policy.max_eps_random = 0.14
-    policy.decision_eps_floor = 0.10
+    policy.max_eps_random = 0.16
+    policy.decision_eps_floor = 0.12
     policy.use_decision_eps_floor = True
     # Encourage non-forward alternatives at conflict points.
-    policy.weight_action_diversity = 0.08
-    policy.forward_prob_soft_max = 0.75
+    policy.weight_action_diversity = 0.10
+    policy.forward_prob_soft_max = 0.70
     policy.lr_prob_soft_min = 0.08
-    policy.idle_prob_soft_max = 0.22
-    policy.idle_logit_penalty = 1.65
-    policy.stop_logit_penalty = 1.35
+    policy.idle_prob_soft_max = 0.20
+    policy.idle_logit_penalty = 1.80
+    policy.stop_logit_penalty = 1.45
     policy.eps_smoothing = eps  # Set epsilon floor
     return policy
 
@@ -773,9 +773,7 @@ if __name__ == "__main__":
         print(f"ERROR: --min_eps must be between 0.0 and 1.0, got {min_eps}")
         sys.exit(1)
     if do_training and eps <= 0.0:
-        print("[Warn] eps=0.0 in training can freeze policy exploration. Auto-setting eps=0.2 and min_eps>=0.05.")
-        eps = 0.2
-        min_eps = max(min_eps, 0.05)
+        print("[Warn] eps=0.0 in training: exploration is disabled by user setting.")
     if not (1 <= search_depth <= 12):
         print(f"ERROR: --search_depth must be between 1 and 12, got {search_depth}")
         sys.exit(1)
