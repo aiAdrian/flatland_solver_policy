@@ -426,10 +426,20 @@ class DecisionPointObservation(ObservationBuilder):
          "has_agents, incoming_rel_dir, edge_has_agents]"),
     ]
 
-    def __init__(self, debug: bool = False):
+    def __init__(self,
+                 debug: bool = False,
+                 search_depth: int = 5,
+                 observation_profile: str = "local_tree_encoder",
+                 use_trainable_tree_encoder: bool = True):
         super().__init__()
         if debug:
             os.environ["DEBUG_OBSERVATION"] = "1"
+        # Core observation configuration used throughout get()/local search.
+        self.search_depth = max(1, int(search_depth))
+        self.observation_profile = observation_profile
+        self.use_trainable_tree_encoder = bool(use_trainable_tree_encoder)
+        self.env = None
+        self.agent_map = None
         self._print_feature_layout_doc()
 
     @staticmethod
@@ -489,6 +499,9 @@ class DecisionPointObservation(ObservationBuilder):
             else:
                 arr[base + 6] = 0.5  # root: no turn (encode as forward)
         return arr
+
+    def set_env(self, env):
+        super().set_env(env)
         self.env = env
 
     def reset(self):

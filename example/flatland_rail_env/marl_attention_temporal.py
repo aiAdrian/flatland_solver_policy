@@ -67,6 +67,14 @@ import argparse
 import numpy as np
 import torch
 from torch.distributions import Categorical
+
+# Ensure project-local imports work when launching this script directly from
+# example/flatland_rail_env without manually exporting PYTHONPATH.
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 from flatland.envs.rail_env import RailEnvActions
 from flatland.core.grid.grid4_utils import get_new_position
 from flatland.envs.agent_utils import EnvAgent
@@ -395,15 +403,31 @@ if INCLUDE_5_AGENTS_IN_FINAL:
 # performs best with the extended layout.
 USE_HIERARCHICAL_OBS = True
 
-def create_temporal_obs_builder_object():
+def create_temporal_obs_builder_object(debug: bool = False):
     """Factory for TemporalMultiAgentObservation"""
     if USE_HIERARCHICAL_OBS:
-        base = HierarchicalRoutesObservation()
+        try:
+            base = HierarchicalRoutesObservation(debug=debug)
+        except TypeError:
+            base = HierarchicalRoutesObservation()
+        try:
+            return TemporalMultiAgentObservation(
+                temporal_window=TEMPORAL_WINDOW,
+                base_obs=base,
+                debug=debug,
+            )
+        except TypeError:
+            return TemporalMultiAgentObservation(
+                temporal_window=TEMPORAL_WINDOW,
+                base_obs=base,
+            )
+    try:
         return TemporalMultiAgentObservation(
             temporal_window=TEMPORAL_WINDOW,
-            base_obs=base,
+            debug=debug,
         )
-    return TemporalMultiAgentObservation(temporal_window=TEMPORAL_WINDOW)
+    except TypeError:
+        return TemporalMultiAgentObservation(temporal_window=TEMPORAL_WINDOW)
 
 
 def create_decider_agent(observation_space: int, action_space: int, eps: float = 0.0) -> LearningPolicy:
@@ -587,37 +611,6 @@ def resolve_policy_creator_list(environment: Environment, policy_mode: Optional[
         return [create_random_policy_agent]
     return [create_ma_ppo_agent_dp]
 
-# ============================================================================
-# Reward Shaper: Ultra-Simple 4-Component System
-# ============================================================================
-# 1. Time cost: -0.01 per step (only on map)
-# 2. Individual goal: +10 when agent reaches destination
-# 3. Deadlock penalty: -20 for head-on collision (one-time)
-# 4. Team success: +100 when all reach goals efficiently
-# ============================================================================
-# Mode selector: switch between complex and simple reward shapers
-_REWARD_SHAPER_MODE = "complex"  # "complex" or "simple"
-
-def set_reward_shaper_mode(mode: str):
-    """Set reward shaper mode: 'simple'"""
-    global _REWARD_SHAPER_MODE
-    if mode != "simple":
-        raise ValueError(f"Invalid mode: {mode}. Must be 'simple'")
-    _REWARD_SHAPER_MODE = mode
-    print(f">> Reward Shaper Mode: {mode.upper()}")
-
-def get_reward_shaper():
-    """Get active reward shaper based on mode"""
-    if _REWARD_SHAPER_MODE == "simple":
-        return SimpleDoneRewardShaper()
-    else:
-        raise ValueError(f"Unknown mode: {_REWARD_SHAPER_MODE}")
-
-# Always force simple reward shaper mode at startup
-set_reward_shaper_mode("simple")
-flatland_reward_shaper = get_reward_shaper()
-
- 
 if __name__ == "__main__":
     # Advanced argument parsing with --eps for epsilon floor.
     parser = argparse.ArgumentParser(
@@ -633,9 +626,33 @@ if __name__ == "__main__":
     parser.add_argument(
         'mode',
         nargs='?',
-        default='',
+        default='new',
         choices=['new', 'final', 'final_continue', 'continue', 'eval'],
         help='Training mode (default: new)'
+    )
+    parser.add_argument(
+        '--train',
+        action='store_true',
+        dest='legacy_train',
+        help='Legacy flag: run training mode'
+    )
+    parser.add_argument(
+        '--fresh-start',
+        action='store_true',
+        dest='legacy_fresh_start',
+        help='Legacy flag: train from scratch (maps to mode=new)'
+    )
+    parser.add_argument(
+        '--continue',
+        action='store_true',
+        dest='legacy_continue',
+        help='Legacy flag: continue training from checkpoint (maps to mode=continue)'
+    )
+    parser.add_argument(
+        '--eval',
+        action='store_true',
+        dest='legacy_eval',
+        help='Legacy flag: evaluation mode (maps to mode=eval)'
     )
     parser.add_argument(
         '--eps',
@@ -701,12 +718,24 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     mode = args.mode.lower()
+    if args.legacy_eval:
+        mode = 'eval'
+    elif args.legacy_continue:
+        mode = 'continue'
+    elif args.legacy_fresh_start:
+        mode = 'new'
+    elif args.legacy_train and mode == 'eval':
+        mode = 'new'
     eps = args.eps
     min_eps = args.min_eps
     optimizer_mode = args.optimizer_mode.upper()
     rendering = bool(args.rendering)
     policy_mode = args.policy_mode.strip().lower()
     debug_mode = args.debug  # Capture debug flag
+    do_training = mode != 'eval'
+    do_rendering = rendering
+    checkpoint_interval = 50
+    start_from_phase = 0
 
     # Validate EPS range
     if not (0.0 <= eps <= 1.0):
@@ -792,7 +821,6 @@ if __name__ == "__main__":
         )
         latest_ckpt = f"training_output/last_checkpoint/{solver.get_name()}_{solver.policy.get_name()}"
         
-        solver.set_reward_shaper(flatland_reward_shaper)
         if do_training:
             if mode == 'continue' or mode == 'final_continue':
                 if mode == 'final_continue':
