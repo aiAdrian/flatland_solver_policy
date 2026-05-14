@@ -2597,7 +2597,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             valid_idx = [i for i in range(D) if stds[i] > 1e-6]
             dups = []
             if len(valid_idx) >= 2:
-                corr = np.corrcoef(data[:, valid_idx].T)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    corr = np.corrcoef(data[:, valid_idx].T)
+                corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
                 dups = [(valid_idx[ii], valid_idx[jj], corr[ii, jj])
                         for ii in range(len(valid_idx))
                         for jj in range(ii + 1, len(valid_idx))

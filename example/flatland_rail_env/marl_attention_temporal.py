@@ -356,6 +356,60 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 
         return action
 
+    def on_training_episode_end(self,
+                                episode: int,
+                                eps: float,
+                                min_eps: float,
+                                done_mean: float,
+                                deadlock_mean: float,
+                                num_agents: int):
+        """Adaptive exploration rescue for deadlock-dominated plateaus.
+
+        Keeps corridor behavior intact while selectively increasing exploration
+        at decision points when done-rate stagnates.
+        """
+        if not bool(getattr(self, 'use_decision_eps_floor', False)):
+            return {}
+
+        if not hasattr(self, '_base_decision_eps_floor'):
+            self._base_decision_eps_floor = float(getattr(self, 'decision_eps_floor', 0.0))
+        if not hasattr(self, '_base_max_eps_random'):
+            self._base_max_eps_random = float(getattr(self, 'max_eps_random', 0.0))
+
+        n_agents = max(int(num_agents), 1)
+        deadlock_rate = float(deadlock_mean) / float(n_agents)
+        done_rate = float(done_mean)
+
+        base_floor = max(float(min_eps), float(self._base_decision_eps_floor))
+        severe_stall = (done_rate < 0.10 and deadlock_rate > 0.65)
+        mild_stall = (done_rate < 0.16 and deadlock_rate > 0.50)
+
+        if severe_stall:
+            target_floor = max(base_floor, 0.14)
+            target_max_eps_random = max(float(self._base_max_eps_random), 0.20)
+        elif mild_stall:
+            target_floor = max(base_floor, 0.10)
+            target_max_eps_random = max(float(self._base_max_eps_random), 0.18)
+        else:
+            target_floor = base_floor
+            target_max_eps_random = float(self._base_max_eps_random)
+
+        cur_floor = float(getattr(self, 'decision_eps_floor', base_floor))
+        floor_step = 0.01
+        new_floor = cur_floor + float(np.clip(target_floor - cur_floor, -floor_step, floor_step))
+        self.decision_eps_floor = float(np.clip(new_floor, 0.0, 1.0))
+
+        cur_max_eps_random = float(getattr(self, 'max_eps_random', target_max_eps_random))
+        random_step = 0.01
+        new_max_eps_random = cur_max_eps_random + float(
+            np.clip(target_max_eps_random - cur_max_eps_random, -random_step, random_step)
+        )
+        self.max_eps_random = float(np.clip(new_max_eps_random, 0.0, 1.0))
+
+        # Ensure global epsilon does not collapse below adaptive decision floor.
+        eps_target = max(float(eps), float(min_eps), self.decision_eps_floor * 0.9)
+        return {'eps': eps_target}
+
 
 # =============================================================================
 # ENVIRONMENT & TRAINING SETUP

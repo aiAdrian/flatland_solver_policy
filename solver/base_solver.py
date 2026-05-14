@@ -188,6 +188,26 @@ class BaseSolver:
             deadlock_count = self._get_deadlock_count()
             deadlock_count_window.append(deadlock_count)
 
+            # Optional policy hook: allow adaptive exploration control based on
+            # recent done/deadlock trends without hard-coding policy internals here.
+            done_mean = float(np.mean(terminate_window))
+            deadlock_mean = float(np.mean(deadlock_count_window))
+            if hasattr(self.policy, 'on_training_episode_end'):
+                try:
+                    hook_out = self.policy.on_training_episode_end(
+                        episode=episode,
+                        eps=eps,
+                        min_eps=min_eps,
+                        done_mean=done_mean,
+                        deadlock_mean=deadlock_mean,
+                        num_agents=self.env.get_num_agents(),
+                    )
+                    if isinstance(hook_out, dict) and 'eps' in hook_out:
+                        eps = float(np.clip(hook_out['eps'], 0.0, 1.0))
+                except Exception:
+                    # Keep solver robust even if a custom policy hook fails.
+                    pass
+
             b = int(np.round(50 * np.mean(terminate_window)))
             done_bar = ['#'] * b + ['_'] * (50 - b)
 
