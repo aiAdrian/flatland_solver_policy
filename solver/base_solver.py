@@ -295,6 +295,35 @@ class BaseSolver:
             deadlock_count = self._get_deadlock_count()
             deadlock_count_window.append(deadlock_count)
 
+            # Adaptive exploration uses a short recent window so triggers are
+            # not diluted by zero-initialized long buffers at training start.
+            recent_w = min(20, len(terminate_window))
+            done_recent = float(np.mean(list(terminate_window)[-recent_w:]))
+            deadlock_recent = float(np.mean(list(deadlock_count_window)[-recent_w:]))
+            if hasattr(self.policy, 'on_training_episode_end'):
+                try:
+                    hook_out = self.policy.on_training_episode_end(
+                        episode=episode,
+                        eps=eps,
+                        min_eps=min_eps,
+                        done_mean=done_recent,
+                        deadlock_mean=deadlock_recent,
+                        num_agents=self.env.get_num_agents(),
+                    )
+                    if isinstance(hook_out, dict) and 'eps' in hook_out:
+                        eps = float(np.clip(hook_out['eps'], 0.0, 1.0))
+                except Exception:
+                    pass
+
+            # Solver-level fallback rescue in case policy hook is unavailable or
+            # too conservative. Keeps exploration alive during deadlock plateaus.
+            n_agents = max(int(self.env.get_num_agents()), 1)
+            deadlock_rate = deadlock_recent / float(n_agents)
+            if done_recent < 0.10 and deadlock_rate > 0.60:
+                eps = max(eps, min(0.16, max(min_eps, 0.12)))
+            elif done_recent < 0.16 and deadlock_rate > 0.50:
+                eps = max(eps, min(0.12, max(min_eps, 0.08)))
+
             b = int(np.round(50 * np.mean(terminate_window)))
             done_bar = ['#'] * b + ['_'] * (50 - b)
 
