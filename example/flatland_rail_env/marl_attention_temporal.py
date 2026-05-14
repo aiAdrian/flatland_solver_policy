@@ -30,6 +30,35 @@
 # [7] Ng, Harada, Russell (1999). "Policy Invariance Under Reward
 #     Transformations" (PBRS). ICML.
 # =============================================================================
+# USAGE INSTRUCTIONS
+# =============================================================================
+# This script supports the following modes of operation:
+#
+# 1. Start New Training:
+#    Use this mode to start training from scratch without loading any checkpoints.
+#    Command:
+#        python marl_attention_temporal.py --train --fresh-start
+#
+# 2. Continue Training from Checkpoint:
+#    Use this mode to resume training from the last saved checkpoint.
+#    Command:
+#        python marl_attention_temporal.py --train --continue
+#    Note:
+#        Ensure that the checkpoint exists in the directory:
+#        training_output/last_checkpoint/
+#
+# 3. Evaluation:
+#    Use this mode to evaluate the model using the last saved checkpoint.
+#    Command:
+#        python marl_attention_temporal.py --eval
+#    Note:
+#        If no checkpoint is found, the evaluation will use the default policy.
+#
+# 4. Debug Mode:
+#    Enable debug mode to get detailed logs during training or evaluation.
+#    Command:
+#        python marl_attention_temporal.py --train --DEBUG
+# =============================================================================
 
 from typing import Callable, Optional, List, Union, Dict
 import os
@@ -566,276 +595,6 @@ def resolve_policy_creator_list(environment: Environment, policy_mode: Optional[
 # 3. Deadlock penalty: -20 for head-on collision (one-time)
 # 4. Team success: +100 when all reach goals efficiently
 # ============================================================================
-
-class FlatlandPBRSShaper:
-    """Minimal reward shaper: time cost + bonuses + deadlock penalty.
-    
-    Key improvement: DO_NOTHING is strongly penalized when action_required=True,
-    but NOT penalized when the agent must forward (no decision point).
-    This addresses sparse-environment value learning: Value estimates only on
-    real decision points, not on trivial forward-only segments.
-    """
-
-    STEP_PENALTY = -0.01
-    INDIVIDUAL_DONE_BONUS = 10.0
-    ALL_DONE_BONUS = 100.0
-    DEADLOCK_PENALTY = -100.0
-    TIMEOUT_PENALTY = -3.0
-    PROGRESS_BONUS = 0.01
-    IDLE_STOP_PENALTY = -0.01
-    DO_NOTHING_PENALTY = -1.0  # Strong penalty for inaction at decision points
-    DO_NOTHING_NOT_ON_MAP_PENALTY = -0.50  # Mild penalty for action attempt before agent on map
-
-    def __init__(self):
-        self._done_charged: Dict[int, np.ndarray] = {}
-        self._deadlock_charged: Dict[int, np.ndarray] = {}
-        self._team_bonus_charged: Dict[int, bool] = {}
-        self._team_fail_charged: Dict[int, bool] = {}
-        self._prev_dist: Dict[int, np.ndarray] = {}
-        self._diag: Dict[int, Dict[str, int]] = {}
-        self.writer = None
-        self.episode_count = 0
-        self._last_episode_deadlock_count = 0
-    
-    def set_tensorboard_writer(self, writer):
-        self.writer = writer
-
-    def get_last_episode_deadlock_count(self) -> int:
-        return int(self._last_episode_deadlock_count)
-
-    def __call__(self, reward, terminal, info, env, actions=None):
-        if actions is None:
-            actions = {}
-        raw_env = env.raw_env
-        agents = raw_env.agents
-        num_agents = len(agents)
-        env_id = id(raw_env)
-        episode_done = bool(terminal.get('__all__', False)) if isinstance(terminal, dict) else False
-
-        # Get current distances
-        dm = raw_env.distance_map.get()
-        distances = np.array([float(dm[a.handle, a.position[0], a.position[1], a.direction]) 
-                              if a.position else float('inf') for a in agents], dtype=np.float32)
-
-        # Initialize state if needed (also reinitialize if num_agents changed)
-        if env_id not in self._done_charged or len(self._done_charged[env_id]) != num_agents:
-            self._done_charged[env_id] = np.zeros(num_agents, dtype=bool)
-            self._deadlock_charged[env_id] = np.zeros(num_agents, dtype=bool)
-            self._team_bonus_charged[env_id] = False
-            self._team_fail_charged[env_id] = False
-            self._prev_dist[env_id] = distances.copy()
-            self._diag[env_id] = {'steps': 0, 'progress': 0, 'regress': 0, 'flat': 0}
-
-        agent_map = np.zeros((raw_env.height, raw_env.width), dtype=np.int32) - 1
-        for other in agents:
-            if other.position is not None:
-                agent_map[other.position] = other.handle
-
-        # Shaping per agent
-        shaped = list(reward)
-        for i, agent in enumerate(agents):
-            s = 0.0
-            if agent.state.is_on_map_state():
-                s = self.STEP_PENALTY
-            if agent.state == TrainState.DONE and not self._done_charged[env_id][i]:
-                self._done_charged[env_id][i] = True
-                s += self.INDIVIDUAL_DONE_BONUS
-            deadlocked_now = agent.position is not None and DecisionPointUtils.is_local_deadlock(raw_env, agent, agent_map)
-            if not self._deadlock_charged[env_id][i] and deadlocked_now:
-                self._deadlock_charged[env_id][i] = True
-                s += self.DEADLOCK_PENALTY
-            
-            # Decision-Point Detection: Only penalize DO_NOTHING at genuine switches/merges
-            # (NOT on trivial forward-only cells where Value learning is meaningless)
-            is_at_decision_point = False
-            if agent.position is not None and agent.state.is_on_map_state():
-                # Check if agent is at or near a switch (same logic as MARL_ATT_DecisionPointPolicy.act())
-                transitions = raw_env.rail.get_transitions(*agent.position, agent.direction)
-                num_transitions = fast_count_nonzero(transitions)
-                # At a switch: >1 transition option
-                # Or near a switch: next cell has multiple transitions (check ahead)
-                is_at_decision_point = (num_transitions > 1)
-                
-                if not is_at_decision_point:
-                    # Check if next cell (one forward) is a switch (near-switch detection)
-                    try:
-                        next_pos = get_new_position(agent.position, agent.direction)
-                        next_transitions = raw_env.rail.get_transitions(*next_pos, agent.direction)
-                        is_at_decision_point = (fast_count_nonzero(next_transitions) > 1)
-                    except Exception:
-                        pass
-            
-            # DO_NOTHING detection and penalty (Sparse-environment fix)
-            action_taken = actions.get(agent.handle, RailEnvActions.DO_NOTHING)
-            is_do_nothing = (action_taken == RailEnvActions.DO_NOTHING)
-            action_required = info.get('action_required', {}).get(agent.handle, True) if isinstance(info, dict) else True
-            
-            if is_at_decision_point and is_do_nothing and action_required:
-                # STRONG penalty: Agent had to decide at switch but chose DO_NOTHING
-                s += self.DO_NOTHING_PENALTY
-            elif agent.position is None and not is_do_nothing:
-                # Mild penalty: Agent tried to move before being on the map
-                s += self.DO_NOTHING_NOT_ON_MAP_PENALTY
-
-            # Track progress
-            if agent.state.is_on_map_state() and np.isfinite(self._prev_dist[env_id][i]) and np.isfinite(distances[i]):
-                self._diag[env_id]['steps'] += 1
-                d = distances[i] - self._prev_dist[env_id][i]
-                if d < -1e-6:
-                    self._diag[env_id]['progress'] += 1
-                    # Potential-based shaping: reward if distance to target decreases.
-                    s += self.PROGRESS_BONUS
-                elif d > 1e-6:
-                    self._diag[env_id]['regress'] += 1
-                else:
-                    self._diag[env_id]['flat'] += 1
-                    # Penalize likely unnecessary stop/idle only when action is required
-                    # and the agent is not in a local deadlock.
-                    if action_required and not deadlocked_now:
-                        s += self.IDLE_STOP_PENALTY
-
-            shaped[i] = float(reward[i] + s)
-
-        # Team bonuses
-        all_done = all(a.state == TrainState.DONE for a in agents)
-        early = raw_env._elapsed_steps < raw_env._max_episode_steps - 10
-        if episode_done and all_done and early and not self._team_bonus_charged[env_id]:
-            self._team_bonus_charged[env_id] = True
-            for i in range(num_agents):
-                shaped[i] += self.ALL_DONE_BONUS
-        if episode_done and not all_done and not early and not self._team_fail_charged[env_id]:
-            self._team_fail_charged[env_id] = True
-            for i, a in enumerate(agents):
-                if a.state != TrainState.DONE:
-                    shaped[i] += self.TIMEOUT_PENALTY
-
-        # Log
-        if episode_done:
-            self._last_episode_deadlock_count = int(np.sum(self._deadlock_charged[env_id]))
-            d = self._diag[env_id]
-            n = max(1, d['steps'])
-            if self.writer:
-                self.writer.add_scalar("reward_shaper/progress", 100*d['progress']/n, self.episode_count)
-                self.writer.add_scalar("reward_shaper/regress", 100*d['regress']/n, self.episode_count)
-                self.writer.add_scalar("reward_shaper/flat", 100*d['flat']/n, self.episode_count)
-                self.writer.add_scalar("reward_shaper/steps", d['steps'], self.episode_count)
-                self.writer.add_scalar("reward_shaper/deadlock_count", self._last_episode_deadlock_count, self.episode_count)
-            self.episode_count += 1
-            self._diag[env_id] = {'steps': 0, 'progress': 0, 'regress': 0, 'flat': 0}
-
-        self._prev_dist[env_id] = distances
-        return shaped
-
-
-class SimpleDoneRewardShaper:
-    """Ultra-simple reward shaper: optimize ONLY for done rate and step efficiency.
-    
-    Reward structure:
-    - Every on-map step: small time cost to avoid endless loops
-    - Agent reaches done: large one-time bonus, immediate
-        - Team done bonus: large cooperative bonus when all agents reach DONE
-        - Timeout: no extra shaping beyond the accumulated step cost
-    - TIMING FIX: Team bonus is NOT retroactive (agents done at different times).
-      Instead, track when all agents are done and reward happens naturally via
-      policy.end_episode() when the simulation ends.
-    """
-    
-    STEP_PENALTY = -0.10
-    PROGRESS_BONUS = 0.02  # Reward one-step progress toward target (distance decreases)
-    INDIVIDUAL_DONE_BONUS = 250.0
-    ALL_DONE_BONUS = 500.0
-    DEADLOCK_PENALTY = -60.0  # Stronger deadlock aversion in sparse-reward curriculum
-    TIMEOUT_BUFFER = 10
-    
-    def __init__(self):
-        self._done_charged: Dict[int, np.ndarray] = {}  # env_id -> bool array
-        self._deadlock_charged: Dict[int, np.ndarray] = {}
-        self._team_bonus_charged: Dict[int, bool] = {}
-        self._prev_dist: Dict[int, np.ndarray] = {}
-        self.episode_count = 0
-        self._last_episode_deadlock_count = 0
-
-    def get_last_episode_deadlock_count(self) -> int:
-        return int(self._last_episode_deadlock_count)
-
-    def __call__(self, reward, terminal, info, env, actions=None):
-        if actions is None:
-            actions = {}
-        raw_env = env.raw_env
-        agents = raw_env.agents
-        num_agents = len(agents)
-        env_id = id(raw_env)
-        episode_done = bool(terminal.get('__all__', False)) if isinstance(terminal, dict) else False
-
-        dm = raw_env.distance_map.get()
-        distances = np.array([
-            float(dm[a.handle, a.position[0], a.position[1], a.direction]) if a.position else float('inf')
-            for a in agents
-        ], dtype=np.float32)
-
-        # Initialize state if needed
-        if env_id not in self._done_charged or len(self._done_charged[env_id]) != num_agents:
-            self._done_charged[env_id] = np.zeros(num_agents, dtype=bool)
-            self._deadlock_charged[env_id] = np.zeros(num_agents, dtype=bool)
-            self._team_bonus_charged[env_id] = False
-            self._prev_dist[env_id] = distances.copy()
-
-        agent_map = np.zeros((raw_env.height, raw_env.width), dtype=np.int32) - 1
-        for other in agents:
-            if other.position is not None:
-                agent_map[other.position] = other.handle
-
-        # Shaping per agent: tiny on-map step cost + large done bonus.
-        shaped = list(reward)
-        for i, agent in enumerate(agents):
-            s = 0.0
-            if agent.state.is_on_map_state():
-                s += self.STEP_PENALTY
-            
-            # One-time bonus when agent reaches done
-            # CRITICAL: This is applied only on the EXACT step agent.state changes to DONE
-            if agent.state == TrainState.DONE and not self._done_charged[env_id][i]:
-                self._done_charged[env_id][i] = True
-                s += self.INDIVIDUAL_DONE_BONUS
-                # reward is stored in buffer with this bonus immediately
-            deadlocked_now = agent.position is not None and DecisionPointUtils.is_local_deadlock(raw_env, agent, agent_map)
-            if not self._deadlock_charged[env_id][i] and deadlocked_now:
-                self._deadlock_charged[env_id][i] = True
-                s += self.DEADLOCK_PENALTY
-
-            # Dense shaping: reward progress when distance-to-target decreases.
-            if agent.state.is_on_map_state() and np.isfinite(self._prev_dist[env_id][i]) and np.isfinite(distances[i]):
-                if distances[i] < self._prev_dist[env_id][i] - 1e-6:
-                    s += self.PROGRESS_BONUS
-            
-            shaped[i] = float(reward[i] + s)
-
-        all_done = all(a.state == TrainState.DONE for a in agents)
-        early = raw_env._elapsed_steps < raw_env._max_episode_steps - self.TIMEOUT_BUFFER
-        if episode_done and all_done and early and not self._team_bonus_charged[env_id]:
-            self._team_bonus_charged[env_id] = True
-            for i in range(num_agents):
-                shaped[i] += self.ALL_DONE_BONUS
-
-        if episode_done:
-            self._last_episode_deadlock_count = int(np.sum(self._deadlock_charged[env_id]))
-            self.episode_count += 1
-            # Clean up for next episode
-            if env_id in self._done_charged:
-                del self._done_charged[env_id]
-            if env_id in self._deadlock_charged:
-                del self._deadlock_charged[env_id]
-            if env_id in self._team_bonus_charged:
-                del self._team_bonus_charged[env_id]
-            if env_id in self._prev_dist:
-                del self._prev_dist[env_id]
-
-        if env_id in self._prev_dist:
-            self._prev_dist[env_id] = distances
-
-        return shaped
-
-
 # Mode selector: switch between complex and simple reward shapers
 _REWARD_SHAPER_MODE = "simple"  # "complex" or "simple"
 
@@ -869,12 +628,11 @@ if __name__ == "__main__":
         description='MARL Attention Temporal PPO Training',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  python marl_attention_temporal.py final_continue
-    python marl_attention_temporal.py final_continue --eps 0.05
-    python marl_attention_temporal.py continue --eps 0.1
-    python marl_attention_temporal.py continue --eps 0.1 --min_eps 0.001
-  python marl_attention_temporal.py eval
-        """
+  python marl_attention_temporal.py --train --fresh-start
+  python marl_attention_temporal.py --train --continue --eps 0.1
+  python marl_attention_temporal.py --train --continue --eps 0.1 --min_eps 0.001
+  python marl_attention_temporal.py --eval
+"""
     )
     parser.add_argument(
         'mode',
@@ -938,6 +696,13 @@ if __name__ == "__main__":
         )
     )
     
+    parser.add_argument(
+        '--DEBUG',
+        action='store_true',
+        dest='debug',
+        help='Enable debug mode for DecisionPointObservation (default: off)'
+    )
+
     args = parser.parse_args()
     mode = args.mode.lower()
     eps = args.eps
@@ -945,7 +710,8 @@ if __name__ == "__main__":
     optimizer_mode = args.optimizer_mode.upper()
     rendering = bool(args.rendering)
     policy_mode = args.policy_mode.strip().lower()
-    
+    debug_mode = args.debug  # Capture debug flag
+
     # Validate EPS range
     if not (0.0 <= eps <= 1.0):
         print(f"ERROR: --eps must be between 0.0 and 1.0, got {eps}")
@@ -955,46 +721,10 @@ if __name__ == "__main__":
         sys.exit(1)
     min_eps = min(eps, min_eps)  # Use the lower of the two for safety
 
-    print(f"\n[Config] mode={mode}, eps={eps:.4f}, optimizer_mode={optimizer_mode}, policy_mode={policy_mode}")
-    
-    do_rendering = rendering
-    checkpoint_interval = 100  # Default: every 100 episodes
-    start_from_phase = 0
-    if mode == 'final':
-        do_training = True
-        test_with_deadlock_avoidance_policy = False
-        start_from_phase = len(CURRICULUM_PHASES) - 1  # Only run last phase (dynamic index)
-    elif mode == 'final_continue':
-        do_training = True
-        test_with_deadlock_avoidance_policy = False
-        start_from_phase = len(CURRICULUM_PHASES) - 1  # Only run last phase (dynamic index)
-        checkpoint_interval = 100  # Save checkpoint every 100 episodes for easy recovery
-    elif mode == 'continue':
-        do_training = True
-        test_with_deadlock_avoidance_policy = False
-        start_from_phase = 0  # Full curriculum
-    elif mode == 'eval':
-        do_training = False
-        test_with_deadlock_avoidance_policy = False
-    elif mode == 'new':
-        do_training = True
-        test_with_deadlock_avoidance_policy = False
-        start_from_phase = 0  # Full curriculum
-    else:
-        print(f"Unknown mode '{mode}'. Choose: new, final, final_continue, continue, eval")
-        sys.exit(1)
-
-    print("\n" + "="*80)
-    print("🚀 Temporal Multi-Agent Transformer")
-    print("="*80)
-    print("Innovations:")
-    print("  ✅ Temporal Observation Buffer (3 timesteps)")
-    print("  ✅ Velocity Features (dx, dy, angular_vel)")
-    print("  ✅ 2-Level Transformer (Temporal + Spatial Attention)")
-    print("="*80 + "\n")
+    print(f"\n[Config] mode={mode}, eps={eps:.4f}, optimizer_mode={optimizer_mode}, policy_mode={policy_mode}, debug={debug_mode}")
 
     environment = RailEnvironmentPersistable(
-        obs_builder_object_creator=create_temporal_obs_builder_object,
+        obs_builder_object_creator=lambda: create_temporal_obs_builder_object(debug=debug_mode),
         n_cities=PURE_MARL_N_CITIES,
         grid_width=PURE_MARL_GRID_WIDTH,
         grid_height=PURE_MARL_GRID_HEIGHT,

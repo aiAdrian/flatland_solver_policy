@@ -364,6 +364,7 @@ OPTIMIERUNGSTECHNIKEN (Modus A Pure)
 from typing import List
 
 import numpy as np
+import os
 
 from flatland.core.env_observation_builder import ObservationBuilder
 from flatland.core.grid.grid4_utils import get_new_position
@@ -425,25 +426,12 @@ class DecisionPointObservation(ObservationBuilder):
          "has_agents, incoming_rel_dir, edge_has_agents]"),
     ]
 
-    def __init__(self):
+    def __init__(self, debug: bool = False):
         super().__init__()
-        self.env = None
-        self.feature_len = DecisionPointObservation.OBS_SIZE
-        self.agent_map = None
-        self._max_dist = 1.0
-        self.search_depth = 5  # Depth limit for local search
+        if debug:
+            os.environ["DEBUG_OBSERVATION"] = "1"
+        self._print_feature_layout_doc()
 
-        # Modus A: Trainable Tree Encoder
-        # Local tree search (nodes/edges) + trainable encoder (GNN/Transformer/LSTM)
-        # All tree structure available in env.dev_tree_dict[handle]
-        
-        if not getattr(type(self), "_banner_printed", False):
-            print(">> DecisionPointObservation geladen (Modus A Pure: Trainable Encoder).")
-            print(">> 35D Features: [0-5] Immediate Context, [6-28] State/Action Memory, [29-34] Tree Statistics")
-            print(">> Tree-Struktur (nodes/edges/seen_agents) verfügbar in env.dev_tree_dict[handle]")
-            type(self)._banner_printed = True
-        if not getattr(type(self), "_feature_layout_printed", False):
-            self._print_feature_layout_doc()
     @staticmethod
     def _serialize_tree_nodes(tree_data: list, tree_edges: list = None) -> np.ndarray:
         """Serialize DFS-ordered tree nodes + incoming edge features into obs[35:155].
