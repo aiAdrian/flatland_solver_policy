@@ -1027,6 +1027,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.forward_prob_soft_max = 0.72
         self.lr_prob_soft_min = 0.05
         self.idle_prob_soft_max = 0.30
+        # Apply action-diversity shaping only at meaningful conflict/decision contexts.
+        self.action_diversity_gate_enabled = True
+        self.action_diversity_decision_idx = 30
+        self.action_diversity_local_deadlock_idx = 5
+        self.action_diversity_gate_threshold = 0.5
         self.aux_deadlock_pos_weight = 4.0
         self.weight_comm = 3.0e-4  # weak communication sparsity regularizer
         self.comm_reg_start_episode = 300
@@ -1218,7 +1223,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             'kl': [], 'ratio': [], 'entropy': [],
             'adv_mean': [], 'adv_std': [], 'grad_norm': [],
             'ret_min': [], 'ret_max': [],
-            'comm_loss': [], 'action_div_loss': [], 'total_loss': [],
+            'comm_loss': [], 'action_div_loss': [], 'action_div_gate_ratio': [], 'total_loss': [],
             'action_hist': [],
         }
         # Episode-Kennzahlen (Reward + Done-Rate)
@@ -1255,6 +1260,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.writer.add_scalar(f'{policy_prefix}/training_value_loss_entropy', batch_metrics.get('e_loss', 0.0), global_step)
         self.writer.add_scalar(f'{policy_prefix}/training_value_loss_aux_deadlock', batch_metrics.get('aux_dl', 0.0), global_step)
         self.writer.add_scalar(f'{policy_prefix}/training_value_loss_action_diversity', batch_metrics.get('action_div', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_action_div_gate_ratio', batch_metrics.get('action_div_gate_ratio', 0.0), global_step)
         self.writer.add_scalar(f'{policy_prefix}/training_value_loss_communication', batch_metrics.get('comm_loss', 0.0), global_step)
         self.writer.add_scalar(f'{policy_prefix}/training_value_loss_total', batch_metrics.get('loss', 0.0), global_step)
         
@@ -1308,6 +1314,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.writer.add_scalar(f'{policy_prefix}/training_smoothed_loss_value', episode_metrics.get('v_loss_mean', 0.0), ep_num)
         self.writer.add_scalar(f'{policy_prefix}/training_smoothed_loss_entropy', episode_metrics.get('e_loss_mean', 0.0), ep_num)
         self.writer.add_scalar(f'{policy_prefix}/training_smoothed_loss_aux_deadlock', episode_metrics.get('aux_dl_mean', 0.0), ep_num)
+        self.writer.add_scalar(f'{policy_prefix}/training_smoothed_action_div_gate_ratio', episode_metrics.get('action_div_gate_ratio_mean', 0.0), ep_num)
         
         # Aggregate PPO metrics
         self.writer.add_scalar(f'{policy_prefix}/training_smoothed_ppo_kl', episode_metrics.get('kl_mean', 0.0), ep_num)
@@ -1468,6 +1475,32 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             sparse_local,
         )
         return float(np.clip(risk, 0.0, 1.0))
+
+    def _extract_action_diversity_gate_from_temporal_state(self, temporal_state) -> float:
+        """Return gate in [0,1] for where diversity shaping should be active.
+
+        Gate is active only at decision points and local deadlock contexts.
+        This avoids penalizing unavoidable forward moves on straight corridors.
+        """
+        try:
+            last_obs = np.asarray(temporal_state[-1][0], dtype=np.float32).reshape(-1)
+        except Exception:
+            return 0.0
+
+        if last_obs.shape[0] == 0:
+            return 0.0
+
+        def _safe(idx: int) -> float:
+            if 0 <= idx < last_obs.shape[0]:
+                return float(last_obs[idx])
+            return 0.0
+
+        decision_required = _safe(int(getattr(self, 'action_diversity_decision_idx', 30)))
+        local_deadlock = _safe(int(getattr(self, 'action_diversity_local_deadlock_idx', 5)))
+        thr = float(getattr(self, 'action_diversity_gate_threshold', 0.5))
+
+        gate = 1.0 if (decision_required >= thr or local_deadlock >= thr) else 0.0
+        return gate
 
     def _convert_transitions_to_torch_tensors(self, transitions_array):
         """Convert episode transitions to tensors"""
@@ -1799,23 +1832,38 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 value_loss_component = self.loss_function(state_values, batch_gae_returns)
                 entropy_loss_component = -dist_entropy.mean()
                 action_diversity_loss_component = torch.tensor(0.0, device=self.device)
+                action_diversity_gate_ratio = 0.0
                 if self.action_size == 5:
+                    if bool(getattr(self, 'action_diversity_gate_enabled', True)):
+                        gate_vals = [
+                            self._extract_action_diversity_gate_from_temporal_state(ts)
+                            for ts in batch_state_tuples
+                        ]
+                        adiv_gate = torch.tensor(gate_vals, dtype=probs.dtype, device=self.device)
+                    else:
+                        adiv_gate = torch.ones(probs.shape[0], dtype=probs.dtype, device=self.device)
+
+                    gate_sum = float(adiv_gate.sum().item())
+                    action_diversity_gate_ratio = float(adiv_gate.mean().item())
+
                     # Soft constraints via squared hinge losses:
                     # 1) keep forward probability below a soft cap
                     # 2) keep combined left+right probability above a soft floor
                     # 3) keep idle actions (DO_NOTHING + STOP) below a soft cap
-                    mean_probs = probs.mean(dim=0)
-                    forward_prob = mean_probs[2]
-                    lr_prob = mean_probs[1] + mean_probs[3]
-                    idle_prob = mean_probs[0] + mean_probs[4]
-                    forward_excess = torch.relu(forward_prob - self.forward_prob_soft_max)
-                    lr_shortfall = torch.relu(self.lr_prob_soft_min - lr_prob)
-                    idle_excess = torch.relu(idle_prob - self.idle_prob_soft_max)
-                    action_diversity_loss_component = (
-                        forward_excess.pow(2)
-                        + 0.5 * lr_shortfall.pow(2)
-                        + 0.30 * idle_excess.pow(2)
-                    )
+                    if gate_sum >= 1.0:
+                        gate_col = adiv_gate.unsqueeze(1)
+                        mean_probs = (probs * gate_col).sum(dim=0) / max(gate_sum, 1.0)
+                        forward_prob = mean_probs[2]
+                        lr_prob = mean_probs[1] + mean_probs[3]
+                        idle_prob = mean_probs[0] + mean_probs[4]
+                        forward_excess = torch.relu(forward_prob - self.forward_prob_soft_max)
+                        lr_shortfall = torch.relu(self.lr_prob_soft_min - lr_prob)
+                        idle_excess = torch.relu(idle_prob - self.idle_prob_soft_max)
+                        action_diversity_loss_component = (
+                            forward_excess.pow(2)
+                            + 0.5 * lr_shortfall.pow(2)
+                            + 0.30 * idle_excess.pow(2)
+                        )
                 deadlock_logits = torch.squeeze(self.actor_critic_model.deadlock_head(states_actor), dim=-1)
                 aux_targets = torch.clamp(batch_aux_deadlock, 0.0, 1.0)
                 pos_weight = torch.full_like(aux_targets, self.aux_deadlock_pos_weight)
@@ -1952,6 +2000,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 self._stat_buf['grad_norm'].append(grad_norm)
                 self._stat_buf['comm_loss'].append(comm_loss_component.item())
                 self._stat_buf['action_div_loss'].append(action_diversity_loss_component.item())
+                self._stat_buf['action_div_gate_ratio'].append(action_diversity_gate_ratio)
                 self._stat_buf['total_loss'].append(loss.item())
                 self._stat_buf['action_hist'].append(batch_action_hist.detach().cpu().numpy())
                 
@@ -1974,6 +2023,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     'e_loss': entropy_loss_component.item(),
                     'aux_dl': aux_deadlock_loss_component.item(),
                     'action_div': action_diversity_loss_component.item(),
+                    'action_div_gate_ratio': action_diversity_gate_ratio,
                     'comm_loss': comm_loss_component.item(),
                     'kl': approx_kl,
                     'ratio': ratio_mean,
@@ -2012,6 +2062,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     print(f"| V_Loss: {value_loss_component.item():.4f}", end='')
                     print(f"| E_Loss: {entropy_loss_component.item():.4f}", end='')
                     print(f"| Adiv: {action_diversity_loss_component.item():.4f}", end='')
+                    print(f"| AdivMask: {action_diversity_gate_ratio:.2f}", end='')
                     print(f"| AuxDL: {aux_deadlock_loss_component.item():.4f}", end='')
                     print(f"| C_Loss: {comm_loss_component.item():.4f}", end='')
                     print(f"| Adv: {adv_mean:.2f}±{adv_std:.2f}", end='')  # ⚡ RAW advantage (mean±std BEFORE norm)
@@ -2344,6 +2395,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             am_m, _    = _ms('adv_mean')
             as_m, _    = _ms('adv_std')
             gn_m, gn_s = _ms('grad_norm')
+            adg_m, adg_s = _ms('action_div_gate_ratio')
             ret_min    = float(np.array(sb['ret_min']).min())
             ret_max    = float(np.array(sb['ret_max']).max())
             aux_m      = float(np.array(sb['aux_dl']).mean())
@@ -2391,6 +2443,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             tr_row("AuxDL loss",         aux_m, 0.0, "",    0.0, 0.8,
                    "deadlock head ok",
                    "deadlock head not converging")
+                 tr_row("Adiv gate ratio",    adg_m, adg_s, "frac", 0.05, 0.70,
+                     "diversity shaped at decisions",
+                     "too sparse/broad gating for diversity")
             print(row("Returns range",
                        f"{ret_min:+.2f}…{ret_max:+.2f}", "", "", "") + " |")
             end_table()
@@ -2430,6 +2485,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 issues.append(
                     f"GradNorm={gn_m:.2f}: gradient explosion. "
                     "Reduce LR or add gradient clipping.")
+            if adg_m < 0.01:
+                issues.append(
+                    f"Adiv gate ratio={adg_m:.3f}: diversity shaping is almost never active. "
+                    "Check if decision-point/deadlock signals are present in observations.")
 
             if issues:
                 print(f"\n  {color(f'TRAINING ISSUES ({len(issues)}):', C_YELLOW)}")
@@ -2449,6 +2508,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 'entropy_mean': en_m,
                 'ratio_mean': rt_m,
                 'grad_norm_mean': gn_m,
+                'action_div_gate_ratio_mean': adg_m,
                 'reward_mean': float(r_arr.mean()) if len(r_arr) > 0 else 0.0,
                 'done_frac': float(d_arr.mean()) if len(d_arr) > 0 else 0.0,
             }
