@@ -374,15 +374,15 @@ LOCAL_TREE_MODE = 'stochastic'
 LOCAL_TREE_MCTS_ROLLOUTS = 6
 LOCAL_TREE_MCTS_HORIZON = 4
 LOCAL_TREE_UCB_C = 1.2
-LOCAL_TREE_CONTRACT_DEPTH = 7
-LOCAL_TREE_MAX_NODES = 48
-LOCAL_TREE_MIN_NODES = 24
+LOCAL_TREE_CONTRACT_DEPTH = 8
+LOCAL_TREE_MAX_NODES = 72
+LOCAL_TREE_MIN_NODES = 32
 LOCAL_TREE_ADAPTIVE_BUDGET = 'on'
 LOCAL_TREE_ADAPTIVE_BRANCH_BONUS = 6
-LOCAL_TREE_ADAPTIVE_CONFLICT_BONUS = 8
+LOCAL_TREE_ADAPTIVE_CONFLICT_BONUS = 14
 LOCAL_TREE_ADAPTIVE_DEPTH_BONUS = 2
-LOCAL_TREE_DEADLOCK_PROBE_DEPTH = 6
-LOCAL_TREE_DEADLOCK_MAX_STATES = 64
+LOCAL_TREE_DEADLOCK_PROBE_DEPTH = 7
+LOCAL_TREE_DEADLOCK_MAX_STATES = 96
 LOCAL_TREE_CLIP_FEATURES = 'on'
 
 # High-success curriculum: bias training toward hard coordination cases
@@ -639,9 +639,9 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     # Convergence-focused settings: avoid frozen policy updates and promote
     # meaningful exploration in high-deadlock traffic.
     policy.surrogate_eps_clip = 0.15
-    policy.weight_entropy = 0.07
+    policy.weight_entropy = 0.085
     policy.reward_scale = 0.14
-    policy.weight_loss = 1.45
+    policy.weight_loss = 1.60
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600
     policy.ppo_target_kl = 0.035
@@ -660,8 +660,8 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.decision_eps_floor = 0.12
     policy.use_decision_eps_floor = True
     # Encourage non-forward alternatives at conflict points.
-    policy.weight_action_diversity = 0.10
-    policy.forward_prob_soft_max = 0.70
+    policy.weight_action_diversity = 0.14
+    policy.forward_prob_soft_max = 0.66
     policy.lr_prob_soft_min = 0.08
     policy.idle_prob_soft_max = 0.20
     policy.idle_logit_penalty = 1.80
@@ -751,19 +751,19 @@ if __name__ == "__main__":
     parser.add_argument(
         '--eps',
         type=float,
-        default=0.2,
+        default=0.03,
         metavar='EPS_VALUE',
         dest='eps',
-        help='Exploration floor for epsilon-greedy in [0.0, 1.0] (default: 0.2)'
+        help='Exploration floor for epsilon-greedy in [0.0, 1.0] (default: 0.03)'
     )
 
     parser.add_argument(
         '--min_eps',
         type=float,
-        default=0.05,
+        default=0.01,
         metavar='MIN_EPS_VALUE',
         dest='min_eps',
-        help='Minimum exploration floor for epsilon-greedy in [0.0, 1.0] (default: 0.05)'
+        help='Minimum exploration floor for epsilon-greedy in [0.0, 1.0] (default: 0.01)'
     )
 
     parser.add_argument(
@@ -815,7 +815,7 @@ if __name__ == "__main__":
         default=LOCAL_TREE_SEARCH_DEPTH,
         metavar='DEPTH',
         dest='search_depth',
-        help='Local tree search depth for observation builder (default: 6; recommended 5-7)'
+        help='Local tree search depth for observation builder (default: 12; recommended 8-12 with adaptive budgeting)'
     )
     parser.add_argument(
         '--tree_random_start_depth',
@@ -880,7 +880,7 @@ if __name__ == "__main__":
         default=LOCAL_TREE_CONTRACT_DEPTH,
         metavar='DEPTH',
         dest='tree_contract_depth',
-        help='From this depth onward linear corridors are contracted into one edge (default: 7)'
+        help='From this depth onward linear corridors are contracted into one edge (default: 8)'
     )
     parser.add_argument(
         '--tree_max_nodes',
@@ -888,7 +888,7 @@ if __name__ == "__main__":
         default=LOCAL_TREE_MAX_NODES,
         metavar='N',
         dest='tree_max_nodes',
-        help='Hard node budget for local tree search per agent step (default: 48)'
+        help='Hard node budget for local tree search per agent step (default: 72)'
     )
     parser.add_argument(
         '--tree_min_nodes',
@@ -896,7 +896,7 @@ if __name__ == "__main__":
         default=LOCAL_TREE_MIN_NODES,
         metavar='N',
         dest='tree_min_nodes',
-        help='Minimum node budget when adaptive budgeting is enabled (default: 24)'
+        help='Minimum node budget when adaptive budgeting is enabled (default: 32)'
     )
     parser.add_argument(
         '--tree_adaptive_budget',
@@ -921,7 +921,7 @@ if __name__ == "__main__":
         default=LOCAL_TREE_ADAPTIVE_CONFLICT_BONUS,
         metavar='N',
         dest='tree_adaptive_conflict_bonus',
-        help='Node bonus for merge/conflict hotspots in adaptive budgeting (default: 8)'
+        help='Node bonus for merge/conflict hotspots in adaptive budgeting (default: 14)'
     )
     parser.add_argument(
         '--tree_adaptive_depth_bonus',
@@ -937,7 +937,7 @@ if __name__ == "__main__":
         default=LOCAL_TREE_DEADLOCK_PROBE_DEPTH,
         metavar='DEPTH',
         dest='tree_deadlock_probe_depth',
-        help='Depth cap for per-node deadlock probe used inside local search (default: 6)'
+        help='Depth cap for per-node deadlock probe used inside local search (default: 7)'
     )
     parser.add_argument(
         '--tree_deadlock_max_states',
@@ -945,7 +945,7 @@ if __name__ == "__main__":
         default=LOCAL_TREE_DEADLOCK_MAX_STATES,
         metavar='N',
         dest='tree_deadlock_max_states',
-        help='State cap for per-node deadlock probe used inside local search (default: 64)'
+        help='State cap for per-node deadlock probe used inside local search (default: 96)'
     )
     parser.add_argument(
         '--tree_clip_features',
