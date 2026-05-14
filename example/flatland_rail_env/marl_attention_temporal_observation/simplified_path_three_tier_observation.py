@@ -23,13 +23,19 @@ class SimplifiedPathThreeTierObservation(ObservationBuilder):
         print(">> SimplifiedPathThreeTierObservation loaded.")
 
     def set_env(self, env):
+        """Set environment and initialize components."""
         self.env = env
-        self.switchAnalyser = None
-        self.walker = None
+        self.switchAnalyser = RailroadSwitchAnalyser(env)
+        from marl_attention_temporal_observation.walk_to_next_decision_point import WalkToNextDecisionPoint
+        self.walker = WalkToNextDecisionPoint(env)
 
     def reset(self):
-        self.switchAnalyser = None
-        self.walker = None
+        """Reinitialize for new episode."""
+        if self.switchAnalyser is None:
+            self.switchAnalyser = RailroadSwitchAnalyser(self.env)
+        if self.walker is None:
+            from marl_attention_temporal_observation.walk_to_next_decision_point import WalkToNextDecisionPoint
+            self.walker = WalkToNextDecisionPoint(self.env)
 
     @staticmethod
     def getObservationSize() -> int:

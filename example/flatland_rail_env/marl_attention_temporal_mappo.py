@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
+from torch.nn.utils.rnn import pack_padded_sequence
 
 from policy.learning_policy.learning_policy import LearningPolicy
 
@@ -48,6 +49,110 @@ class EpisodeBuffers:
 
 
 # =============================================================================
+# LOCAL TREE ENCODER (LSTM über DFS-Sequenz — topologie-sensitiv)
+# -----------------------------------------------------------------------------
+# Encodiert den lokalen Suchbaum aus DecisionPointObservation._local_search()
+# als geordnete Sequenz von Knoten in DFS-Pre-Order.
+#
+# Node features (8D per node, serialized in obs[35:155], 15 nodes × 8D = 120D):
+#   [0] deadlock_risk        float 0-1
+#   [1] norm_transitions     num_transitions / 3 → 0-1
+#   [2] has_oncoming         binary 0/1  (Gegenverkehr am Knoten)
+#   [3] norm_inflow          backward_inflow_count / 2 → 0-1
+#   [4] norm_depth           depth / depth_limit → 0-1
+#   [5] has_agents           1.0 if any agents_encountered else 0
+#   [6] incoming_rel_dir     rel_dir_bin / 2: 0=links, 0.5=geradeaus, 1=rechts
+#   [7] edge_has_agents      1.0 if agents on incoming edge else 0
+#
+# Topologie via DFS Pre-Order:
+#   - Elternknoten immer vor Kindern in der Sequenz
+#   - LSTM akkumuliert: "welche Abzweigung führt zu Deadlock?"
+#   - incoming_rel_dir: "wir haben hier links/geradeaus/rechts abgebogen"
+#   - norm_depth: auf welcher Tiefe sind wir?
+#   - Variable Knotenanzahl: padding mit Nullen, pack_padded_sequence
+#
+# Architecture: input_proj → LSTM(DFS-Sequenz) → letzter hidden state → output_proj
+# Ref: vereinfachte Variante von Tai et al. (2015) "Improved Semantic
+#      Representations From Tree-Structured LSTM" (TreeLSTM)
+# =============================================================================
+class LocalTreeEncoder(nn.Module):
+    """LSTM encoder over DFS-ordered tree nodes from DecisionPointObservation._local_search().
+
+    Nodes are serialized in DFS pre-order so parents always precede their children.
+    Each node carries 8D features including the incoming edge (rel_dir_bin, edge_has_agents)
+    so the LSTM can reconstruct the branching topology from the sequence.
+
+    Input:  (MAX_NODES * NODE_DIM,) = (120,) DFS-ordered flat sequence from obs[35:155]
+    Output: (hidden_dim,) topology-aware tree embedding
+    """
+
+    NODE_DIM = 8    # 6 node features + 2 incoming edge features
+    MAX_NODES = 15  # 15 × 8 = 120D  (same block size as previous 20×6=120D)
+
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        self.node_dim = self.NODE_DIM
+        self.max_nodes = self.MAX_NODES
+
+        # Project 8D node+edge features to LSTM input dimension
+        self.input_proj = nn.Sequential(
+            nn.Linear(self.NODE_DIM, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.LeakyReLU(0.01),
+        )
+
+        # LSTM reads DFS sequence and accumulates topology context
+        self.lstm = nn.LSTM(
+            input_size=hidden_dim // 2,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True,
+        )
+
+        # Final projection from LSTM hidden state
+        self.output_proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.Tanh(),
+        )
+
+        # Near-zero init → starts neutral, learns gradually during PPO
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0.0, 0.01)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, tree_flat: torch.Tensor) -> torch.Tensor:
+        """Single-agent: (MAX_NODES * NODE_DIM,) = (120,) → (hidden_dim,)"""
+        nodes = tree_flat.view(self.max_nodes, self.node_dim)  # (15, 8)
+        mask = (nodes.abs().sum(dim=-1) > 1e-6)               # (15,) bool
+        n_valid = int(mask.sum().clamp(min=1).item())
+        # Feed only real nodes to LSTM (truncate padding)
+        x = self.input_proj(nodes[:n_valid]).unsqueeze(0)      # (1, n_valid, H//2)
+        _, (h_n, _) = self.lstm(x)                             # h_n: (1, 1, H)
+        h = h_n.squeeze(0).squeeze(0)                          # (H,)
+        return self.output_proj(h)                             # (H,)
+
+    def forward_batch(self, tree_flat_batch: torch.Tensor) -> torch.Tensor:
+        """Batch: (B, MAX_NODES * NODE_DIM) → (B, hidden_dim)"""
+        B = tree_flat_batch.shape[0]
+        nodes = tree_flat_batch.view(B, self.max_nodes, self.node_dim)  # (B, 15, 8)
+        mask = (nodes.abs().sum(dim=-1) > 1e-6)                         # (B, 15) bool
+        lengths = mask.sum(dim=-1).clamp(min=1).cpu()                    # (B,) int
+        x = self.input_proj(nodes)                                       # (B, 15, H//2)
+        packed = pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
+        _, (h_n, _) = self.lstm(packed)                                  # h_n: (1, B, H)
+        h = h_n.squeeze(0)                                               # (B, H)
+        return self.output_proj(h)                                       # (B, H)
+
+
+# Constants shared across encoder classes
+_BASE_OBS_DIM = 35   # Handcrafted features [0-34] from DecisionPointObservation
+_TREE_BLOCK_DIM = LocalTreeEncoder.MAX_NODES * LocalTreeEncoder.NODE_DIM  # = 120
+
+
+# =============================================================================
 # NEW: TEMPORAL TRANSFORMER ENCODER - 2-Level Attention!
 # -----------------------------------------------------------------------------
 # Architektur basiert auf:
@@ -70,7 +175,7 @@ class TemporalTransformerEncoder(nn.Module):
     🚀 INNOVATION: Hierarchical Temporal-Spatial Transformer
     
     Architecture:
-    1. Observation Encoder: Maps 70D or 90D obs → 128D embedding
+    1. Observation Encoder: Maps 35D (Modus A Pure) or 94D (HierarchicalRoutes) obs → 128D embedding
     2. TEMPORAL Attention: Links t-2, t-1, t → learns movement patterns
     3. SPATIAL Attention: Links self + opponents → learns interactions
     4. Output Projection: Final 128D context embedding
@@ -82,7 +187,7 @@ class TemporalTransformerEncoder(nn.Module):
     """
     
     def __init__(self, 
-                 obs_dim: int,           # 70D DecisionPoint or 90D HierarchicalRoutes
+                 obs_dim: int,           # 35D DecisionPoint Modus A Pure or 94D HierarchicalRoutes
                  hidden_dim: int,        # 128D
                  num_heads: int = 4,
                  temporal_window: int = 3,
@@ -95,9 +200,12 @@ class TemporalTransformerEncoder(nn.Module):
         
         # ========================================================================
         # LEVEL 1: Observation Encoder (spatial features → embeddings)
+        # obs_encoder processes only the BASE_OBS_DIM (35D) handcrafted features.
+        # Tree node features obs[35:155] are handled separately by tree_encoder.
         # ========================================================================
+        self.base_obs_dim = min(obs_dim, _BASE_OBS_DIM)  # = 35
         self.obs_encoder = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
+            nn.Linear(self.base_obs_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.LeakyReLU(0.01)
         )
@@ -136,6 +244,11 @@ class TemporalTransformerEncoder(nn.Module):
             nn.LeakyReLU(0.01)
         )
 
+        # LocalTreeEncoder: DeepSets-style encoder for tree nodes from obs[35:155].
+        # Replaces old slot-based tree_proj (which referenced non-existent indices).
+        self.tree_encoder = LocalTreeEncoder(hidden_dim)
+        self.tree_norm = nn.LayerNorm(hidden_dim)
+
         # Explicit communication: sender message + receiver addressing.
         self.comm_msg_proj = nn.Linear(hidden_dim, hidden_dim)
         self.comm_sender_gate = nn.Linear(hidden_dim, 1)
@@ -151,6 +264,7 @@ class TemporalTransformerEncoder(nn.Module):
         self.last_comm_valid_count = 0
         
         self._init_weights()
+        # tree_encoder is initialized with near-zero weights inside LocalTreeEncoder.__init__()
         self.to(self.device)
     
     def _init_weights(self):
@@ -183,16 +297,19 @@ class TemporalTransformerEncoder(nn.Module):
         # ⚠️ PROTECTION: Clamp extreme values
         t = torch.clamp(t, min=-10.0, max=10.0)
 
-        # Observation sanitation for 78D DecisionPoint vectors:
-        # - map bipolar target-like channels from [-1, 1] to [0, 1]
-        # - suppress known duplicate channel to reduce redundant gradients
-        if t.numel() >= 78:
-            for idx in (10, 18, 26, 33, 38):
-                t[idx] = torch.clamp(0.5 * (t[idx] + 1.0), 0.0, 1.0)
-            # [39] is near-perfectly anti-correlated with [38] (duplicate pair).
-            t[39] = 0.0
-        
         return t
+
+    def _encode_tree_block(self, obs_1d: torch.Tensor) -> torch.Tensor:
+        """Extract obs[35:155] tree node block and encode via LocalTreeEncoder."""
+        end = _BASE_OBS_DIM + _TREE_BLOCK_DIM
+        if obs_1d.shape[0] > _BASE_OBS_DIM:
+            tree_flat = obs_1d[_BASE_OBS_DIM:min(end, obs_1d.shape[0])]
+            if tree_flat.shape[0] < _TREE_BLOCK_DIM:
+                pad = torch.zeros(_TREE_BLOCK_DIM - tree_flat.shape[0], device=self.device)
+                tree_flat = torch.cat([tree_flat, pad], dim=0)
+        else:
+            tree_flat = torch.zeros(_TREE_BLOCK_DIM, device=self.device)
+        return self.tree_encoder(tree_flat)
 
     def _apply_communication(self, self_context: torch.Tensor, opp_embeddings: List[torch.Tensor]):
         """Fuse explicit communication from opponents into receiver context."""
@@ -234,7 +351,7 @@ class TemporalTransformerEncoder(nn.Module):
         
         Args:
             temporal_seq: [(obs_t-2, opp_t-2), (obs_t-1, opp_t-1), (obs_t, opp_t)]
-                         Each obs is a 70D or 90D numpy array
+                         Each obs is a 35D or 94D numpy array
             handle: Agent handle (for debugging)
         
         Returns:
@@ -247,8 +364,9 @@ class TemporalTransformerEncoder(nn.Module):
         # Extract self observations over time
         self_obs_sequence = []  # Will be [emb_t-2, emb_t-1, emb_t]
         for obs_self, _ in temporal_seq:
-            obs_t = self._to_1d_tensor(obs_self)  # (70/90,)
-            emb_t = self.obs_encoder(obs_t)       # (128,)
+            obs_t = self._to_1d_tensor(obs_self)
+            base_obs = obs_t[:self.base_obs_dim]  # First 35D handcrafted features only
+            emb_t = self.obs_encoder(base_obs)    # (H,)
             self_obs_sequence.append(emb_t)
         
         # Stack to (T, hidden_dim)
@@ -273,6 +391,11 @@ class TemporalTransformerEncoder(nn.Module):
         
         # Take only t (current timestep) as representation
         self_temporal_context = temporal_output[0, -1, :]  # (128,)
+
+        # LocalTreeEncoder: encode node features from obs[35:155] at timestep t.
+        last_obs_t = self._to_1d_tensor(temporal_seq[-1][0])
+        tree_emb = self._encode_tree_block(last_obs_t)
+        self_temporal_context = self.tree_norm(self_temporal_context + tree_emb)
         
         # ========================================================================
         # STEP 3: SPATIAL ATTENTION - Multi-Agent Interaction
@@ -281,15 +404,11 @@ class TemporalTransformerEncoder(nn.Module):
         # Get current opponent observations (only from t, not entire history)
         _, current_opponents = temporal_seq[-1]  # Last timestep
         
-        # Encode opponents (current timestep only)
+        # Encode opponents (current timestep only, base 35D features)
         opp_embeddings = []
         for opp_obs in current_opponents:
-            opp_t = self._to_1d_tensor(opp_obs)  # (70/90,)
-            # Take only base observation slice matching obs_dim.
-            if opp_t.shape[0] > self.obs_dim:
-                opp_base = opp_t[:self.obs_dim]
-            else:
-                opp_base = opp_t
+            opp_t = self._to_1d_tensor(opp_obs)
+            opp_base = opp_t[:self.base_obs_dim]  # First 35D only
             opp_emb = self.obs_encoder(opp_base)
             opp_embeddings.append(opp_emb)
         
@@ -367,11 +486,10 @@ class TemporalTransformerEncoder(nn.Module):
         # Stack: (batch_size, temporal_window, 33)
         all_self_obs_tensor = torch.stack(all_self_obs, dim=0)
         
-        # Reshape for parallel encoding: (batch_size * temporal_window, 33)
-        flat_obs = all_self_obs_tensor.view(-1, self.obs_dim)
-        
-        # Encode all at once: (batch_size * temporal_window, hidden_dim)
-        flat_embeddings = self.obs_encoder(flat_obs)
+        # Encode base obs features only (first 35D); tree block encoded separately
+        flat_obs = all_self_obs_tensor.view(-1, all_self_obs_tensor.shape[-1])
+        flat_base_obs = flat_obs[:, :self.base_obs_dim]  # (B*T, 35)
+        flat_embeddings = self.obs_encoder(flat_base_obs)  # (B*T, H)
         
         # Reshape back: (batch_size, temporal_window, hidden_dim)
         self_embeddings = flat_embeddings.view(batch_size, self.temporal_window, self.hidden_dim)
@@ -389,6 +507,18 @@ class TemporalTransformerEncoder(nn.Module):
         
         # Extract current timestep context: (batch_size, hidden_dim)
         self_temporal_contexts = temporal_output[:, -1, :]
+
+        # LocalTreeEncoder (batch): encode tree block from obs[35:155] at timestep t.
+        last_obs_b = all_self_obs_tensor[:, -1, :]  # (B, obs_dim)
+        if last_obs_b.shape[1] > _BASE_OBS_DIM:
+            tree_flat_b = last_obs_b[:, _BASE_OBS_DIM:_BASE_OBS_DIM + _TREE_BLOCK_DIM]
+            if tree_flat_b.shape[1] < _TREE_BLOCK_DIM:
+                pad = torch.zeros(batch_size, _TREE_BLOCK_DIM - tree_flat_b.shape[1], device=self.device)
+                tree_flat_b = torch.cat([tree_flat_b, pad], dim=1)
+        else:
+            tree_flat_b = torch.zeros(batch_size, _TREE_BLOCK_DIM, device=self.device)
+        tree_emb_b = self.tree_encoder.forward_batch(tree_flat_b)
+        self_temporal_contexts = self.tree_norm(self_temporal_contexts + tree_emb_b)
         
         # Spatial attention (process per agent due to varying opponent counts)
         final_embeddings = []
@@ -403,13 +533,11 @@ class TemporalTransformerEncoder(nn.Module):
                 opp_embs = []
                 for opp_obs in opps:
                     opp_t = self._to_1d_tensor(opp_obs)
-                    if opp_t.shape[0] > self.obs_dim:
-                        opp_t = opp_t[:self.obs_dim]
-                    opp_embs.append(self.obs_encoder(opp_t))
+                    opp_base = opp_t[:self.base_obs_dim]  # First 35D only
+                    opp_embs.append(self.obs_encoder(opp_base))
                 
                 all_agents = [self_ctx] + opp_embs
                 all_agents_tensor = torch.stack(all_agents, dim=0).unsqueeze(0)
-                
                 query = self_ctx.unsqueeze(0).unsqueeze(0)
                 spatial_out, _ = self.spatial_attention(
                     query=query,
@@ -469,8 +597,11 @@ class TemporalLSTMEncoder(nn.Module):
         self.temporal_window = temporal_window
         self.device = torch.device(device)
 
+        # obs_encoder processes only the BASE_OBS_DIM (35D) handcrafted features.
+        # Tree node features obs[35:155] are handled by tree_encoder (LocalTreeEncoder).
+        self.base_obs_dim = min(obs_dim, _BASE_OBS_DIM)  # = 35
         self.obs_encoder = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
+            nn.Linear(self.base_obs_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.LeakyReLU(0.01)
         )
@@ -503,10 +634,9 @@ class TemporalLSTMEncoder(nn.Module):
         self.comm_norm = nn.LayerNorm(hidden_dim)
         self.comm_dropout = nn.Dropout(p=0.10)
 
-        # Learnable tree aggregator: combines merge/deadlock context with
-        # local-search tree summaries from DecisionPointObservation.
-        self._tree_slots = [38, 41, 43, 46, 64, 66, 67, 68, 69]
-        self.tree_proj = nn.Linear(len(self._tree_slots), hidden_dim, bias=True)
+        # LocalTreeEncoder: DeepSets-style encoder for tree nodes from obs[35:155].
+        self._tree_slots = None  # Unused; kept for checkpoint backward-compatibility stub.
+        self.tree_encoder = LocalTreeEncoder(hidden_dim)
         self.tree_norm = nn.LayerNorm(hidden_dim)
 
         self.last_comm_reg = torch.tensor(0.0, device=self.device)
@@ -515,9 +645,7 @@ class TemporalLSTMEncoder(nn.Module):
         self.last_comm_valid_count = 0
 
         self._init_weights()
-        # Override tree_proj to near-zero init: starts neutral, learns gradually.
-        nn.init.normal_(self.tree_proj.weight, 0.0, 0.01)
-        nn.init.zeros_(self.tree_proj.bias)
+        # tree_encoder is initialized with near-zero weights inside LocalTreeEncoder.__init__()
         self.to(self.device)
 
     def _init_weights(self):
@@ -527,6 +655,7 @@ class TemporalLSTMEncoder(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
         if self.comm_sender_gate.bias is not None:
+            # Open communication channel at init; regularization will prune later.
             nn.init.constant_(self.comm_sender_gate.bias, 1.0)
 
     def _to_1d_tensor(self, x):
@@ -542,6 +671,18 @@ class TemporalLSTMEncoder(nn.Module):
             t = torch.nan_to_num(t, nan=0.0, posinf=1.0, neginf=-1.0)
         t = torch.clamp(t, min=-10.0, max=10.0)
         return t
+
+    def _encode_tree_block(self, obs_1d: torch.Tensor) -> torch.Tensor:
+        """Extract obs[35:155] tree node block and encode via LocalTreeEncoder."""
+        end = _BASE_OBS_DIM + _TREE_BLOCK_DIM
+        if obs_1d.shape[0] > _BASE_OBS_DIM:
+            tree_flat = obs_1d[_BASE_OBS_DIM:min(end, obs_1d.shape[0])]
+            if tree_flat.shape[0] < _TREE_BLOCK_DIM:
+                pad = torch.zeros(_TREE_BLOCK_DIM - tree_flat.shape[0], device=self.device)
+                tree_flat = torch.cat([tree_flat, pad], dim=0)
+        else:
+            tree_flat = torch.zeros(_TREE_BLOCK_DIM, device=self.device)
+        return self.tree_encoder(tree_flat)
 
     def _apply_communication(self, self_context: torch.Tensor, opp_embeddings: List[torch.Tensor]):
         if len(opp_embeddings) == 0:
@@ -578,26 +719,25 @@ class TemporalLSTMEncoder(nn.Module):
         self_obs_sequence = []
         for obs_self, _ in temporal_seq:
             obs_t = self._to_1d_tensor(obs_self)
-            emb_t = self.obs_encoder(obs_t)
+            base_obs = obs_t[:self.base_obs_dim]  # First 35D only
+            emb_t = self.obs_encoder(base_obs)
             self_obs_sequence.append(emb_t)
 
         self_seq_tensor = torch.stack(self_obs_sequence, dim=0).unsqueeze(0)
         temporal_output, _ = self.temporal_lstm(self_seq_tensor)
         self_temporal_context = temporal_output[0, -1, :]
 
-        # Learnable tree context: project raw tree stats into hidden space.
+        # LocalTreeEncoder: encode node features from obs[35:155] at timestep t.
         last_obs_t = self._to_1d_tensor(temporal_seq[-1][0])
-        tree_raw = last_obs_t[self._tree_slots]
-        tree_emb = torch.tanh(self.tree_proj(tree_raw))
+        tree_emb = self._encode_tree_block(last_obs_t)
         self_temporal_context = self.tree_norm(self_temporal_context + tree_emb)
 
         _, current_opponents = temporal_seq[-1]
         opp_embeddings = []
         for opp_obs in current_opponents:
             opp_t = self._to_1d_tensor(opp_obs)
-            if opp_t.shape[0] > self.obs_dim:
-                opp_t = opp_t[:self.obs_dim]
-            opp_embeddings.append(self.obs_encoder(opp_t))
+            opp_base = opp_t[:self.base_obs_dim]  # First 35D only
+            opp_embeddings.append(self.obs_encoder(opp_base))
 
         if len(opp_embeddings) > 0:
             all_agents = [self_temporal_context] + opp_embeddings
@@ -640,17 +780,24 @@ class TemporalLSTMEncoder(nn.Module):
             all_opponents.append(current_opps)
 
         all_self_obs_tensor = torch.stack(all_self_obs, dim=0)
-        flat_obs = all_self_obs_tensor.view(-1, self.obs_dim)
-        flat_embeddings = self.obs_encoder(flat_obs)
+        flat_obs = all_self_obs_tensor.view(-1, all_self_obs_tensor.shape[-1])
+        flat_base_obs = flat_obs[:, :self.base_obs_dim]  # (B*T, 35)
+        flat_embeddings = self.obs_encoder(flat_base_obs)  # (B*T, H)
         self_embeddings = flat_embeddings.view(batch_size, self.temporal_window, self.hidden_dim)
 
         temporal_output, _ = self.temporal_lstm(self_embeddings)
         self_temporal_contexts = temporal_output[:, -1, :]
 
-        # Learnable tree context (batch): project raw tree stats from last-timestep obs.
-        last_obs_b = all_self_obs_tensor[:, -1, :]               # (B, obs_dim)
-        tree_raw_b = last_obs_b[:, self._tree_slots]             # (B, 9)
-        tree_emb_b = torch.tanh(self.tree_proj(tree_raw_b))      # (B, hidden_dim)
+        # LocalTreeEncoder (batch): encode tree block from obs[35:155] at timestep t.
+        last_obs_b = all_self_obs_tensor[:, -1, :]  # (B, obs_dim)
+        if last_obs_b.shape[1] > _BASE_OBS_DIM:
+            tree_flat_b = last_obs_b[:, _BASE_OBS_DIM:_BASE_OBS_DIM + _TREE_BLOCK_DIM]
+            if tree_flat_b.shape[1] < _TREE_BLOCK_DIM:
+                pad = torch.zeros(batch_size, _TREE_BLOCK_DIM - tree_flat_b.shape[1], device=self.device)
+                tree_flat_b = torch.cat([tree_flat_b, pad], dim=1)
+        else:
+            tree_flat_b = torch.zeros(batch_size, _TREE_BLOCK_DIM, device=self.device)
+        tree_emb_b = self.tree_encoder.forward_batch(tree_flat_b)
         self_temporal_contexts = self.tree_norm(self_temporal_contexts + tree_emb_b)
 
         final_embeddings = []
@@ -665,9 +812,8 @@ class TemporalLSTMEncoder(nn.Module):
                 opp_embs = []
                 for opp_obs in opps:
                     opp_t = self._to_1d_tensor(opp_obs)
-                    if opp_t.shape[0] > self.obs_dim:
-                        opp_t = opp_t[:self.obs_dim]
-                    opp_embs.append(self.obs_encoder(opp_t))
+                    opp_base = opp_t[:self.base_obs_dim]  # First 35D only
+                    opp_embs.append(self.obs_encoder(opp_base))
 
                 all_agents = [self_ctx] + opp_embs
                 all_agents_tensor = torch.stack(all_agents, dim=0).unsqueeze(0)
@@ -836,7 +982,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.episode_count = 0
         self.optimizer_mode = optimizer_mode.lower()  # 'single' or 'multiple'
 
-        self.state_size = state_size  # temporal obs size per timestep (70D/90D)
+        self.state_size = state_size  # temporal obs size per timestep (35D/94D)
         self.action_size = action_size
         self.num_heads = 4
 
@@ -1270,8 +1416,14 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
     def _extract_deadlock_label_from_temporal_state(temporal_state) -> float:
         """Build a robust [0,1] deadlock-risk label from next-state features.
 
-        Works with both 70D DecisionPointObservation and 90D
-        HierarchicalRoutesObservation (70D base + sparse neighbors).
+        Works with both 35D DecisionPointObservation (Modus A Pure) and 94D
+        HierarchicalRoutesObservation (35D base + sparse neighbors).
+        
+        Modus A Pure feature indices:
+          [5]      = local_deadlock (confirmed)
+          [30]     = confirmed_deadlock (tree-based)
+          [31]     = max_deadlock (peak in search)
+          [32]     = conflict_density (normalized)
         """
         try:
             last_obs = np.asarray(temporal_state[-1][0], dtype=np.float32).reshape(-1)
@@ -1286,29 +1438,20 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 return float(last_obs[idx])
             return 0.0
 
-        # Deadlock cues — indices match the FIXED DecisionPointObservation layout:
-        #   [5]        local_deadlock binary (confirmed head-on ahead)
-        #   [7]        left-branch  deadlock_signal  (DFS, normalised {0, 0.85, 1})
-        #   [12]       left-branch  deadlock_ahead binary
-        #   [15]       fwd-branch   deadlock_signal
-        #   [20]       fwd-branch   deadlock_ahead binary
-        #   [23]       right-branch deadlock_signal
-        #   [28]       right-branch deadlock_ahead binary
-        #   [31]       merge-fwd    deadlock_signal
-        #   [36]       merge-bwd    deadlock_signal
-        local_deadlock  = _safe(5)
-        branch_deadlock = _safe(7) + _safe(15) + _safe(23)    # DFS-based signals
-        deadlock_ahead  = max(_safe(12), _safe(20), _safe(28)) # direct binary flags
-        merge_deadlock  = _safe(31) + _safe(36)
-
+        # Modus A Pure deadlock signals
+        local_deadlock  = _safe(5)       # Immediate context signal
+        tree_confirmed  = _safe(30)      # Tree-based confirmation
+        tree_max_risk   = _safe(31)      # Worst case in subtree
+        conflict_density = _safe(32)     # Conflict frequency (0 to 1)
+        
         # Optional extra cues in hierarchical sparse-neighbor block.
         # Per-neighbor 6D block: index +3 == local conflict flag.
         # Current supported layouts:
-        #   - 70D base -> no sparse block
-        #   - 90D base -> sparse block starts at 70
+        #   - 35D base -> no sparse block
+        #   - 94D base -> sparse block starts at 35
         sparse_local = 0.0
-        if last_obs.shape[0] >= 90:
-            sparse_start = 70
+        if last_obs.shape[0] >= 94:
+            sparse_start = 35
             sparse_local = max(
                 _safe(sparse_start + 3),
                 _safe(sparse_start + 9),
@@ -1316,18 +1459,19 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 _safe(sparse_start + 21),
             )
 
+        # Combine signals: local direct signal + tree-based estimates
         risk = max(
             local_deadlock,
-            deadlock_ahead,
-            min(1.0, 0.5 * branch_deadlock),
-            min(1.0, 0.5 * merge_deadlock),
+            tree_confirmed,
+            min(1.0, 0.5 * tree_max_risk),
+            min(1.0, 0.3 * conflict_density),
             sparse_local,
         )
         return float(np.clip(risk, 0.0, 1.0))
 
     def _convert_transitions_to_torch_tensors(self, transitions_array):
         """Convert episode transitions to tensors"""
-        state_list, action_list, reward_list, state_next_list, done_list, aux_deadlock_list = [], [], [], [], [], []
+        state_list, action_list, reward_list, state_next_list, dones_list, aux_deadlock_list = [], [], [], [], [], []
 
         for transition in transitions_array:
             if len(transition) >= 6:
@@ -1340,12 +1484,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             action_list.append(action_i)
             reward_list.append(reward_i)
             state_next_list.append(state_next_i)
-            done_list.append(1 if done_i else 0)
+            dones_list.append(1 if done_i else 0)
             aux_deadlock_list.append(float(aux_deadlock_i))
 
         actions = torch.tensor(action_list, dtype=torch.long).to(self.device)
         rewards = torch.tensor(reward_list, dtype=torch.float).to(self.device) * self.reward_scale
-        dones = torch.tensor(done_list, dtype=torch.float).to(self.device)
+        dones = torch.tensor(dones_list, dtype=torch.float).to(self.device)
         aux_deadlock = torch.tensor(aux_deadlock_list, dtype=torch.float).to(self.device)
 
         return state_list, actions, rewards, state_next_list, dones, aux_deadlock
@@ -1629,11 +1773,15 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 advantages = batch_gae_advantages
                 eps = 1e-8
                 
-                # 📊 Speichere RAW advantage stats BEFORE normalization
+                # Robust against tiny mini-batches: use population std and
+                # guard against near-zero variance to avoid NaN explosions.
                 raw_adv_mean = advantages.mean().item()
-                raw_adv_std = advantages.std().item()
-                
-                advantages_normalized = (advantages - advantages.mean()) / (advantages.std() + eps)
+                raw_adv_std = advantages.std(unbiased=False).item()
+
+                if advantages.numel() <= 1 or raw_adv_std < 1e-8:
+                    advantages_normalized = advantages - advantages.mean()
+                else:
+                    advantages_normalized = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + eps)
                 # Standard PPO: Advantage-Normalisierung pro Mini-Batch
                 # (Andrychowicz et al. 2021 "What Matters in On-Policy RL?",
                 # arXiv:2006.05990 -- Empfehlung #4). Eine zusätzliche
@@ -2434,10 +2582,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     print(f"    [{a}]{fname(a):<20s} <-> [{b}]{fname(b):<20s}  corr={c:+.4f}")
 
             # Key feature means
-            if D > 53:
+            if D > 34:  # 35D Modus A Pure
                 print(f"\n  Key feature means:")
                 print(f"    is_switch={means[0]:.3f}  is_merge={means[4]:.3f}  "
-                      f"local_dl={means[5]:.3f}  priority_rank={means[53]:.3f}")
+                      f"local_dl={means[5]:.3f}  priority_rank={means[18]:.3f}")
 
             if obs_issues:
                 print(f"\n  {color('OBS ISSUES:', C_YELLOW)}")
@@ -2550,7 +2698,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             if not done:
                 continue
             
-            deadlock_risk = max(state[0][0][65], next_state[0][0][65])  # max of local and next-step risk signals
+            # Index [30] = confirmed_deadlock in 35D Modus A Pure features
+            deadlock_risk = max(state[0][0][30], next_state[0][0][30])
             delta = per_done_agent_bonus - (DEADLOCK_PENALTY_PER_AGENT_MAX * deadlock_risk)
             delta = float(np.clip(delta, PER_AGENT_DELTA_MIN, PER_AGENT_DELTA_MAX))
             # Store: (handle, ..., delta) — exactly ONE entry per done agent

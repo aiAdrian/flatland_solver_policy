@@ -34,6 +34,15 @@ class ExperimentalObservation(ObservationBuilder):
     def getObservationSize() -> int:
         return 30
 
+    def set_env(self, env):
+        """Set environment and initialize components."""
+        self.env = env
+        if self.switchAnalyser is None:
+            self.switchAnalyser = RailroadSwitchAnalyser(env)
+        from .walk_to_next_decision_point import WalkToNextDecisionPoint
+        if self.walker is None:
+            self.walker = WalkToNextDecisionPoint(env)
+
     def reset(self):
         self.switchAnalyser = RailroadSwitchAnalyser(self.env)
         from .walk_to_next_decision_point import WalkToNextDecisionPoint
@@ -84,6 +93,7 @@ class ExperimentalObservation(ObservationBuilder):
         return decision_obs, opp_agents
 
     def get_many(self, handles: Optional[List[int]] = None) -> Any:
+        """Return list of (obs, opp_agents) tuples for compatibility with TemporalMultiAgentObservation."""
         h, w = self.env.height, self.env.width
         self.agent_map = np.full((h, w), -1, dtype=int)
         for agent in self.env.agents:
@@ -93,13 +103,10 @@ class ExperimentalObservation(ObservationBuilder):
             if agent.state.is_on_map_state():
                 self.agent_map[pos] = agent.handle
         self.walker.clear(self.agent_map)
-        # Statt super().get_many(handles):
+        
         if handles is None:
             handles = list(range(len(self.env.agents)))
+        
+        # Return list of (obs, opp_agents) 2-tuples for TemporalMultiAgentObservation compatibility
         all_obs = [self.get(handle) for handle in handles]
-        states = []
-        for obs_agent_handle in range(len(all_obs)):
-            obs_self, _ = all_obs[obs_agent_handle]
-            # Keine Multi-Agent-Features, keine Padding-Nullen
-            states.append(obs_self)
-        return states
+        return all_obs
