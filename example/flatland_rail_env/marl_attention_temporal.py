@@ -621,6 +621,9 @@ if __name__ == "__main__":
   python marl_attention_temporal.py --train --continue --eps 0.1
   python marl_attention_temporal.py --train --continue --eps 0.1 --min_eps 0.001
   python marl_attention_temporal.py --eval
+  python marl_attention_temporal.py final_continue --eps 0.0
+  python marl_attention_temporal.py --train final --eps 0.0
+  python marl_attention_temporal.py final --eps 0.0
 """
     )
     parser.add_argument(
