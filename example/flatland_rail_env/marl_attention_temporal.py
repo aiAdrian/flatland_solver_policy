@@ -596,26 +596,22 @@ def resolve_policy_creator_list(environment: Environment, policy_mode: Optional[
 # 4. Team success: +100 when all reach goals efficiently
 # ============================================================================
 # Mode selector: switch between complex and simple reward shapers
-_REWARD_SHAPER_MODE = "simple"  # "complex" or "simple"
+_REWARD_SHAPER_MODE = "complex"  # "complex" or "simple"
 
 def set_reward_shaper_mode(mode: str):
-    """Set reward shaper mode: 'complex' (PBRS) or 'simple' (done-only)"""
+    """Set reward shaper mode: 'simple'"""
     global _REWARD_SHAPER_MODE
-    if mode not in ["complex", "simple"]:
-        raise ValueError(f"Invalid mode: {mode}. Must be 'complex' or 'simple'")
+    if mode != "simple":
+        raise ValueError(f"Invalid mode: {mode}. Must be 'simple'")
     _REWARD_SHAPER_MODE = mode
     print(f">> Reward Shaper Mode: {mode.upper()}")
 
 def get_reward_shaper():
     """Get active reward shaper based on mode"""
-    if _REWARD_SHAPER_MODE == "complex":
-        return FlatlandPBRSShaper()
-    elif _REWARD_SHAPER_MODE == "simple":
+    if _REWARD_SHAPER_MODE == "simple":
         return SimpleDoneRewardShaper()
     else:
         raise ValueError(f"Unknown mode: {_REWARD_SHAPER_MODE}")
-
-
 
 # Always force simple reward shaper mode at startup
 set_reward_shaper_mode("simple")
