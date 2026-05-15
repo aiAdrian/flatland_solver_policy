@@ -367,6 +367,8 @@ import os
 from flatland.core.env_observation_builder import ObservationBuilder
 from flatland.core.grid.grid4_utils import get_new_position
 from flatland.envs.fast_methods import fast_count_nonzero, fast_argmax
+from flatland.envs.rail_env_action import RailEnvActions
+from flatland.envs.step_utils.states import TrainState
 from .decision_point_utils import DecisionPointUtils
 
 
@@ -558,6 +560,35 @@ class DecisionPointObservation(ObservationBuilder):
         if delta == 1:
             return 2
         return 3
+
+    @classmethod
+    def _rel_dir_one_hot(cls, current_dir: int, next_dir: int) -> tuple:
+        rel_bin = cls._dir_to_rel_bin(current_dir, next_dir)
+        return (
+            1.0 if rel_bin == 0 else 0.0,
+            1.0 if rel_bin == 1 else 0.0,
+            1.0 if rel_bin == 2 else 0.0,
+        )
+
+    @staticmethod
+    def _relative_dir_order(current_dir: int) -> tuple:
+        if current_dir is None:
+            return 0, 1, 2, 3
+        current_dir = int(current_dir)
+        return (
+            (current_dir - 1) % 4,  # left
+            current_dir,            # forward
+            (current_dir + 1) % 4,  # right
+            (current_dir + 2) % 4,  # backward / other
+        )
+
+    @classmethod
+    def _sort_branch_candidates_relative(cls, candidates: list, current_dir: int) -> list:
+        order_index = {d: i for i, d in enumerate(cls._relative_dir_order(current_dir))}
+        return sorted(
+            candidates,
+            key=lambda c: (order_index.get(int(c[0]), 99), float(c[2]) if len(c) > 2 else 0.0),
+        )
 
     def _safe_distance(self, handle, position, direction, distance_map, default=np.inf):
         if distance_map is None:
@@ -765,7 +796,7 @@ class DecisionPointObservation(ObservationBuilder):
 
         return max(min_nodes, min(max_nodes, int(budget)))
 
-    def _select_local_search_branches(self, handle, depth, current_pos, transitions, distance_map):
+    def _select_local_search_branches(self, handle, depth, current_pos, current_dir, transitions, distance_map):
         """Select branches for local search with depth-aware stochastic pruning.
 
         Strategy:
@@ -775,7 +806,7 @@ class DecisionPointObservation(ObservationBuilder):
           2) sample limited side branches with short-branch bias
         """
         candidates = []
-        for next_dir in range(4):
+        for next_dir in self._relative_dir_order(current_dir):
             if not transitions[next_dir]:
                 continue
             next_pos = get_new_position(current_pos, next_dir)
@@ -786,6 +817,8 @@ class DecisionPointObservation(ObservationBuilder):
                 except Exception:
                     dist = np.inf
             candidates.append((next_dir, next_pos, dist))
+
+        candidates = self._sort_branch_candidates_relative(candidates, current_dir)
 
         if len(candidates) <= 1:
             return candidates
@@ -806,7 +839,7 @@ class DecisionPointObservation(ObservationBuilder):
 
         k_side = min(int(self.local_search_max_side_branches), len(side))
         if k_side <= 0:
-            return [shortest]
+            return self._sort_branch_candidates_relative([shortest], current_dir)
 
         # Optional MCTS-lite root action selection (flat UCT at current node).
         if str(getattr(self, "local_search_mode", "stochastic")).lower() == "mcts":
@@ -850,7 +883,7 @@ class DecisionPointObservation(ObservationBuilder):
             chosen = ordered[: 1 + k_side]
             if shortest[0] not in [c[0] for c in chosen]:
                 chosen = [shortest] + chosen[:k_side]
-            return chosen
+            return self._sort_branch_candidates_relative(chosen, current_dir)
 
         dvals = np.array([s[2] for s in side], dtype=np.float64)
         dmin = float(np.min(dvals))
@@ -865,7 +898,7 @@ class DecisionPointObservation(ObservationBuilder):
 
         idx = np.random.choice(len(side), size=k_side, replace=False, p=probs)
         chosen_side = [side[int(i)] for i in np.atleast_1d(idx)]
-        return [shortest] + chosen_side
+        return self._sort_branch_candidates_relative([shortest] + chosen_side, current_dir)
 
     def _local_search(self, handle, start_pos, start_dir, depth_limit):
         """Run a bounded local graph search around one agent and emit tree payload.
@@ -1042,9 +1075,11 @@ class DecisionPointObservation(ObservationBuilder):
                     handle=handle,
                     depth=depth,
                     current_pos=current_pos,
+                    current_dir=current_dir,
                     transitions=transitions,
                     distance_map=distance_map,
                 )
+                next_frontier_states = []
                 for next_dir, next_pos, _dist in selected:
                     final_pos, final_dir, edge_len, target_on_edge = self._contract_corridor_segment(
                         handle=handle,
@@ -1065,6 +1100,7 @@ class DecisionPointObservation(ObservationBuilder):
                     improves_over_current = 1.0 if (not np.isfinite(root_dist) and np.isfinite(dst_dist)) or (
                         np.isfinite(root_dist) and np.isfinite(dst_dist) and float(dst_dist) < float(root_dist)
                     ) else 0.0
+                    action_left, action_forward, action_right = self._rel_dir_one_hot(current_dir, next_dir)
                     edge_agents = []
                     if self.agent_map is not None:
                         try:
@@ -1082,6 +1118,9 @@ class DecisionPointObservation(ObservationBuilder):
                         "src_depth": int(depth),
                         "dst_depth": int(next_depth),
                         "rel_dir_bin": self._dir_to_rel_bin(current_dir, next_dir),
+                        "action_left": float(action_left),
+                        "action_forward": float(action_forward),
+                        "action_right": float(action_right),
                         "edge_len_cells": int(edge_len),
                         "src_dist_to_target": float(src_dist_norm),
                         "dst_dist_to_target": float(dst_dist_norm),
@@ -1091,7 +1130,9 @@ class DecisionPointObservation(ObservationBuilder):
                         "agents_on_edge": edge_agents,
                         "has_oncoming_edge": bool(len(edge_agents) > 0),
                     })
-                    frontier.append((final_pos, final_dir, next_depth))
+                    next_frontier_states.append((final_pos, final_dir, next_depth))
+                for next_state in reversed(next_frontier_states):
+                    frontier.append(next_state)
             return {
                 "nodes": tree_nodes,
                 "edges": tree_edges,
@@ -1430,30 +1471,31 @@ class DecisionPointObservation(ObservationBuilder):
             if 0 <= state_value <= 6:
                 raw_features[6 + state_value] = 1.0
             
-            # Last-action one-hot with behavior-aware fallback.
+            # Last-action one-hot with Flatland-compatible fallback.
             sa = None
             on_map = getattr(agent, "position", None) is not None
-            if on_map and agent.action_saver.is_action_saved:
+            if on_map and getattr(agent, "action_saver", None) is not None and agent.action_saver.is_action_saved:
                 sa = int(agent.action_saver.saved_action)
             elif on_map:
-                is_moving = bool(getattr(agent, "moving", False))
-                if not is_moving:
-                    sa = 4  # STOP_MOVING
-                else:
+                if agent.state == TrainState.MOVING:
                     old_dir = getattr(agent, "old_direction", None)
                     cur_dir = getattr(agent, "direction", None)
                     if old_dir is None or cur_dir is None:
-                        sa = 2  # MOVE_FORWARD
+                        sa = int(RailEnvActions.MOVE_FORWARD)
                     else:
                         delta = (int(cur_dir) - int(old_dir)) % 4
                         if delta == 0:
-                            sa = 2  # FORWARD
+                            sa = int(RailEnvActions.MOVE_FORWARD)
                         elif delta == 1:
-                            sa = 3  # RIGHT
+                            sa = int(RailEnvActions.MOVE_RIGHT)
                         elif delta == 3:
-                            sa = 1  # LEFT
+                            sa = int(RailEnvActions.MOVE_LEFT)
                         else:
-                            sa = 2
+                            sa = int(RailEnvActions.MOVE_FORWARD)
+                else:
+                    sa = int(RailEnvActions.STOP_MOVING)
+            elif agent.state in (TrainState.WAITING, TrainState.READY_TO_DEPART, TrainState.MALFUNCTION_OFF_MAP):
+                sa = int(RailEnvActions.DO_NOTHING)
             if sa is not None and 0 <= sa <= 4:
                 raw_features[13 + sa] = 1.0
             

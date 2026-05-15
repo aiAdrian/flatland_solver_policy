@@ -174,7 +174,7 @@ class TreePayloadEncoder(nn.Module):
     """
 
     NODE_DIM = 8
-    EDGE_DIM = 9
+    EDGE_DIM = 11
     # Safe upper cap for dynamic per-batch padding.
     # Local search can emit >15 nodes, so payload path should not silently
     # collapse to the serialized-tree limit.
@@ -266,8 +266,14 @@ class TreePayloadEncoder(nn.Module):
             if s_idx is None or d_idx is None:
                 continue
 
+            rel_bin = int(edge.get("rel_dir_bin", 1))
+            action_left = float(edge.get("action_left", 1.0 if rel_bin == 0 else 0.0))
+            action_forward = float(edge.get("action_forward", 1.0 if rel_bin == 1 else 0.0))
+            action_right = float(edge.get("action_right", 1.0 if rel_bin == 2 else 0.0))
             edge_feat = np.array([
-                float(edge.get("rel_dir_bin", 1)) / 2.0,
+                action_left,
+                action_forward,
+                action_right,
                 1.0 if len(edge.get("agents_on_edge", [])) > 0 else 0.0,
                 1.0 if edge.get("has_oncoming_edge", False) else 0.0,
                 min(1.0, float(edge.get("edge_len_cells", 1)) / 4.0),
