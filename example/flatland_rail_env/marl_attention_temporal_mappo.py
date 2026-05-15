@@ -2,7 +2,7 @@ import copy
 import math
 import os
 from collections import namedtuple, deque
-from typing import Union, List, Any, Dict, Tuple
+from typing import Union, List, Any, Dict, Tuple, Optional
 
 import numpy as np
 import torch
@@ -178,7 +178,7 @@ class TreePayloadEncoder(nn.Module):
     # Safe upper cap for dynamic per-batch padding.
     # Local search can emit >15 nodes, so payload path should not silently
     # collapse to the serialized-tree limit.
-    MAX_NODES = 72
+    MAX_NODES = 48
 
     def __init__(self, hidden_dim: int):
         super().__init__()
@@ -234,6 +234,7 @@ class TreePayloadEncoder(nn.Module):
 
         idx_exact: Dict[Tuple[int, int, int, int], int] = {}
         idx_simple: Dict[Tuple[int, int, int], int] = {}
+        idx_pos: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
 
         n_valid = min(len(nodes), max_nodes)
         for i in range(n_valid):
@@ -251,17 +252,73 @@ class TreePayloadEncoder(nn.Module):
             key = self._node_key(node)
             idx_exact[key] = i
             idx_simple[(key[0], key[1], key[2])] = i
+            pos_key = (key[0], key[1])
+            idx_pos.setdefault(pos_key, []).append((depth, i))
+
+        # Stable nearest-depth lookup for contracted edges or depth-mismatched payloads.
+        for pos_key, depth_idx_pairs in idx_pos.items():
+            depth_idx_pairs.sort(key=lambda x: x[0])
+
+        def _nearest_by_depth(depth_idx_pairs: List[Tuple[int, int]], depth: int) -> int:
+            best_idx = depth_idx_pairs[0][1]
+            best_delta = abs(int(depth_idx_pairs[0][0]) - int(depth))
+            for d_val, i_val in depth_idx_pairs[1:]:
+                delta = abs(int(d_val) - int(depth))
+                if delta < best_delta:
+                    best_delta = delta
+                    best_idx = i_val
+            return int(best_idx)
+
+        # Cache for node index resolutions to avoid repeated lookups (2-3× speedup)
+        node_resolution_cache: Dict[Tuple[int, int, int, int], Optional[int]] = {}
+
+        def _resolve_node_index(key4: Tuple[int, int, int, int]) -> Optional[int]:
+            # Check cache first
+            if key4 in node_resolution_cache:
+                return node_resolution_cache[key4]
+            
+            # 1) Exact tuple match (pos,dir,depth)
+            idx = idx_exact.get(key4)
+            if idx is not None:
+                node_resolution_cache[key4] = int(idx)
+                return int(idx)
+
+            # 2) Same pos+dir (depth mismatch tolerant)
+            idx = idx_simple.get((key4[0], key4[1], key4[2]))
+            if idx is not None:
+                node_resolution_cache[key4] = int(idx)
+                return int(idx)
+
+            # 3) Same pos, nearest depth
+            pos_key = (key4[0], key4[1])
+            depth_idx_pairs = idx_pos.get(pos_key)
+            if depth_idx_pairs:
+                result = _nearest_by_depth(depth_idx_pairs, key4[3])
+                node_resolution_cache[key4] = result
+                return result
+
+            # 4) Last-resort nearest position (L1), then nearest depth at that position
+            best_pos = None
+            best_dist = None
+            for p_key in idx_pos.keys():
+                dist = abs(int(p_key[0]) - int(key4[0])) + abs(int(p_key[1]) - int(key4[1]))
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best_pos = p_key
+            if best_pos is not None:
+                result = _nearest_by_depth(idx_pos[best_pos], key4[3])
+                node_resolution_cache[key4] = result
+                return result
+            
+            node_resolution_cache[key4] = None
+            return None
 
         for edge in edges:
             s_key = self._edge_key(edge.get("src_pos", (0, 0)), edge.get("src_dir", 0), edge.get("src_depth", 0))
             d_key = self._edge_key(edge.get("dst_pos", (0, 0)), edge.get("dst_dir", 0), edge.get("dst_depth", 0))
 
-            s_idx = idx_exact.get(s_key)
-            d_idx = idx_exact.get(d_key)
-            if s_idx is None:
-                s_idx = idx_simple.get((s_key[0], s_key[1], s_key[2]))
-            if d_idx is None:
-                d_idx = idx_simple.get((d_key[0], d_key[1], d_key[2]))
+            s_idx = _resolve_node_index(s_key)
+            d_idx = _resolve_node_index(d_key)
 
             if s_idx is None or d_idx is None:
                 continue

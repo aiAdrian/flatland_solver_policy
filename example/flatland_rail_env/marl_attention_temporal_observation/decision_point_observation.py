@@ -598,6 +598,33 @@ class DecisionPointObservation(ObservationBuilder):
         except Exception:
             return default
 
+    @staticmethod
+    def _pos_tuple(pos):
+        if pos is None:
+            return None
+        return (int(pos[0]), int(pos[1]))
+
+    def _rail_get_transitions(self, pos, direction):
+        """Compatibility wrapper for Flatland transition APIs.
+
+        Standard signature: get_transitions(row, col, direction) → tuple(4-8)
+        """
+        p = self._pos_tuple(pos)
+        d = int(direction)
+        return self.env.rail.get_transitions(p[0], p[1], d)
+
+    def _agent_at_pos(self, pos) -> int:
+        if self.agent_map is None:
+            return -1
+        p = self._pos_tuple(pos)
+        try:
+            return int(self.agent_map[p])
+        except Exception:
+            try:
+                return int(self.agent_map[p[0], p[1]])
+            except Exception:
+                return -1
+
     def _mcts_rollout_score(self, handle, start_pos, start_dir, start_depth, horizon, distance_map):
         """Small Monte-Carlo rollout score for one root branch.
 
@@ -621,7 +648,7 @@ class DecisionPointObservation(ObservationBuilder):
 
             if self.agent_map is not None:
                 try:
-                    other_idx = int(self.agent_map[pos])
+                    other_idx = self._agent_at_pos(pos)
                     if other_idx != -1 and other_idx != handle:
                         score -= 0.7
                         other_dir = self.env.agents[other_idx].direction
@@ -631,7 +658,7 @@ class DecisionPointObservation(ObservationBuilder):
                     pass
 
             try:
-                transitions = self.env.rail.get_transitions(*pos, direction)
+                transitions = self._rail_get_transitions(pos, direction)
             except Exception:
                 score -= 0.5
                 break
@@ -699,14 +726,14 @@ class DecisionPointObservation(ObservationBuilder):
         while (depth + edge_len) < depth_limit:
             if self.agent_map is not None:
                 try:
-                    other_idx = int(self.agent_map[cur_pos])
+                    other_idx = self._agent_at_pos(cur_pos)
                     if other_idx != -1 and other_idx != handle:
                         break
                 except Exception:
                     break
 
             try:
-                transitions = self.env.rail.get_transitions(*cur_pos, cur_dir)
+                transitions = self._rail_get_transitions(cur_pos, cur_dir)
             except Exception:
                 break
 
@@ -755,7 +782,7 @@ class DecisionPointObservation(ObservationBuilder):
             key = (int(pos[0]), int(pos[1]), int(direction))
             if key in transition_cache:
                 return transition_cache[key]
-            trans = self.env.rail.get_transitions(int(pos[0]), int(pos[1]), int(direction))
+            trans = self._rail_get_transitions(pos, direction)
             transition_cache[key] = trans
             return trans
 
@@ -788,7 +815,7 @@ class DecisionPointObservation(ObservationBuilder):
 
         if self.agent_map is not None:
             try:
-                start_agent = int(self.agent_map[start_pos])
+                start_agent = self._agent_at_pos(start_pos)
                 if start_agent != -1 and start_agent != handle:
                     budget += max(0, int(getattr(self, "local_search_adaptive_conflict_bonus", 8)))
             except Exception:
@@ -968,7 +995,7 @@ class DecisionPointObservation(ObservationBuilder):
                 key = (int(pos[0]), int(pos[1]), int(direction))
                 if key in transition_cache:
                     return transition_cache[key]
-                trans = self.env.rail.get_transitions(int(pos[0]), int(pos[1]), int(direction))
+                trans = self._rail_get_transitions(pos, direction)
                 transition_cache[key] = trans
                 return trans
 
@@ -1009,7 +1036,7 @@ class DecisionPointObservation(ObservationBuilder):
                 incoming_agents = []
                 if self.agent_map is not None:
                     try:
-                        agent_idx = self.agent_map[current_pos]
+                        agent_idx = self._agent_at_pos(current_pos)
                         if agent_idx != -1 and agent_idx != handle:
                             agents_encountered.append(agent_idx)
                             seen_agents.add(int(agent_idx))
@@ -1104,7 +1131,7 @@ class DecisionPointObservation(ObservationBuilder):
                     edge_agents = []
                     if self.agent_map is not None:
                         try:
-                            nidx = self.agent_map[final_pos]
+                            nidx = self._agent_at_pos(final_pos)
                             if nidx != -1 and nidx != handle:
                                 edge_agents.append(int(nidx))
                                 seen_agents.add(int(nidx))
@@ -1157,7 +1184,7 @@ class DecisionPointObservation(ObservationBuilder):
                 key = (int(cell_pos[0]), int(cell_pos[1]), int(cell_dir))
                 if key in transition_cache:
                     return transition_cache[key]
-                trans = self.env.rail.get_transitions(int(cell_pos[0]), int(cell_pos[1]), int(cell_dir))
+                trans = self._rail_get_transitions(cell_pos, cell_dir)
                 transition_cache[key] = trans
                 return trans
 
@@ -1170,9 +1197,10 @@ class DecisionPointObservation(ObservationBuilder):
                 current_pos, current_dir, depth = frontier.pop()
                 if depth > max(1, int(max_depth)):
                     continue
-                if (current_pos, current_dir) in visited:
+                visited_key = (self._pos_tuple(current_pos), int(current_dir))
+                if visited_key in visited:
                     continue
-                visited.add((current_pos, current_dir))
+                visited.add(visited_key)
                 try:
                     transitions = _get_transitions_cached(current_pos, current_dir)
                 except Exception as e:
@@ -1243,7 +1271,7 @@ class DecisionPointObservation(ObservationBuilder):
 
     def _is_switch_at_current_cell(self, pos, direction) -> bool:
         """True if the agent stands on a switching cell right now."""
-        transitions = self.env.rail.get_transitions(*pos, direction)
+        transitions = self._rail_get_transitions(pos, direction)
         return fast_count_nonzero(transitions) > 1
 
     def _incoming_degree(self, cell_pos, transition_cache=None) -> int:
@@ -1255,7 +1283,7 @@ class DecisionPointObservation(ObservationBuilder):
             key = (int(pos[0]), int(pos[1]), int(direction))
             if key in transition_cache:
                 return transition_cache[key]
-            trans = self.env.rail.get_transitions(int(pos[0]), int(pos[1]), int(direction))
+            trans = self._rail_get_transitions(pos, direction)
             transition_cache[key] = trans
             return trans
 
@@ -1286,7 +1314,7 @@ class DecisionPointObservation(ObservationBuilder):
             key = (int(pos[0]), int(pos[1]), int(direction))
             if key in transition_cache:
                 return transition_cache[key]
-            trans = self.env.rail.get_transitions(int(pos[0]), int(pos[1]), int(direction))
+            trans = self._rail_get_transitions(pos, direction)
             transition_cache[key] = trans
             return trans
 
@@ -1296,7 +1324,7 @@ class DecisionPointObservation(ObservationBuilder):
             if prev_pos[0] < 0 or prev_pos[0] >= self.env.height or prev_pos[1] < 0 or prev_pos[1] >= self.env.width:
                 continue
             try:
-                agent_idx = int(self.agent_map[prev_pos])
+                agent_idx = self._agent_at_pos(prev_pos)
             except Exception:
                 continue
             if agent_idx == -1 or agent_idx == handle_exclude:
@@ -1326,7 +1354,7 @@ class DecisionPointObservation(ObservationBuilder):
         """
         if fast_count_nonzero(transitions) != 1:
             return False
-        ndir = fast_argmax(transitions)
+        ndir = int(fast_argmax(transitions))
         if not transitions[ndir]:
             return False
         # "Nur forward" am aktuellen Knoten: kein Links/Rechts-Entscheid mehr möglich.
@@ -1338,13 +1366,13 @@ class DecisionPointObservation(ObservationBuilder):
         in_deg = self._incoming_degree(next_pos)
         if in_deg <= 1:
             return False
-        next_transitions_arrival = self.env.rail.get_transitions(*next_pos, ndir)
+        next_transitions_arrival = self._rail_get_transitions(next_pos, ndir)
         return fast_count_nonzero(next_transitions_arrival) == 1
 
     def _decision_type_at_position(self, pos, direction, target) -> int:
         if pos == target:
             return 8
-        transitions = self.env.rail.get_transitions(*pos, direction)
+        transitions = self._rail_get_transitions(pos, direction)
         decision_type = 0
         if self._is_switch_at_current_cell(pos, direction):
             decision_type += 2
@@ -1397,7 +1425,7 @@ class DecisionPointObservation(ObservationBuilder):
             # We do not log warnings for it; instead we encode it in features below.
             curr_dist_norm = (float(curr_dist_raw) / max_dist) if curr_reachable else 1.0
             try:
-                transitions = self.env.rail.get_transitions(*pos, direction)
+                transitions = self._rail_get_transitions(pos, direction)
             except Exception as e:
                 print(f"[Warn] get: Fehler bei get_transitions: {e}")
                 transitions = [0, 0, 0, 0]

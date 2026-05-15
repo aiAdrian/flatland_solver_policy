@@ -15,6 +15,32 @@ class DecisionPointUtils:
     - If an agent is blocked by another agent in opposite direction, it's a deadlock
     - Recursive: follow the chain of blocking agents to detect cycles
     """
+
+    @staticmethod
+    def _pos_tuple(pos):
+        if pos is None:
+            return None
+        return (int(pos[0]), int(pos[1]))
+
+    @staticmethod
+    def _rail_get_transitions(raw_env, pos, direction):
+        """Get transitions from rail. Standard signature: get_transitions(row, col, dir)"""
+        p = DecisionPointUtils._pos_tuple(pos)
+        d = int(direction)
+        return raw_env.rail.get_transitions(p[0], p[1], d)
+
+    @staticmethod
+    def _agent_at_pos(agent_map, pos) -> int:
+        if agent_map is None:
+            return -1
+        p = DecisionPointUtils._pos_tuple(pos)
+        try:
+            return int(agent_map[p])
+        except Exception:
+            try:
+                return int(agent_map[p[0], p[1]])
+            except Exception:
+                return -1
     
     @staticmethod
     def is_opposite_direction(dir1, dir2) -> bool:
@@ -39,7 +65,7 @@ class DecisionPointUtils:
         This is curve-safe: on curved mandatory corridors, two agents can be in
         conflict even when direction ids are not numeric opposites.
         """
-        my_transitions = raw_env.rail.get_transitions(*my_pos, my_dir)
+        my_transitions = DecisionPointUtils._rail_get_transitions(raw_env, my_pos, my_dir)
         if fast_count_nonzero(my_transitions) != 1:
             return False
         my_next_dir = fast_argmax(my_transitions)
@@ -47,7 +73,7 @@ class DecisionPointUtils:
         if my_next_pos != other_pos:
             return False
 
-        other_transitions = raw_env.rail.get_transitions(*other_pos, other_dir)
+        other_transitions = DecisionPointUtils._rail_get_transitions(raw_env, other_pos, other_dir)
         if fast_count_nonzero(other_transitions) != 1:
             return False
         other_next_dir = fast_argmax(other_transitions)
@@ -109,7 +135,7 @@ class DecisionPointUtils:
         s = step_offset
 
         while s < max_steps:
-            transitions = raw_env.rail.get_transitions(*pos, direction)
+            transitions = DecisionPointUtils._rail_get_transitions(raw_env, pos, direction)
             num_trans = fast_count_nonzero(transitions)
             if num_trans == 0:
                 return -1
@@ -124,7 +150,7 @@ class DecisionPointUtils:
             npos = get_new_position(pos, ndir)
             s += 1
 
-            agent_idx = agent_map[npos] if agent_map is not None else -1
+            agent_idx = DecisionPointUtils._agent_at_pos(agent_map, npos)
             if agent_idx != -1 and agent_idx != handle:
                 other = raw_env.agents[agent_idx]
                 other_pos = other.position  
@@ -137,7 +163,7 @@ class DecisionPointUtils:
                     if DecisionPointUtils.is_head_on_same_edge(raw_env, pos, direction, other_pos, other_dir):
                         pass
                     elif DecisionPointUtils.is_opposite_direction(ndir, other_dir):
-                        other_transitions = raw_env.rail.get_transitions(*other_pos, other_dir)
+                        other_transitions = DecisionPointUtils._rail_get_transitions(raw_env, other_pos, other_dir)
                         if fast_count_nonzero(other_transitions) != 1:
                             # The blocking agent still has a local escape option.
                             return 0
