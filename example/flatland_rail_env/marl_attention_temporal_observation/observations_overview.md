@@ -192,6 +192,32 @@ Formal:
 
 ## 7. tree_payload Schema (fuer lernbare Tree-Encoder)
 
+Wichtige Invariante fuer Branch-Semantik:
+- `left`, `forward` und `right` sind immer relativ zur aktuellen Blickrichtung des expandierten Agenten-Zustands definiert.
+- Diese Semantik gilt konsistent in der Traversierung und im Payload.
+- Ein linker Kindknoten bleibt damit im lokalen Baum immer der linke Ast aus Sicht des Agenten an genau diesem Suchschritt.
+
+Anschauliches Beispiel fuer einen expandierten Zustand mit Blickrichtung `north`:
+
+```mermaid
+flowchart TD
+    R[ego state dir=north]
+    L[left child dir=west]
+    F[forward child dir=north]
+    Ri[right child dir=east]
+
+    R --> L
+    R --> F
+    R --> Ri
+```
+
+Die zugehoerige relative Ordnung ist dann:
+- `left = west`
+- `forward = north`
+- `right = east`
+
+Diese Ordnung wird im lokalen Tree-Search stabil gehalten, auch wenn die absolute Gleisrichtung spaeter wechselt.
+
 ```json
 {
   "nodes": [
@@ -216,6 +242,9 @@ Formal:
       "src_depth": 2,
       "dst_depth": 3,
       "rel_dir_bin": 1,
+      "action_left": 0.0,
+      "action_forward": 1.0,
+      "action_right": 0.0,
       "edge_len_cells": 1,
       "src_dist_to_target": 0.62,
       "dst_dist_to_target": 0.48,
@@ -235,6 +264,17 @@ Hinweis:
 - `tree_payload` ist absichtlich variabel in Form und Groesse.
 - Genau das erlaubt robuste Encoder fuer unterschiedlich grosse und asymmetrische Baeume.
 - Die neuen Edge-Signale sind absichtlich pro Kante gespeichert, damit der Encoder frei entscheiden kann, ob er Topologie, Konflikte oder Ziel-Fortschritt staerker gewichtet.
+- Die Action-Signale auf der Edge sind absichtlich redundant zu `rel_dir_bin`: das Modell bekommt die relative Richtung sowohl kompakt als Index als auch direkt als stabiles One-Hot-Signal.
+
+Beispiel fuer ein einzelnes Edge-Signal im Payload:
+- Elternzustand schaut nach `north`
+- Kind liegt auf dem linken Ast
+- Dann gilt auf dieser Edge:
+  - `rel_dir_bin = 0`
+  - `action_left = 1.0`
+  - `action_forward = 0.0`
+  - `action_right = 0.0`
+- Im Encoder landet diese Kante damit immer in derselben semantischen Rolle: linker Ast relativ zum Agenten.
 
 ## 8. Was ist lernbar, was ist deterministisch?
 
@@ -259,23 +299,33 @@ Aktuelle Implementierung:
 1. `tree_payload` wird im Trainingspfad aus `env.dev_tree_dict[handle]` gelesen.
 2. Der bestehende 120D-DFS-Block in `raw_features[35:155]` geht weiterhin in den serialisierten Tree/LSTM-Pfad.
 3. Zusaetzlich liest `TreePayloadEncoder` den variablen `tree_payload` direkt ein.
-4. Nodes werden als 8D-Features projiziert; Edges werden als 9D-Features in das Message Passing eingespeist.
+4. Nodes werden als 8D-Features projiziert; Edges werden als 11D-Features in das Message Passing eingespeist.
 5. Das resultierende Tree-Embedding wird mit dem restlichen Policy-Kontext fusioniert und end-to-end trainiert.
 
 Aktuelle Edge-Feature-Belegung im `TreePayloadEncoder`:
-- `[0] rel_dir_bin / 2.0`
-- `[1] has_agents_on_edge`
-- `[2] has_oncoming_edge`
-- `[3] edge_len_cells`
-- `[4] src_dist_to_target`
-- `[5] dst_dist_to_target`
-- `[6] delta_from_root`
-- `[7] improves_over_current`
-- `[8] target_on_edge`
+- `[0] action_left`
+- `[1] action_forward`
+- `[2] action_right`
+- `[3] has_agents_on_edge`
+- `[4] has_oncoming_edge`
+- `[5] edge_len_cells`
+- `[6] src_dist_to_target`
+- `[7] dst_dist_to_target`
+- `[8] delta_from_root`
+- `[9] improves_over_current`
+- `[10] target_on_edge`
+
+Verifizierte Beispiel-Semantik:
+- Bei Blickrichtung `north` ergibt sich die relative Reihenfolge `(left, forward, right) = (west, north, east)`.
+- Ein linker Ast wird im Edge-Encoder daher als `action_left = 1.0` repraesentiert.
+- Ein Test-Payload mit genau einer linken Kante ergab einen 11D-Edge-Vektor der Form:
+  - `[1.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.80, 0.60, 0.60, 1.0, 0.0]`
+  - Lesart: linker Ast, keine Agenten auf der Kante, keine Oncoming-Edge, kurze Kante, Fortschritt Richtung Ziel, Ziel nicht direkt auf der Kante.
 
 Wichtig:
 - Der serialisierte Tree-Block und der Payload-Encoder laufen parallel, nicht alternativ.
 - Die neue Distance-Map-Information ist damit im lernbaren Edge-Pfad verfuegbar, ohne die alte 120D-Serialisierung umzubauen.
+- Die expliziten `action_left/forward/right`-Kanäle machen die Aktions-Semantik fuer den Encoder direkt lernbar, ohne dass er die Zuordnung erst aus `rel_dir_bin` rekonstruieren muss.
 
 Checkpoint-Kompatibilitaet:
 - Aeltere Checkpoints koennen weiterhin geladen werden.

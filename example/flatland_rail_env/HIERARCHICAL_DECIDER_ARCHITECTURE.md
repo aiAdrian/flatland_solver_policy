@@ -833,7 +833,9 @@ Update 07.05.2026
 # ✅ TREE PAYLOAD (Trainierbarer Strukturpfad):
 #    • Variabler lokaler Suchbaum bleibt zusaetzlich zu den 90D Features erhalten
 #    • Pro Edge stehen jetzt Ziel-/Distance-Map-Signale zur Verfuegung
+#    • Pro Edge ist die relative Aktion jetzt auch explizit encodiert: `action_left`, `action_forward`, `action_right`
 #    • Beispiele: `src_dist_to_target`, `dst_dist_to_target`, `delta_from_root`, `improves_over_current`, `target_on_edge`
+#    • `left/forward/right` gilt immer relativ zur aktuellen Traversierungsrichtung des Agenten-Zustands
 #    • Der alte 120D DFS-Tree-Block bleibt unveraendert; die Zusatzsignale laufen nur ueber den Payload-Encoder
 #
 # ❌ NICHT SICHTBAR (Privacy/Decentralization):
