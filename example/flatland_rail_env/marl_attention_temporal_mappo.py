@@ -2,7 +2,7 @@ import copy
 import math
 import os
 from collections import namedtuple, deque
-from typing import Union, List
+from typing import Union, List, Any, Dict, Tuple
 
 import numpy as np
 import torch
@@ -147,6 +147,157 @@ class LocalTreeEncoder(nn.Module):
         return self.output_proj(h)                                       # (B, H)
 
 
+class TreePayloadEncoder(nn.Module):
+    """Edge-aware encoder for variable-size tree payloads (nodes + edges).
+
+    Handles dynamic graph size per sample using:
+    - node padding + node masks
+    - sparse edge message passing
+    - masked mean pooling
+    """
+
+    NODE_DIM = 8
+    EDGE_DIM = 4
+    MAX_NODES = 15
+
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        self.hidden_dim = int(hidden_dim)
+
+        self.node_proj = nn.Sequential(
+            nn.Linear(self.NODE_DIM, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.LeakyReLU(0.01),
+        )
+        self.edge_gate = nn.Sequential(
+            nn.Linear(self.EDGE_DIM, hidden_dim // 2),
+            nn.LeakyReLU(0.01),
+            nn.Linear(hidden_dim // 2, 1),
+        )
+        self.msg_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.update_proj = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.LeakyReLU(0.01),
+        )
+        self.output_proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.Tanh(),
+        )
+
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0.0, 0.01)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    @staticmethod
+    def _node_key(node: Dict[str, Any]) -> Tuple[int, int, int, int]:
+        pos = node.get("pos", (0, 0))
+        return int(pos[0]), int(pos[1]), int(node.get("dir", 0)), int(node.get("depth", 0))
+
+    @staticmethod
+    def _edge_key(pos, direction, depth) -> Tuple[int, int, int, int]:
+        return int(pos[0]), int(pos[1]), int(direction), int(depth)
+
+    def _payload_to_graph(self, payload: Dict[str, Any]) -> Tuple[np.ndarray, List[Tuple[int, int, np.ndarray]], int]:
+        max_nodes = self.MAX_NODES
+        node_feats = np.zeros((max_nodes, self.NODE_DIM), dtype=np.float32)
+        edge_list: List[Tuple[int, int, np.ndarray]] = []
+
+        if not isinstance(payload, dict):
+            return node_feats, edge_list, 0
+
+        nodes = payload.get("nodes", []) or []
+        edges = payload.get("edges", []) or []
+
+        idx_exact: Dict[Tuple[int, int, int, int], int] = {}
+        idx_simple: Dict[Tuple[int, int, int], int] = {}
+
+        n_valid = min(len(nodes), max_nodes)
+        for i in range(n_valid):
+            node = nodes[i]
+            depth = int(node.get("depth", 0))
+            node_feats[i, 0] = float(node.get("deadlock_risk", 0.0))
+            node_feats[i, 1] = min(1.0, float(node.get("num_transitions", 1)) / 3.0)
+            node_feats[i, 2] = 1.0 if node.get("has_oncoming", False) else 0.0
+            node_feats[i, 3] = min(1.0, float(node.get("backward_inflow_count", 0)) / 2.0)
+            node_feats[i, 4] = min(1.0, float(max(depth, 0)) / 12.0)
+            node_feats[i, 5] = 1.0 if len(node.get("agents_encountered", [])) > 0 else 0.0
+            node_feats[i, 6] = 0.5
+            node_feats[i, 7] = 0.0
+
+            key = self._node_key(node)
+            idx_exact[key] = i
+            idx_simple[(key[0], key[1], key[2])] = i
+
+        for edge in edges:
+            s_key = self._edge_key(edge.get("src_pos", (0, 0)), edge.get("src_dir", 0), edge.get("src_depth", 0))
+            d_key = self._edge_key(edge.get("dst_pos", (0, 0)), edge.get("dst_dir", 0), edge.get("dst_depth", 0))
+
+            s_idx = idx_exact.get(s_key)
+            d_idx = idx_exact.get(d_key)
+            if s_idx is None:
+                s_idx = idx_simple.get((s_key[0], s_key[1], s_key[2]))
+            if d_idx is None:
+                d_idx = idx_simple.get((d_key[0], d_key[1], d_key[2]))
+
+            if s_idx is None or d_idx is None:
+                continue
+
+            edge_feat = np.array([
+                float(edge.get("rel_dir_bin", 1)) / 2.0,
+                1.0 if len(edge.get("agents_on_edge", [])) > 0 else 0.0,
+                1.0 if edge.get("has_oncoming_edge", False) else 0.0,
+                min(1.0, float(edge.get("edge_len_cells", 1)) / 4.0),
+            ], dtype=np.float32)
+            edge_list.append((int(s_idx), int(d_idx), edge_feat))
+
+        np.clip(node_feats, 0.0, 1.0, out=node_feats)
+        return node_feats, edge_list, n_valid
+
+    def forward_batch(self, payload_batch: List[Dict[str, Any]]) -> torch.Tensor:
+        if len(payload_batch) == 0:
+            return torch.empty(0, self.hidden_dim, device=next(self.parameters()).device)
+
+        device = next(self.parameters()).device
+        bsz = len(payload_batch)
+        max_nodes = self.MAX_NODES
+
+        node_arr = np.zeros((bsz, max_nodes, self.NODE_DIM), dtype=np.float32)
+        node_mask = torch.zeros((bsz, max_nodes), dtype=torch.float32, device=device)
+        edge_graphs: List[List[Tuple[int, int, np.ndarray]]] = []
+
+        for b, payload in enumerate(payload_batch):
+            n_feat, e_list, n_valid = self._payload_to_graph(payload)
+            node_arr[b] = n_feat
+            edge_graphs.append(e_list)
+            if n_valid > 0:
+                node_mask[b, :n_valid] = 1.0
+
+        nodes = torch.as_tensor(node_arr, dtype=torch.float32, device=device)
+        node_h = self.node_proj(nodes)  # (B, N, H)
+        messages = torch.zeros_like(node_h)
+
+        for b, e_list in enumerate(edge_graphs):
+            if len(e_list) == 0:
+                continue
+            for src, dst, e_feat_np in e_list:
+                if src >= max_nodes or dst >= max_nodes:
+                    continue
+                e_feat = torch.as_tensor(e_feat_np, dtype=torch.float32, device=device)
+                gate = torch.sigmoid(self.edge_gate(e_feat)).squeeze(-1)
+                messages[b, dst] += gate * node_h[b, src]
+
+        msg_h = self.msg_proj(messages)
+        node_u = self.update_proj(torch.cat([node_h, msg_h], dim=-1))
+
+        denom = node_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+        pooled = (node_u * node_mask.unsqueeze(-1)).sum(dim=1) / denom
+        return self.output_proj(pooled)
+
+
 # Constants shared across encoder classes
 _BASE_OBS_DIM = 35   # Handcrafted features [0-34] from DecisionPointObservation
 _TREE_BLOCK_DIM = LocalTreeEncoder.MAX_NODES * LocalTreeEncoder.NODE_DIM  # = 120
@@ -247,6 +398,12 @@ class TemporalTransformerEncoder(nn.Module):
         # LocalTreeEncoder: DeepSets-style encoder for tree nodes from obs[35:155].
         # Replaces old slot-based tree_proj (which referenced non-existent indices).
         self.tree_encoder = LocalTreeEncoder(hidden_dim)
+        self.tree_payload_encoder = TreePayloadEncoder(hidden_dim)
+        self.tree_fusion = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.LeakyReLU(0.01),
+        )
         self.tree_norm = nn.LayerNorm(hidden_dim)
 
         # Explicit communication: sender message + receiver addressing.
@@ -299,6 +456,25 @@ class TemporalTransformerEncoder(nn.Module):
 
         return t
 
+    def _unpack_temporal_step(self, step) -> Tuple[Any, List[Any], Dict[str, Any]]:
+        """Support both legacy (obs, opps) and new (obs, opps, tree_payload) steps."""
+        if isinstance(step, (list, tuple)):
+            if len(step) >= 3:
+                obs_self, opponents, tree_payload = step[0], step[1], step[2]
+                if not isinstance(opponents, list):
+                    opponents = []
+                if not isinstance(tree_payload, dict):
+                    tree_payload = {}
+                return obs_self, opponents, tree_payload
+            if len(step) == 2:
+                obs_self, opponents = step
+                if not isinstance(opponents, list):
+                    opponents = []
+                return obs_self, opponents, {}
+            if len(step) == 1:
+                return step[0], [], {}
+        return step, [], {}
+
     def _encode_tree_block(self, obs_1d: torch.Tensor) -> torch.Tensor:
         """Extract obs[35:155] tree node block and encode via LocalTreeEncoder."""
         end = _BASE_OBS_DIM + _TREE_BLOCK_DIM
@@ -310,6 +486,27 @@ class TemporalTransformerEncoder(nn.Module):
         else:
             tree_flat = torch.zeros(_TREE_BLOCK_DIM, device=self.device)
         return self.tree_encoder(tree_flat)
+
+    def _encode_tree_payload(self, tree_payload: Dict[str, Any]) -> torch.Tensor:
+        return self.tree_payload_encoder.forward_batch([tree_payload])[0]
+
+    def _encode_tree_signal(self, obs_1d: torch.Tensor, tree_payload: Dict[str, Any]) -> torch.Tensor:
+        block_emb = self._encode_tree_block(obs_1d)
+        payload_emb = self._encode_tree_payload(tree_payload if isinstance(tree_payload, dict) else {})
+        return self.tree_fusion(torch.cat([block_emb, payload_emb], dim=-1))
+
+    def _encode_tree_signal_batch(self, last_obs_b: torch.Tensor, tree_payloads: List[Dict[str, Any]]) -> torch.Tensor:
+        batch_size = last_obs_b.shape[0]
+        if last_obs_b.shape[1] > _BASE_OBS_DIM:
+            tree_flat_b = last_obs_b[:, _BASE_OBS_DIM:_BASE_OBS_DIM + _TREE_BLOCK_DIM]
+            if tree_flat_b.shape[1] < _TREE_BLOCK_DIM:
+                pad = torch.zeros(batch_size, _TREE_BLOCK_DIM - tree_flat_b.shape[1], device=self.device)
+                tree_flat_b = torch.cat([tree_flat_b, pad], dim=1)
+        else:
+            tree_flat_b = torch.zeros(batch_size, _TREE_BLOCK_DIM, device=self.device)
+        block_emb_b = self.tree_encoder.forward_batch(tree_flat_b)
+        payload_emb_b = self.tree_payload_encoder.forward_batch(tree_payloads)
+        return self.tree_fusion(torch.cat([block_emb_b, payload_emb_b], dim=-1))
 
     def _apply_communication(self, self_context: torch.Tensor, opp_embeddings: List[torch.Tensor]):
         """Fuse explicit communication from opponents into receiver context."""
@@ -363,7 +560,8 @@ class TemporalTransformerEncoder(nn.Module):
         
         # Extract self observations over time
         self_obs_sequence = []  # Will be [emb_t-2, emb_t-1, emb_t]
-        for obs_self, _ in temporal_seq:
+        for step in temporal_seq:
+            obs_self, _, _ = self._unpack_temporal_step(step)
             obs_t = self._to_1d_tensor(obs_self)
             base_obs = obs_t[:self.base_obs_dim]  # First 35D handcrafted features only
             emb_t = self.obs_encoder(base_obs)    # (H,)
@@ -393,8 +591,9 @@ class TemporalTransformerEncoder(nn.Module):
         self_temporal_context = temporal_output[0, -1, :]  # (128,)
 
         # LocalTreeEncoder: encode node features from obs[35:155] at timestep t.
-        last_obs_t = self._to_1d_tensor(temporal_seq[-1][0])
-        tree_emb = self._encode_tree_block(last_obs_t)
+        last_obs, _, last_payload = self._unpack_temporal_step(temporal_seq[-1])
+        last_obs_t = self._to_1d_tensor(last_obs)
+        tree_emb = self._encode_tree_signal(last_obs_t, last_payload)
         self_temporal_context = self.tree_norm(self_temporal_context + tree_emb)
         
         # ========================================================================
@@ -402,7 +601,7 @@ class TemporalTransformerEncoder(nn.Module):
         # ========================================================================
         
         # Get current opponent observations (only from t, not entire history)
-        _, current_opponents = temporal_seq[-1]  # Last timestep
+        _, current_opponents, _ = self._unpack_temporal_step(temporal_seq[-1])  # Last timestep
         
         # Encode opponents (current timestep only, base 35D features)
         opp_embeddings = []
@@ -477,11 +676,14 @@ class TemporalTransformerEncoder(nn.Module):
         all_self_obs = []  # (batch_size, temporal_window, 33)
         all_opponents = []  # List of opponent lists per agent
         
+        all_tree_payloads = []
+
         for temp_seq in temporal_sequences:
-            self_seq = [obs_self for obs_self, _ in temp_seq]
+            self_seq = [self._unpack_temporal_step(step)[0] for step in temp_seq]
             all_self_obs.append(torch.stack([self._to_1d_tensor(obs) for obs in self_seq]))
-            _, current_opps = temp_seq[-1]
+            _, current_opps, payload = self._unpack_temporal_step(temp_seq[-1])
             all_opponents.append(current_opps)
+            all_tree_payloads.append(payload if isinstance(payload, dict) else {})
         
         # Stack: (batch_size, temporal_window, 33)
         all_self_obs_tensor = torch.stack(all_self_obs, dim=0)
@@ -508,16 +710,9 @@ class TemporalTransformerEncoder(nn.Module):
         # Extract current timestep context: (batch_size, hidden_dim)
         self_temporal_contexts = temporal_output[:, -1, :]
 
-        # LocalTreeEncoder (batch): encode tree block from obs[35:155] at timestep t.
+        # Tree signal (batch): fuse serialized block and raw tree_payload.
         last_obs_b = all_self_obs_tensor[:, -1, :]  # (B, obs_dim)
-        if last_obs_b.shape[1] > _BASE_OBS_DIM:
-            tree_flat_b = last_obs_b[:, _BASE_OBS_DIM:_BASE_OBS_DIM + _TREE_BLOCK_DIM]
-            if tree_flat_b.shape[1] < _TREE_BLOCK_DIM:
-                pad = torch.zeros(batch_size, _TREE_BLOCK_DIM - tree_flat_b.shape[1], device=self.device)
-                tree_flat_b = torch.cat([tree_flat_b, pad], dim=1)
-        else:
-            tree_flat_b = torch.zeros(batch_size, _TREE_BLOCK_DIM, device=self.device)
-        tree_emb_b = self.tree_encoder.forward_batch(tree_flat_b)
+        tree_emb_b = self._encode_tree_signal_batch(last_obs_b, all_tree_payloads)
         self_temporal_contexts = self.tree_norm(self_temporal_contexts + tree_emb_b)
         
         # Spatial attention (process per agent due to varying opponent counts)
@@ -637,6 +832,12 @@ class TemporalLSTMEncoder(nn.Module):
         # LocalTreeEncoder: DeepSets-style encoder for tree nodes from obs[35:155].
         self._tree_slots = None  # Unused; kept for checkpoint backward-compatibility stub.
         self.tree_encoder = LocalTreeEncoder(hidden_dim)
+        self.tree_payload_encoder = TreePayloadEncoder(hidden_dim)
+        self.tree_fusion = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.LeakyReLU(0.01),
+        )
         self.tree_norm = nn.LayerNorm(hidden_dim)
 
         self.last_comm_reg = torch.tensor(0.0, device=self.device)
@@ -672,6 +873,25 @@ class TemporalLSTMEncoder(nn.Module):
         t = torch.clamp(t, min=-10.0, max=10.0)
         return t
 
+    def _unpack_temporal_step(self, step) -> Tuple[Any, List[Any], Dict[str, Any]]:
+        """Support both legacy (obs, opps) and new (obs, opps, tree_payload) steps."""
+        if isinstance(step, (list, tuple)):
+            if len(step) >= 3:
+                obs_self, opponents, tree_payload = step[0], step[1], step[2]
+                if not isinstance(opponents, list):
+                    opponents = []
+                if not isinstance(tree_payload, dict):
+                    tree_payload = {}
+                return obs_self, opponents, tree_payload
+            if len(step) == 2:
+                obs_self, opponents = step
+                if not isinstance(opponents, list):
+                    opponents = []
+                return obs_self, opponents, {}
+            if len(step) == 1:
+                return step[0], [], {}
+        return step, [], {}
+
     def _encode_tree_block(self, obs_1d: torch.Tensor) -> torch.Tensor:
         """Extract obs[35:155] tree node block and encode via LocalTreeEncoder."""
         end = _BASE_OBS_DIM + _TREE_BLOCK_DIM
@@ -683,6 +903,27 @@ class TemporalLSTMEncoder(nn.Module):
         else:
             tree_flat = torch.zeros(_TREE_BLOCK_DIM, device=self.device)
         return self.tree_encoder(tree_flat)
+
+    def _encode_tree_payload(self, tree_payload: Dict[str, Any]) -> torch.Tensor:
+        return self.tree_payload_encoder.forward_batch([tree_payload])[0]
+
+    def _encode_tree_signal(self, obs_1d: torch.Tensor, tree_payload: Dict[str, Any]) -> torch.Tensor:
+        block_emb = self._encode_tree_block(obs_1d)
+        payload_emb = self._encode_tree_payload(tree_payload if isinstance(tree_payload, dict) else {})
+        return self.tree_fusion(torch.cat([block_emb, payload_emb], dim=-1))
+
+    def _encode_tree_signal_batch(self, last_obs_b: torch.Tensor, tree_payloads: List[Dict[str, Any]]) -> torch.Tensor:
+        batch_size = last_obs_b.shape[0]
+        if last_obs_b.shape[1] > _BASE_OBS_DIM:
+            tree_flat_b = last_obs_b[:, _BASE_OBS_DIM:_BASE_OBS_DIM + _TREE_BLOCK_DIM]
+            if tree_flat_b.shape[1] < _TREE_BLOCK_DIM:
+                pad = torch.zeros(batch_size, _TREE_BLOCK_DIM - tree_flat_b.shape[1], device=self.device)
+                tree_flat_b = torch.cat([tree_flat_b, pad], dim=1)
+        else:
+            tree_flat_b = torch.zeros(batch_size, _TREE_BLOCK_DIM, device=self.device)
+        block_emb_b = self.tree_encoder.forward_batch(tree_flat_b)
+        payload_emb_b = self.tree_payload_encoder.forward_batch(tree_payloads)
+        return self.tree_fusion(torch.cat([block_emb_b, payload_emb_b], dim=-1))
 
     def _apply_communication(self, self_context: torch.Tensor, opp_embeddings: List[torch.Tensor]):
         if len(opp_embeddings) == 0:
@@ -717,7 +958,8 @@ class TemporalLSTMEncoder(nn.Module):
 
     def forward_agent(self, temporal_seq: List, handle: int = 0):
         self_obs_sequence = []
-        for obs_self, _ in temporal_seq:
+        for step in temporal_seq:
+            obs_self, _, _ = self._unpack_temporal_step(step)
             obs_t = self._to_1d_tensor(obs_self)
             base_obs = obs_t[:self.base_obs_dim]  # First 35D only
             emb_t = self.obs_encoder(base_obs)
@@ -728,11 +970,12 @@ class TemporalLSTMEncoder(nn.Module):
         self_temporal_context = temporal_output[0, -1, :]
 
         # LocalTreeEncoder: encode node features from obs[35:155] at timestep t.
-        last_obs_t = self._to_1d_tensor(temporal_seq[-1][0])
-        tree_emb = self._encode_tree_block(last_obs_t)
+        last_obs, _, last_payload = self._unpack_temporal_step(temporal_seq[-1])
+        last_obs_t = self._to_1d_tensor(last_obs)
+        tree_emb = self._encode_tree_signal(last_obs_t, last_payload)
         self_temporal_context = self.tree_norm(self_temporal_context + tree_emb)
 
-        _, current_opponents = temporal_seq[-1]
+        _, current_opponents, _ = self._unpack_temporal_step(temporal_seq[-1])
         opp_embeddings = []
         for opp_obs in current_opponents:
             opp_t = self._to_1d_tensor(opp_obs)
@@ -773,11 +1016,14 @@ class TemporalLSTMEncoder(nn.Module):
         all_self_obs = []
         all_opponents = []
 
+        all_tree_payloads = []
+
         for temp_seq in temporal_sequences:
-            self_seq = [obs_self for obs_self, _ in temp_seq]
+            self_seq = [self._unpack_temporal_step(step)[0] for step in temp_seq]
             all_self_obs.append(torch.stack([self._to_1d_tensor(obs) for obs in self_seq]))
-            _, current_opps = temp_seq[-1]
+            _, current_opps, payload = self._unpack_temporal_step(temp_seq[-1])
             all_opponents.append(current_opps)
+            all_tree_payloads.append(payload if isinstance(payload, dict) else {})
 
         all_self_obs_tensor = torch.stack(all_self_obs, dim=0)
         flat_obs = all_self_obs_tensor.view(-1, all_self_obs_tensor.shape[-1])
@@ -788,16 +1034,9 @@ class TemporalLSTMEncoder(nn.Module):
         temporal_output, _ = self.temporal_lstm(self_embeddings)
         self_temporal_contexts = temporal_output[:, -1, :]
 
-        # LocalTreeEncoder (batch): encode tree block from obs[35:155] at timestep t.
+        # Tree signal (batch): fuse serialized block and raw tree_payload.
         last_obs_b = all_self_obs_tensor[:, -1, :]  # (B, obs_dim)
-        if last_obs_b.shape[1] > _BASE_OBS_DIM:
-            tree_flat_b = last_obs_b[:, _BASE_OBS_DIM:_BASE_OBS_DIM + _TREE_BLOCK_DIM]
-            if tree_flat_b.shape[1] < _TREE_BLOCK_DIM:
-                pad = torch.zeros(batch_size, _TREE_BLOCK_DIM - tree_flat_b.shape[1], device=self.device)
-                tree_flat_b = torch.cat([tree_flat_b, pad], dim=1)
-        else:
-            tree_flat_b = torch.zeros(batch_size, _TREE_BLOCK_DIM, device=self.device)
-        tree_emb_b = self.tree_encoder.forward_batch(tree_flat_b)
+        tree_emb_b = self._encode_tree_signal_batch(last_obs_b, all_tree_payloads)
         self_temporal_contexts = self.tree_norm(self_temporal_contexts + tree_emb_b)
 
         final_embeddings = []
@@ -1216,12 +1455,16 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # Observation sanity statistics (gesammelt über 100 Episoden)
         self._obs_stat_buffer: list = []   # rohe Feature-Vektoren der letzten 100 Ep.
         self._obs_stat_interval = 100
+        # Tree-payload sanity statistics (nodes/edges validity over same window)
+        self._tree_stat_buffer: list = []
 
         # Training-Kennzahlen je Batch (alle _obs_stat_interval Episoden geleert)
         self._stat_buf: dict = {
             'v_loss': [], 'p_loss': [], 'e_loss': [], 'aux_dl': [],
             'kl': [], 'ratio': [], 'entropy': [],
             'adv_mean': [], 'adv_std': [], 'grad_norm': [],
+            'tree_grad_actor': [], 'tree_grad_critic': [],
+            'tree_payload_grad_actor': [], 'tree_payload_grad_critic': [],
             'ret_min': [], 'ret_max': [],
             'comm_loss': [], 'action_div_loss': [], 'action_div_gate_ratio': [], 'total_loss': [],
             'action_hist': [],
@@ -1417,6 +1660,40 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             last_frame = np.asarray(state[-1][0], dtype=np.float32).reshape(-1)
             if last_frame.shape[0] > 0:
                 self._obs_stat_buffer.append(last_frame)
+        except Exception:
+            pass
+
+        # Tree-payload stats: verify variable node/edge counts and edge index validity.
+        try:
+            payload = state[-1][2] if isinstance(state[-1], (list, tuple)) and len(state[-1]) >= 3 else {}
+            if isinstance(payload, dict):
+                nodes = payload.get('nodes', [])
+                edges = payload.get('edges', [])
+                node_count = int(len(nodes)) if isinstance(nodes, list) else 0
+                edge_count = int(len(edges)) if isinstance(edges, list) else 0
+
+                invalid_edges = 0
+                if isinstance(edges, list):
+                    for e in edges:
+                        if not isinstance(e, dict):
+                            invalid_edges += 1
+                            continue
+                        src = e.get('src', e.get('from', None))
+                        dst = e.get('dst', e.get('to', None))
+                        try:
+                            si = int(src)
+                            di = int(dst)
+                            if si < 0 or di < 0 or si >= node_count or di >= node_count:
+                                invalid_edges += 1
+                        except Exception:
+                            invalid_edges += 1
+
+                self._tree_stat_buffer.append({
+                    'nodes': node_count,
+                    'edges': edge_count,
+                    'invalid_edges': int(invalid_edges),
+                    'empty_payload': 1 if (node_count == 0 and edge_count == 0) else 0,
+                })
         except Exception:
             pass
 
@@ -1975,6 +2252,30 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 )
                 
                 grad_norm = max(grad_norm_actor.item(), grad_norm_critic.item())
+
+                def _module_grad_norm(module: nn.Module) -> float:
+                    sq = 0.0
+                    for p in module.parameters():
+                        if p.grad is None:
+                            continue
+                        g = p.grad.detach()
+                        if torch.isnan(g).any() or torch.isinf(g).any():
+                            continue
+                        sq += float(torch.sum(g * g).item())
+                    return float(math.sqrt(max(sq, 0.0)))
+
+                tree_grad_actor = 0.0
+                tree_grad_critic = 0.0
+                tree_payload_grad_actor = 0.0
+                tree_payload_grad_critic = 0.0
+                if hasattr(self.encoder_actor, 'tree_encoder'):
+                    tree_grad_actor = _module_grad_norm(self.encoder_actor.tree_encoder)
+                if hasattr(self.encoder_critic, 'tree_encoder'):
+                    tree_grad_critic = _module_grad_norm(self.encoder_critic.tree_encoder)
+                if hasattr(self.encoder_actor, 'tree_payload_encoder'):
+                    tree_payload_grad_actor = _module_grad_norm(self.encoder_actor.tree_payload_encoder)
+                if hasattr(self.encoder_critic, 'tree_payload_encoder'):
+                    tree_payload_grad_critic = _module_grad_norm(self.encoder_critic.tree_payload_encoder)
                 
                 # Check for NaN in gradients after clipping
                 has_nan_grad = False
@@ -2013,6 +2314,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 self._stat_buf['adv_mean'].append(raw_adv_mean)
                 self._stat_buf['adv_std'].append(raw_adv_std)
                 self._stat_buf['grad_norm'].append(grad_norm)
+                self._stat_buf['tree_grad_actor'].append(tree_grad_actor)
+                self._stat_buf['tree_grad_critic'].append(tree_grad_critic)
+                self._stat_buf['tree_payload_grad_actor'].append(tree_payload_grad_actor)
+                self._stat_buf['tree_payload_grad_critic'].append(tree_payload_grad_critic)
                 self._stat_buf['comm_loss'].append(comm_loss_component.item())
                 self._stat_buf['action_div_loss'].append(action_diversity_loss_component.item())
                 self._stat_buf['action_div_gate_ratio'].append(action_diversity_gate_ratio)
@@ -2587,6 +2892,117 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         except Exception as exc:
             print(f"  (Feature importance not available: {exc})")
+
+        # ── 3b) Tree Encoder Diagnostics (every _obs_stat_interval episodes) ──
+        print(f"\n{color(W, C_BLUE)}")
+        print(f"  SECTION 3B — TREE ENCODER DIAGNOSTICS")
+
+        def _param_norm(module: nn.Module) -> float:
+            sq = 0.0
+            for p in module.parameters():
+                d = p.detach()
+                if torch.isnan(d).any() or torch.isinf(d).any():
+                    continue
+                sq += float(torch.sum(d * d).item())
+            return float(math.sqrt(max(sq, 0.0)))
+
+        def _has_nan_inf(module: nn.Module) -> int:
+            for p in module.parameters():
+                d = p.detach()
+                if torch.isnan(d).any() or torch.isinf(d).any():
+                    return 1
+            return 0
+
+        tree_issues = []
+
+        actor_tree_norm = 0.0
+        critic_tree_norm = 0.0
+        actor_payload_norm = 0.0
+        critic_payload_norm = 0.0
+        actor_tree_bad = 0
+        critic_tree_bad = 0
+        actor_payload_bad = 0
+        critic_payload_bad = 0
+
+        if hasattr(self.encoder_actor, 'tree_encoder'):
+            actor_tree_norm = _param_norm(self.encoder_actor.tree_encoder)
+            actor_tree_bad = _has_nan_inf(self.encoder_actor.tree_encoder)
+        if hasattr(self.encoder_critic, 'tree_encoder'):
+            critic_tree_norm = _param_norm(self.encoder_critic.tree_encoder)
+            critic_tree_bad = _has_nan_inf(self.encoder_critic.tree_encoder)
+        if hasattr(self.encoder_actor, 'tree_payload_encoder'):
+            actor_payload_norm = _param_norm(self.encoder_actor.tree_payload_encoder)
+            actor_payload_bad = _has_nan_inf(self.encoder_actor.tree_payload_encoder)
+        if hasattr(self.encoder_critic, 'tree_payload_encoder'):
+            critic_payload_norm = _param_norm(self.encoder_critic.tree_payload_encoder)
+            critic_payload_bad = _has_nan_inf(self.encoder_critic.tree_payload_encoder)
+
+        tg_a = float(np.mean(sb['tree_grad_actor'])) if sb['tree_grad_actor'] else 0.0
+        tg_c = float(np.mean(sb['tree_grad_critic'])) if sb['tree_grad_critic'] else 0.0
+        tpg_a = float(np.mean(sb['tree_payload_grad_actor'])) if sb['tree_payload_grad_actor'] else 0.0
+        tpg_c = float(np.mean(sb['tree_payload_grad_critic'])) if sb['tree_payload_grad_critic'] else 0.0
+
+        tree_rows = [
+            ("Actor tree param-norm", actor_tree_norm, "", "OK" if actor_tree_bad == 0 else "ALERT",
+             "healthy" if actor_tree_bad == 0 else "NaN/Inf in params"),
+            ("Critic tree param-norm", critic_tree_norm, "", "OK" if critic_tree_bad == 0 else "ALERT",
+             "healthy" if critic_tree_bad == 0 else "NaN/Inf in params"),
+            ("Actor payload param-norm", actor_payload_norm, "", "OK" if actor_payload_bad == 0 else "ALERT",
+             "healthy" if actor_payload_bad == 0 else "NaN/Inf in params"),
+            ("Critic payload param-norm", critic_payload_norm, "", "OK" if critic_payload_bad == 0 else "ALERT",
+             "healthy" if critic_payload_bad == 0 else "NaN/Inf in params"),
+            ("Actor tree grad-norm", tg_a, "", "OK" if tg_a > 1e-8 else "WARN",
+             "learning signal" if tg_a > 1e-8 else "near-zero updates"),
+            ("Critic tree grad-norm", tg_c, "", "OK" if tg_c > 1e-8 else "WARN",
+             "learning signal" if tg_c > 1e-8 else "near-zero updates"),
+            ("Actor payload grad-norm", tpg_a, "", "OK" if tpg_a > 1e-8 else "WARN",
+             "learning signal" if tpg_a > 1e-8 else "near-zero updates"),
+            ("Critic payload grad-norm", tpg_c, "", "OK" if tpg_c > 1e-8 else "WARN",
+             "learning signal" if tpg_c > 1e-8 else "near-zero updates"),
+        ]
+
+        print(f"  +{'─'*28}+{'─'*14}+{'─'*8}+{'─'*6}+{'─'*26}+")
+        print(f"  | {'Metric':<26s} | {'Value':>12s} | {'Unit':<6s} | {'St':<4s} | {'Interpretation':<24s} |")
+        print(f"  +{'─'*28}+{'─'*14}+{'─'*8}+{'─'*6}+{'─'*26}+")
+        for lbl, val, unit, st, note in tree_rows:
+            print(row(lbl, f"{val:.5f}", unit, st, note) + " |")
+            if st == "ALERT":
+                tree_issues.append(f"{lbl}: NaN/Inf in parameters")
+            elif "grad-norm" in lbl and st == "WARN":
+                tree_issues.append(f"{lbl}: near-zero gradient flow")
+        print(f"  +{'─'*28}+{'─'*14}+{'─'*8}+{'─'*6}+{'─'*26}+")
+
+        if self._tree_stat_buffer:
+            tarr_nodes = np.array([x['nodes'] for x in self._tree_stat_buffer], dtype=np.float32)
+            tarr_edges = np.array([x['edges'] for x in self._tree_stat_buffer], dtype=np.float32)
+            tarr_inv   = np.array([x['invalid_edges'] for x in self._tree_stat_buffer], dtype=np.float32)
+            tarr_empty = np.array([x['empty_payload'] for x in self._tree_stat_buffer], dtype=np.float32)
+
+            total_edges = float(np.maximum(tarr_edges.sum(), 1.0))
+            invalid_ratio = float(tarr_inv.sum() / total_edges)
+            empty_ratio = float(tarr_empty.mean())
+
+            print(f"\n  Variable tree payload stats (N={len(self._tree_stat_buffer)} frames):")
+            print(f"    nodes mean/std/min/max = {tarr_nodes.mean():.2f}/{tarr_nodes.std():.2f}/{int(tarr_nodes.min())}/{int(tarr_nodes.max())}")
+            print(f"    edges mean/std/min/max = {tarr_edges.mean():.2f}/{tarr_edges.std():.2f}/{int(tarr_edges.min())}/{int(tarr_edges.max())}")
+            print(f"    empty payload ratio     = {empty_ratio:.3f}")
+            print(f"    invalid edge ratio      = {invalid_ratio:.4f}")
+
+            if invalid_ratio > 0.02:
+                tree_issues.append(f"Invalid edge ratio {invalid_ratio:.4f} > 0.02: payload edge indices inconsistent")
+            if empty_ratio > 0.80:
+                tree_issues.append(f"Empty payload ratio {empty_ratio:.3f} > 0.80: tree search may be missing coverage")
+
+            self._tree_stat_buffer.clear()
+        else:
+            print("  No tree payload samples collected in this interval.")
+
+        if tree_issues:
+            print(f"\n  {color('TREE ENCODER ISSUES:', C_YELLOW)}")
+            for iss in tree_issues:
+                print(f"    {color('WARN', C_YELLOW)}  {iss}")
+        else:
+            print(f"\n    {color('OK', C_GREEN)}  Tree encoder diagnostics look healthy.")
 
         # ── 4) Obs-Sanity ──────────────────────────────────────────────────────
         obs_issues = []

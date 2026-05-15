@@ -32,6 +32,45 @@ Wichtig:
 - `raw_features` enthaelt bereits serialisierte Tree-Information (`[35:155]`).
 - Der volle Baum bleibt zusaetzlich in `tree_payload` erhalten (keine Information geht verloren).
 
+## 2.1 Local tree search im Detail (_local_search)
+
+Die lokale Suche ist eine begrenzte Graph-Expansion pro Agent und Zeitschritt.
+Ziel ist nicht ein globaler Plan, sondern ein lokaler Konflikt- und Topologie-
+Ausschnitt, der stabil trainierbar bleibt.
+
+Ablauf pro Aufruf:
+1. Start bei `(start_pos, start_dir, depth=0)` mit Frontier.
+2. Best-depth-Pruning pro Zustand `(pos, dir)`:
+  - ein Zustand wird nur erweitert, wenn er auf kleinerer Tiefe erreicht wird.
+3. Harte Budgetierung:
+  - `max_nodes = _compute_adaptive_node_budget(...)`
+  - sobald `len(nodes) >= max_nodes`, wird die Expansion beendet.
+4. Branch-Auswahl je Knoten:
+  - kuerzester Distanz-Branch bleibt immer erhalten
+  - Side-Branches werden je nach Modus (`stochastic` oder `mcts`) selektiert.
+5. Korridor-Kontraktion (optional, ab `tree_contract_depth`):
+  - lineare Segmente werden zu einer Kante zusammengezogen
+  - `edge_len_cells` speichert die reale Segmentlaenge.
+6. Node-Risiko:
+  - `_calculate_deadlock_risk(...)` liefert Basissignal
+  - Oncoming + Backward-Inflow erhoehen das Risiko additiv (geclippt auf `[0,1]`).
+7. Aggregation:
+  - `seen_agents` sammelt Gegner aus Knoten, Kanten und Inflow-Scans.
+
+Wichtige Invarianten:
+- Variable Groesse ist beabsichtigt: Anzahl `nodes`/`edges` kann pro Agent/Step
+  stark variieren.
+- Suche bleibt robust: bei Fehlern wird ein leeres Payload statt Crash geliefert.
+- Kuerzester Pfad wird trotz Sampling/MCTS nicht verworfen.
+
+Payload-Felder und Bedeutung:
+- `nodes[*].num_transitions`: lokale Verzweigungsstarke am Zustand.
+- `nodes[*].deadlock_risk`: heuristisches Konfliktsignal fuer diesen Knoten.
+- `nodes[*].incoming_agents`: Gegner, die in den Knoten einlaufen koennen.
+- `edges[*].rel_dir_bin`: relative Richtung Left/Forward/Right.
+- `edges[*].edge_len_cells`: komprimierte Segmentlaenge nach Kontraktion.
+- `seen_agents`: sortierte Menge lokal sichtbarer Gegner-IDs.
+
 ## 3. Datenfluss (von Rail-Graph bis Policy)
 
 ```mermaid

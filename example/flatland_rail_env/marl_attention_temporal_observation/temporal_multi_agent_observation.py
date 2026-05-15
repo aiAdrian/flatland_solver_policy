@@ -1,5 +1,6 @@
 from flatland.core.env_observation_builder import ObservationBuilder
 import numpy as np
+import copy
 from collections import deque
 from typing import Optional, List, Dict
 from marl_attention_temporal_observation.experimental_observation import ExperimentalObservation
@@ -13,7 +14,7 @@ class TemporalMultiAgentObservation(ObservationBuilder):
     1. Temporal Buffer: Stores last T timesteps (default T=3)
     2. Emergent Velocity Learning: LSTM encoder learns temporal deltas from raw observation sequences
        (No explicit delta computation - LSTM infers motion from frame-to-frame changes)
-    3. Sequential Format: Returns [(obs_t-2, opp_t-2), (obs_t-1, opp_t-1), (obs_t, opp_t)]
+    3. Sequential Format: Returns [(obs_t-2, opp_t-2, tree_t-2), ...]
     """
     def __init__(self, temporal_window: int = 3, base_obs=None, max_opponents: int = 3):
         super().__init__()
@@ -118,19 +119,41 @@ class TemporalMultiAgentObservation(ObservationBuilder):
             handles = list(range(len(self.env.agents)))
 
         current_obs = self.base_obs.get_many(handles)
-        handle_to_obs = {h: obs_pair for h, obs_pair in zip(handles, current_obs)}
+        handle_to_obs = {h: obs_entry for h, obs_entry in zip(handles, current_obs)}
+
+        def _unpack_base_obs(entry, handle):
+            """Accept both legacy (obs, opps) and extended (obs, opps, payload)."""
+            obs_vec = np.zeros(obs_size, dtype=np.float32)
+            opp_handles = []
+            payload = {}
+
+            if isinstance(entry, (list, tuple)):
+                if len(entry) >= 1:
+                    obs_vec = np.asarray(entry[0], dtype=np.float32).reshape(-1)
+                if len(entry) >= 2 and isinstance(entry[1], list):
+                    opp_handles = entry[1]
+                if len(entry) >= 3 and isinstance(entry[2], dict):
+                    payload = entry[2]
+
+            # DecisionPointObservation stores payload in env.dev_tree_dict.
+            if not payload and hasattr(self.env, 'dev_tree_dict'):
+                payload = self.env.dev_tree_dict.get(handle, {})
+
+            return obs_vec, opp_handles, payload
 
         enriched_obs = []
         obs_size = self.get_observation_size()
-        for handle, (obs_self, obs_others) in zip(handles, current_obs):
+        for handle, obs_entry in zip(handles, current_obs):
+            obs_self, obs_others, tree_payload = _unpack_base_obs(obs_entry, handle)
             obs_fixed_size = obs_self[:obs_size]
 
             scored_opponents = []
             for opp_handle in obs_others:
-                opp_pair = handle_to_obs.get(opp_handle, None)
-                if opp_pair is None:
+                opp_entry = handle_to_obs.get(opp_handle, None)
+                if opp_entry is None:
                     continue
-                opp_base = opp_pair[0][:obs_size]
+                opp_base, _, _ = _unpack_base_obs(opp_entry, opp_handle)
+                opp_base = opp_base[:obs_size]
                 score = self._opponent_relevance_score(opp_base)
                 scored_opponents.append((score, opp_base))
 
@@ -139,19 +162,19 @@ class TemporalMultiAgentObservation(ObservationBuilder):
                 scored_opponents = scored_opponents[:self.max_opponents]
 
             obs_others_enriched = [opp_base for _, opp_base in scored_opponents]
-            enriched_obs.append((obs_fixed_size, obs_others_enriched))
+            enriched_obs.append((obs_fixed_size, obs_others_enriched, copy.deepcopy(tree_payload)))
 
         temporal_sequences = []
-        for handle, (obs_self, obs_others) in zip(handles, enriched_obs):
+        for handle, (obs_self, obs_others, tree_payload) in zip(handles, enriched_obs):
             if handle not in self.temporal_history:
                 self.temporal_history[handle] = deque(maxlen=self.temporal_window)
-            self.temporal_history[handle].append((obs_self, obs_others))
+            self.temporal_history[handle].append((obs_self, obs_others, tree_payload))
             seq = list(self.temporal_history[handle])
             # Zero-pad early in the episode so the LSTM/temporal encoder
             # sees genuine velocity signals (replicating the first obs
             # produces zero deltas and biases the deadlock predictor).
             while len(seq) < self.temporal_window:
                 zero_obs = np.zeros(obs_size, dtype=np.float32)
-                seq.insert(0, (zero_obs, []))
+                seq.insert(0, (zero_obs, [], {}))
             temporal_sequences.append(seq)
         return temporal_sequences

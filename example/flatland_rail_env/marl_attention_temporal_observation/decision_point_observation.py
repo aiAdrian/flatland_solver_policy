@@ -837,14 +837,53 @@ class DecisionPointObservation(ObservationBuilder):
         return [shortest] + chosen_side
 
     def _local_search(self, handle, start_pos, start_dir, depth_limit):
-        """Robuste, defensive lokale Suche mit strukturierter Baum-Rückgabe.
+        """Run a bounded local graph search around one agent and emit tree payload.
+
+        Purpose:
+            Build a structured, variable-size neighborhood graph that captures
+            switch/merge topology, nearby agents, and deadlock cues for the
+            trainable tree encoder path.
+
+        Args:
+            handle: current ego agent id.
+            start_pos: agent position (row, col).
+            start_dir: agent direction in {0,1,2,3}.
+            depth_limit: maximum exploration depth in rail-cell steps.
+
+        Search mechanics:
+            1) Frontier-based traversal with best-depth pruning per state
+               (state = position + direction). A state is expanded only if it is
+               reached at a strictly better (smaller) depth.
+            2) Adaptive node budget via `_compute_adaptive_node_budget(...)` limits
+               total expanded nodes per call to keep runtime bounded.
+            3) At each expanded state, transitions are read once via cache, then
+               candidate branches are selected by `_select_local_search_branches(...)`.
+               The shortest-path successor is always retained; side branches are
+               sampled/ranked depending on local-search mode.
+            4) Optional corridor contraction via `_contract_corridor_segment(...)`
+               compresses linear tracks into one edge while preserving edge length
+               (`edge_len_cells`).
+            5) Deadlock signal per node is computed by `_calculate_deadlock_risk(...)`
+               and adjusted by oncoming and backward-inflow bonuses.
 
         Returns:
             dict with keys:
-              - nodes: list[node_info]
-              - edges: list[edge_info]
-              - seen_agents: sorted list[int]
-              - visited_states: list[(row, col, dir, depth)]
+              - nodes: list[dict], one entry per visited local state
+                fields: pos, dir, depth, num_transitions, deadlock_risk,
+                        agents_encountered, has_oncoming, incoming_agents,
+                        backward_inflow_count
+              - edges: list[dict], directed local transitions
+                fields: src_pos/src_dir/src_depth, dst_pos/dst_dir/dst_depth,
+                        rel_dir_bin, edge_len_cells, agents_on_edge,
+                        has_oncoming_edge
+              - seen_agents: sorted list[int] of all opponents observed in nodes,
+                incoming scans, or edges
+              - visited_states: list[(row, col, dir, depth)] in expansion order
+
+        Notes:
+            - Output size is intentionally variable (node/edge counts differ per
+              timestep and agent).
+            - On any severe failure, a safe empty payload is returned.
         """
         try:
             if start_pos is None or start_dir is None or self.env is None or self.env.rail is None:
