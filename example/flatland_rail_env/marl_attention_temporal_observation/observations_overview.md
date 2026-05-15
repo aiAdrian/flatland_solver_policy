@@ -30,7 +30,9 @@ Pro Agent in `DecisionPointObservation.get(handle)`:
 
 Wichtig:
 - `raw_features` enthaelt bereits serialisierte Tree-Information (`[35:155]`).
+- Dieser 120D-Block bleibt bewusst unveraendert, damit der bestehende DFS/Tree-LSTM-Pfad stabil bleibt.
 - Der volle Baum bleibt zusaetzlich in `tree_payload` erhalten (keine Information geht verloren).
+- Neue Distance-Map-Signale werden deshalb nicht in den serialisierten 120D-Block gepresst, sondern pro Edge im `tree_payload` abgelegt.
 
 ## 2.1 Local tree search im Detail (_local_search)
 
@@ -69,6 +71,11 @@ Payload-Felder und Bedeutung:
 - `nodes[*].incoming_agents`: Gegner, die in den Knoten einlaufen koennen.
 - `edges[*].rel_dir_bin`: relative Richtung Left/Forward/Right.
 - `edges[*].edge_len_cells`: komprimierte Segmentlaenge nach Kontraktion.
+- `edges[*].src_dist_to_target`: normierte Distance-Map-Distanz am Start der Kante.
+- `edges[*].dst_dist_to_target`: normierte Distance-Map-Distanz am Ende der Kante.
+- `edges[*].delta_from_root`: normierter Fortschritt relativ zur aktuellen Ego-Position.
+- `edges[*].improves_over_current`: binaeres Signal, ob die Kante das Ziel naeher bringt.
+- `edges[*].target_on_edge`: binaeres Signal, ob das Ziel auf der Kante erreicht oder beruehrt wird.
 - `seen_agents`: sortierte Menge lokal sichtbarer Gegner-IDs.
 
 ## 3. Datenfluss (von Rail-Graph bis Policy)
@@ -210,6 +217,11 @@ Formal:
       "dst_depth": 3,
       "rel_dir_bin": 1,
       "edge_len_cells": 1,
+      "src_dist_to_target": 0.62,
+      "dst_dist_to_target": 0.48,
+      "delta_from_root": 0.57,
+      "improves_over_current": 1.0,
+      "target_on_edge": false,
       "agents_on_edge": [3],
       "has_oncoming_edge": true
     }
@@ -222,6 +234,7 @@ Formal:
 Hinweis:
 - `tree_payload` ist absichtlich variabel in Form und Groesse.
 - Genau das erlaubt robuste Encoder fuer unterschiedlich grosse und asymmetrische Baeume.
+- Die neuen Edge-Signale sind absichtlich pro Kante gespeichert, damit der Encoder frei entscheiden kann, ob er Topologie, Konflikte oder Ziel-Fortschritt staerker gewichtet.
 
 ## 8. Was ist lernbar, was ist deterministisch?
 
@@ -229,31 +242,45 @@ Deterministisch (heuristisch, ohne Gradienten):
 - `_local_search` Traversierung
 - `deadlock_risk` Basisschaetzung
 - Baum-Serialisierung in fixe Slots
+- Distance-Map-abgeleitete Edge-Signale (`src/dst_dist_to_target`, `delta_from_root`, `improves_over_current`, `target_on_edge`)
 
 Lernbar (ueber PPO/Backprop in der Policy):
 - Gewichtung und Kombination aller Feature-Signale im Policy-Netz
 - Interaktion zwischen Ego-Features, Opponent-Features und Zeitfenster
-- Optional: separater Tree-Encoder (z. B. TreeLSTM/GAT/Transformer)
+- separater Tree-Encoder ueber `tree_payload` (aktuell edge-aware Message Passing, alternativ TreeLSTM/GAT/Transformer)
 
 Wichtige Designentscheidung:
 - Die Heuristik liefert nur strukturierte Kandidatensignale.
 - Die eigentliche Aggregation fuer Entscheidungen soll von der Policy gelernt werden.
 
-## 9. Vorschlag fuer lernbaren Tree-Pfad
+## 9. Aktueller lernbarer Tree-Pfad
 
-Minimal-invasive Variante:
-1. `tree_payload` aus `env.dev_tree_dict[handle]` im Trainingspfad abholen.
-2. Node/Edge-Listen in ein Batch-Format bringen (padding + masks).
-3. Tree-Encoder bauen:
-   - Option A: TreeLSTM
-   - Option B: Graph Attention (GAT)
-   - Option C: Transformer ueber DFS-Sequenz + edge features
-4. Tree-Embedding mit dem bestehenden Policy-Embedding fusionieren.
-5. End-to-End mit Actor/Critic trainieren.
+Aktuelle Implementierung:
+1. `tree_payload` wird im Trainingspfad aus `env.dev_tree_dict[handle]` gelesen.
+2. Der bestehende 120D-DFS-Block in `raw_features[35:155]` geht weiterhin in den serialisierten Tree/LSTM-Pfad.
+3. Zusaetzlich liest `TreePayloadEncoder` den variablen `tree_payload` direkt ein.
+4. Nodes werden als 8D-Features projiziert; Edges werden als 9D-Features in das Message Passing eingespeist.
+5. Das resultierende Tree-Embedding wird mit dem restlichen Policy-Kontext fusioniert und end-to-end trainiert.
 
-Empfohlene Fusion:
-- `h_policy = concat(h_obs, h_tree, h_comm)`
-- danach gemeinsamer MLP-Block fuer Actor/Critic Heads
+Aktuelle Edge-Feature-Belegung im `TreePayloadEncoder`:
+- `[0] rel_dir_bin / 2.0`
+- `[1] has_agents_on_edge`
+- `[2] has_oncoming_edge`
+- `[3] edge_len_cells`
+- `[4] src_dist_to_target`
+- `[5] dst_dist_to_target`
+- `[6] delta_from_root`
+- `[7] improves_over_current`
+- `[8] target_on_edge`
+
+Wichtig:
+- Der serialisierte Tree-Block und der Payload-Encoder laufen parallel, nicht alternativ.
+- Die neue Distance-Map-Information ist damit im lernbaren Edge-Pfad verfuegbar, ohne die alte 120D-Serialisierung umzubauen.
+
+Checkpoint-Kompatibilitaet:
+- Aeltere Checkpoints koennen weiterhin geladen werden.
+- Wenn sich Gewichtsformen im Payload-Encoder durch neue Edge-Dimensionen aendern, werden nur die inkompatiblen Tensoren uebersprungen und frisch initialisiert.
+- Unveraenderte Gewichte, insbesondere im restlichen Encoder- und Actor/Critic-Pfad, bleiben erhalten.
 
 ## 10. Search-Performance: neue Steuerhebel
 
