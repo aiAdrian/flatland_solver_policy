@@ -1281,7 +1281,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.action_diversity_gate_enabled = True
         self.action_diversity_decision_idx = 30
         self.action_diversity_local_deadlock_idx = 5
-        self.action_diversity_gate_threshold = 0.5
+        self.action_diversity_gate_threshold = 0.35
         self.aux_deadlock_pos_weight = 4.0
         self.weight_comm = 3.0e-4  # weak communication sparsity regularizer
         self.comm_reg_start_episode = 300
@@ -1839,8 +1839,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         local_deadlock = _safe(int(getattr(self, 'action_diversity_local_deadlock_idx', 5)))
         thr = float(getattr(self, 'action_diversity_gate_threshold', 0.5))
 
-        gate = 1.0 if (decision_required >= thr or local_deadlock >= thr) else 0.0
-        return gate
+        gate_signal = max(decision_required, local_deadlock)
+        if gate_signal < thr:
+            return 0.0
+        return float(np.clip(gate_signal, 0.0, 1.0))
 
     def _convert_transitions_to_torch_tensors(self, transitions_array):
         """Convert episode transitions to tensors"""

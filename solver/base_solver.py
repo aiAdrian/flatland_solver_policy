@@ -256,6 +256,10 @@ class BaseSolver:
                          checkpoint_interval=100):
 
         training_mode = True
+        # By default, keep CLI epsilon as hard upper bound. Policies can opt in
+        # to adaptive epsilon boosts via `allow_eps_above_cli=True`.
+        eps_cli_cap = float(getattr(self.policy, 'cli_eps_cap', eps))
+        allow_eps_above_cli = bool(getattr(self.policy, 'allow_eps_above_cli', False))
 
         episode = 0
         scores_window = deque(maxlen=checkpoint_interval)
@@ -323,6 +327,9 @@ class BaseSolver:
                 eps = max(eps, min(0.16, max(min_eps, 0.12)))
             elif done_recent < 0.16 and deadlock_rate > 0.50:
                 eps = max(eps, min(0.12, max(min_eps, 0.08)))
+
+            if not allow_eps_above_cli:
+                eps = min(eps, eps_cli_cap)
 
             b = int(np.round(50 * np.mean(terminate_window)))
             done_bar = ['#'] * b + ['_'] * (50 - b)
