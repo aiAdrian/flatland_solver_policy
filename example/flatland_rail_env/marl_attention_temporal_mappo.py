@@ -14,6 +14,23 @@ from torch.nn.utils.rnn import pack_padded_sequence
 from policy.learning_policy.learning_policy import LearningPolicy
 
 
+def _load_state_dict_compatible(module: nn.Module, state_dict: Dict[str, torch.Tensor]):
+    """Load only matching-shape tensors to keep checkpoint compatibility across small architecture changes."""
+    current = module.state_dict()
+    filtered = {}
+    skipped = []
+    for key, value in state_dict.items():
+        if key not in current:
+            skipped.append(key)
+            continue
+        if tuple(current[key].shape) != tuple(value.shape):
+            skipped.append(key)
+            continue
+        filtered[key] = value
+    missing, unexpected = module.load_state_dict(filtered, strict=False)
+    return missing, unexpected, skipped
+
+
 # =============================================================================
 # EPISODE BUFFERS 
 # =============================================================================
@@ -157,7 +174,7 @@ class TreePayloadEncoder(nn.Module):
     """
 
     NODE_DIM = 8
-    EDGE_DIM = 4
+    EDGE_DIM = 9
     # Safe upper cap for dynamic per-batch padding.
     # Local search can emit >15 nodes, so payload path should not silently
     # collapse to the serialized-tree limit.
@@ -254,6 +271,11 @@ class TreePayloadEncoder(nn.Module):
                 1.0 if len(edge.get("agents_on_edge", [])) > 0 else 0.0,
                 1.0 if edge.get("has_oncoming_edge", False) else 0.0,
                 min(1.0, float(edge.get("edge_len_cells", 1)) / 4.0),
+                float(edge.get("src_dist_to_target", 1.0)),
+                float(edge.get("dst_dist_to_target", 1.0)),
+                float(edge.get("delta_from_root", 0.5)),
+                float(edge.get("improves_over_current", 0.0)),
+                1.0 if edge.get("target_on_edge", False) else 0.0,
             ], dtype=np.float32)
             edge_list.append((int(s_idx), int(d_idx), edge_feat))
 
@@ -781,7 +803,12 @@ class TemporalTransformerEncoder(nn.Module):
     def load(self, filename: str):
         state_file = filename + ".temporal_encoder"
         if os.path.exists(state_file):
-            self.load_state_dict(torch.load(state_file, map_location=self.device))
+            sd = torch.load(state_file, map_location=self.device)
+            missing, unexpected, skipped = _load_state_dict_compatible(self, sd)
+            if skipped:
+                print(f"[TemporalTransformerEncoder] Skipped incompatible weights: {skipped}")
+            if missing:
+                print(f"[TemporalTransformerEncoder] New weights (fresh init): {missing}")
 
 
 class TemporalLSTMEncoder(nn.Module):
@@ -1105,7 +1132,9 @@ class TemporalLSTMEncoder(nn.Module):
         state_file = filename + ".temporal_encoder"
         if os.path.exists(state_file):
             sd = torch.load(state_file, map_location=self.device)
-            missing, unexpected = self.load_state_dict(sd, strict=False)
+            missing, unexpected, skipped = _load_state_dict_compatible(self, sd)
+            if skipped:
+                print(f"[TemporalLSTMEncoder] Skipped incompatible weights: {skipped}")
             if missing:
                 print(f"[TemporalLSTMEncoder] New weights (fresh init): {missing}")
 

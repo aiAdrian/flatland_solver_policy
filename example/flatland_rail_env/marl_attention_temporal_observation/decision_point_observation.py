@@ -631,21 +631,39 @@ class DecisionPointObservation(ObservationBuilder):
         score -= 0.02 * float(start_depth)
         return score
 
-    def _contract_corridor_segment(self, handle, pos, direction, depth, depth_limit):
+    @staticmethod
+    def _distance_to_unit(value: float, max_dist: float) -> float:
+        if value is None or not np.isfinite(value):
+            return 1.0
+        return float(np.clip(float(value) / max(1.0, float(max_dist)), 0.0, 1.0))
+
+    @staticmethod
+    def _progress_delta_to_unit(reference_dist: float, candidate_dist: float, max_dist: float) -> float:
+        if not np.isfinite(reference_dist) and not np.isfinite(candidate_dist):
+            return 0.5
+        if not np.isfinite(reference_dist) and np.isfinite(candidate_dist):
+            return 1.0
+        if np.isfinite(reference_dist) and not np.isfinite(candidate_dist):
+            return 0.0
+        delta = (float(reference_dist) - float(candidate_dist)) / max(1.0, float(max_dist))
+        return float(np.clip(0.5 + 0.5 * np.clip(delta, -1.0, 1.0), 0.0, 1.0))
+
+    def _contract_corridor_segment(self, handle, pos, direction, depth, depth_limit, target=None):
         """Compress linear corridor steps into one edge after contract depth.
 
         Stops contraction at decision points, conflicts, or depth limit.
         """
         if self.env is None or self.env.rail is None:
-            return pos, int(direction), 1
+            return pos, int(direction), 1, bool(target is not None and pos == target)
 
         contract_depth = max(0, int(self.local_search_contract_depth))
         if depth < contract_depth:
-            return pos, int(direction), 1
+            return pos, int(direction), 1, bool(target is not None and pos == target)
 
         cur_pos = pos
         cur_dir = int(direction)
         edge_len = 1
+        target_on_edge = bool(target is not None and cur_pos == target)
 
         while (depth + edge_len) < depth_limit:
             if self.agent_map is not None:
@@ -671,10 +689,14 @@ class DecisionPointObservation(ObservationBuilder):
             cur_dir = nd
             edge_len += 1
 
+            if target is not None and cur_pos == target:
+                target_on_edge = True
+                break
+
             if edge_len >= 6:
                 break
 
-        return cur_pos, cur_dir, edge_len
+        return cur_pos, cur_dir, edge_len, target_on_edge
 
     def _compute_adaptive_node_budget(
         self,
@@ -930,6 +952,9 @@ class DecisionPointObservation(ObservationBuilder):
                 transition_cache=transition_cache,
                 incoming_degree_cache=incoming_degree_cache,
             )
+            agent_target = getattr(self.env.agents[handle], 'target', None)
+            max_dist = max(1.0, float(getattr(self, '_max_dist', 1.0)))
+            root_dist = self._safe_distance(handle, start_pos, start_dir, distance_map)
             while frontier:
                 current_pos, current_dir, depth = frontier.pop()
                 state_key = (int(current_pos[0]), int(current_pos[1]), int(current_dir))
@@ -1021,16 +1046,25 @@ class DecisionPointObservation(ObservationBuilder):
                     distance_map=distance_map,
                 )
                 for next_dir, next_pos, _dist in selected:
-                    final_pos, final_dir, edge_len = self._contract_corridor_segment(
+                    final_pos, final_dir, edge_len, target_on_edge = self._contract_corridor_segment(
                         handle=handle,
                         pos=next_pos,
                         direction=next_dir,
                         depth=depth + 1,
                         depth_limit=depth_limit,
+                        target=agent_target,
                     )
                     next_depth = min(int(depth_limit), int(depth + edge_len))
                     if next_depth <= depth:
                         next_depth = depth + 1
+                    src_dist = self._safe_distance(handle, current_pos, current_dir, distance_map)
+                    dst_dist = self._safe_distance(handle, final_pos, final_dir, distance_map)
+                    src_dist_norm = self._distance_to_unit(src_dist, max_dist)
+                    dst_dist_norm = self._distance_to_unit(dst_dist, max_dist)
+                    delta_from_root_norm = self._progress_delta_to_unit(root_dist, dst_dist, max_dist)
+                    improves_over_current = 1.0 if (not np.isfinite(root_dist) and np.isfinite(dst_dist)) or (
+                        np.isfinite(root_dist) and np.isfinite(dst_dist) and float(dst_dist) < float(root_dist)
+                    ) else 0.0
                     edge_agents = []
                     if self.agent_map is not None:
                         try:
@@ -1049,6 +1083,11 @@ class DecisionPointObservation(ObservationBuilder):
                         "dst_depth": int(next_depth),
                         "rel_dir_bin": self._dir_to_rel_bin(current_dir, next_dir),
                         "edge_len_cells": int(edge_len),
+                        "src_dist_to_target": float(src_dist_norm),
+                        "dst_dist_to_target": float(dst_dist_norm),
+                        "delta_from_root": float(delta_from_root_norm),
+                        "improves_over_current": float(improves_over_current),
+                        "target_on_edge": bool(target_on_edge or (agent_target is not None and final_pos == agent_target)),
                         "agents_on_edge": edge_agents,
                         "has_oncoming_edge": bool(len(edge_agents) > 0),
                     })
