@@ -653,7 +653,9 @@ ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     batch_fraction=min(1.0, max(0.2, _env_float('FLATLAND_BATCH_FRACTION', default_batch_fraction))),
     max_batches_per_training=max(1, _env_int('FLATLAND_MAX_BATCHES', default_max_batches)),
     temporal_window=TEMPORAL_WINDOW,
-    encoder_type=os.getenv('FLATLAND_ENCODER_TYPE', 'lstm')
+    encoder_type=os.getenv('FLATLAND_ENCODER_TYPE', 'lstm'),
+    encoder_shared=os.getenv('FLATLAND_ENCODER_SHARED', 'false').lower() == 'true',  # Shared Actor+Critic encoder (50% faster)
+    use_spatial_attention=os.getenv('FLATLAND_USE_SPATIAL_ATTENTION', 'true').lower() == 'true'  # Enable spatial (agent x opponent) attention
 )
 
 def create_ma_ppo_agent(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'single') -> LearningPolicy:

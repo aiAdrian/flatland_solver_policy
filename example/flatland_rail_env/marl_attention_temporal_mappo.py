@@ -693,22 +693,26 @@ class TemporalTransformerEncoder(nn.Module):
         self_temporal_context = self.tree_norm(self_temporal_context + tree_emb)
         
         # ========================================================================
-        # STEP 3: SPATIAL ATTENTION - Multi-Agent Interaction
+        # STEP 3: SPATIAL ATTENTION - Multi-Agent Interaction (optional)
         # ========================================================================
+        
+        # Check if spatial attention is enabled (can be disabled for speed)
+        use_spatial = getattr(self, 'use_spatial_attention', True)
         
         # Get current opponent observations (only from t, not entire history)
         _, current_opponents, _ = self._unpack_temporal_step(temporal_seq[-1])  # Last timestep
         
-        # Encode opponents (current timestep only, base 35D features)
+        # Encode opponents (current timestep only, base 35D features) only if spatial attention is enabled
         opp_embeddings = []
-        for opp_obs in current_opponents:
-            opp_t = self._to_1d_tensor(opp_obs)
-            opp_base = opp_t[:self.base_obs_dim]  # First 35D only
-            opp_emb = self.obs_encoder(opp_base)
-            opp_embeddings.append(opp_emb)
+        if use_spatial and len(current_opponents) > 0:
+            for opp_obs in current_opponents:
+                opp_t = self._to_1d_tensor(opp_obs)
+                opp_base = opp_t[:self.base_obs_dim]  # First 35D only
+                opp_emb = self.obs_encoder(opp_base)
+                opp_embeddings.append(opp_emb)
         
-        # Combine self + opponents
-        if len(opp_embeddings) > 0:
+        # Combine self + opponents (only if spatial attention is enabled AND opponents exist)
+        if use_spatial and len(opp_embeddings) > 0:
             all_agents = [self_temporal_context] + opp_embeddings
             all_agents_tensor = torch.stack(all_agents, dim=0)  # (N_agents, 128)
             all_agents_batched = all_agents_tensor.unsqueeze(0)  # (1, N_agents, 128)
@@ -733,7 +737,7 @@ class TemporalTransformerEncoder(nn.Module):
             self.last_comm_intent_mean = [float(x) for x in intent_mean.detach().cpu().tolist()]
             self.last_comm_valid_count = 1
         else:
-            # No opponents → only own temporal context
+            # Spatial attention disabled OR no opponents → only own temporal context
             context = self_temporal_context
             self.last_comm_reg = torch.tensor(0.0, device=self.device)
             self.last_comm_gate_mean = 0.0
@@ -1076,14 +1080,18 @@ class TemporalLSTMEncoder(nn.Module):
         tree_emb = self._encode_tree_signal(last_obs_t, last_payload)
         self_temporal_context = self.tree_norm(self_temporal_context + tree_emb)
 
+        # Check if spatial attention is enabled (can be disabled for speed)
+        use_spatial = getattr(self, 'use_spatial_attention', True)
+        
         _, current_opponents, _ = self._unpack_temporal_step(temporal_seq[-1])
         opp_embeddings = []
-        for opp_obs in current_opponents:
-            opp_t = self._to_1d_tensor(opp_obs)
-            opp_base = opp_t[:self.base_obs_dim]  # First 35D only
-            opp_embeddings.append(self.obs_encoder(opp_base))
+        if use_spatial and len(current_opponents) > 0:
+            for opp_obs in current_opponents:
+                opp_t = self._to_1d_tensor(opp_obs)
+                opp_base = opp_t[:self.base_obs_dim]  # First 35D only
+                opp_embeddings.append(self.obs_encoder(opp_base))
 
-        if len(opp_embeddings) > 0:
+        if use_spatial and len(opp_embeddings) > 0:
             all_agents = [self_temporal_context] + opp_embeddings
             all_agents_tensor = torch.stack(all_agents, dim=0).unsqueeze(0)
             query = self_temporal_context.unsqueeze(0).unsqueeze(0)
@@ -1292,7 +1300,8 @@ MARL_ATTENTION_TEMPORAL_MAPPO_Param = namedtuple('MARL_ATTENTION_TEMPORAL_MAPPO_
                             ['hidden_size', 'batch_size', 'learning_rate',
                              'discount', 'gae_lambda', 'use_gpu',
                              'max_episodes_in_training_memory', 'batch_fraction', 'k_epochs',
-                             'max_batches_per_training', 'temporal_window', 'encoder_type'])
+                             'max_batches_per_training', 'temporal_window', 'encoder_type',
+                             'encoder_shared', 'use_spatial_attention'])
 
 
 # =============================================================================
@@ -1337,6 +1346,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             self.discount = self.ppo_parameters.discount
             self.temporal_window = getattr(self.ppo_parameters, 'temporal_window', 3)
             self.encoder_type = getattr(self.ppo_parameters, 'encoder_type', 'transformer')
+            self.encoder_shared = getattr(self.ppo_parameters, 'encoder_shared', False)  # Share Actor+Critic encoder
+            self.use_spatial_attention = getattr(self.ppo_parameters, 'use_spatial_attention', True)   # Enable spatial attention
         else:
             self.hidden_size = 256
             self.learning_rate = 5.0e-3
@@ -1344,6 +1355,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             self.batch_size = 128  # Back to baseline
             self.temporal_window = 3
             self.encoder_type = 'transformer'
+            self.encoder_shared = False
+            self.use_spatial_attention = True
 
         # Device
         if self.ppo_parameters is not None and getattr(self.ppo_parameters, 'use_gpu', False) and torch.cuda.is_available():
@@ -1444,21 +1457,37 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         encoder_cls = TemporalLSTMEncoder if str(self.encoder_type).lower() == 'lstm' else TemporalTransformerEncoder
 
-        self.encoder_actor = encoder_cls(
-            obs_dim=state_size,
-            hidden_dim=self.hidden_size,
-            num_heads=self.num_heads,
-            temporal_window=self.temporal_window,
-            device=self.device
-        )
-
-        self.encoder_critic = encoder_cls(
-            obs_dim=state_size,
-            hidden_dim=self.hidden_size,
-            num_heads=self.num_heads,
-            temporal_window=self.temporal_window,
-            device=self.device
-        )
+        if self.encoder_shared:
+            # ⚡ SHARED ENCODER MODE: Actor + Critic use same encoder (~50% faster)
+            self.encoder_actor = encoder_cls(
+                obs_dim=state_size,
+                hidden_dim=self.hidden_size,
+                num_heads=self.num_heads,
+                temporal_window=self.temporal_window,
+                device=self.device
+            )
+            self.encoder_critic = self.encoder_actor  # Pointer to same object
+            print(f"✅ Shared Encoder: actor + critic use 1 encoder (50% faster)")
+        else:
+            # Default: separate encoders for actor + critic
+            self.encoder_actor = encoder_cls(
+                obs_dim=state_size,
+                hidden_dim=self.hidden_size,
+                num_heads=self.num_heads,
+                temporal_window=self.temporal_window,
+                device=self.device
+            )
+            self.encoder_critic = encoder_cls(
+                obs_dim=state_size,
+                hidden_dim=self.hidden_size,
+                num_heads=self.num_heads,
+                temporal_window=self.temporal_window,
+                device=self.device
+            )
+        
+        # Set spatial attention flag on encoders (used in forward_agent())
+        self.encoder_actor.use_spatial_attention = bool(self.use_spatial_attention)
+        self.encoder_critic.use_spatial_attention = bool(self.use_spatial_attention)
 
         # Actor-Critic Model (heads only, encoders are separate!)
         critic_hidden = max(192, int(self.hidden_size))
