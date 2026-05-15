@@ -690,34 +690,36 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         train_frequency=10,
         optimizer_mode=optimizer_mode
     )
-    # Convergence-focused settings: avoid frozen policy updates and promote
-    # meaningful exploration in high-deadlock traffic.
-    policy.surrogate_eps_clip = 0.15
-    policy.weight_entropy = 0.085
-    policy.reward_scale = 0.14
-    policy.weight_loss = 1.60
+    # Convergence-focused settings (v2):
+    # - slightly wider trust region to escape local deadlock basins
+    # - milder reward scale for critic stability
+    # - stronger anti-forward bias at conflict points
+    policy.surrogate_eps_clip = 0.18
+    policy.weight_entropy = 0.075
+    policy.reward_scale = 0.11
+    policy.weight_loss = 1.45
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600
-    policy.ppo_target_kl = 0.035
-    policy.ppo_max_kl = 0.070
-    policy.ppo_emergency_kl = 0.16
-    policy.ppo_emergency_kl_hard = 0.24
-    policy.ratio_guard_soft = 1.10
-    policy.ratio_guard_soft_low = 0.90
-    policy.ratio_guard_hard = 1.15
-    policy.ratio_guard_hard_low = 0.85
+    policy.ppo_target_kl = 0.050
+    policy.ppo_max_kl = 0.100
+    policy.ppo_emergency_kl = 0.20
+    policy.ppo_emergency_kl_hard = 0.30
+    policy.ratio_guard_soft = 1.18
+    policy.ratio_guard_soft_low = 0.82
+    policy.ratio_guard_hard = 1.26
+    policy.ratio_guard_hard_low = 0.74
     policy.max_hard_batches_before_lr_decay = 4
-    policy.hard_spike_streak_limit = 3
-    policy.actor_lr_min_factor = 0.60
+    policy.hard_spike_streak_limit = 4
+    policy.actor_lr_min_factor = 0.70
     policy.actor_lr_decay_on_instability = 0.88
     policy.max_eps_random = 0.16
     policy.decision_eps_floor = 0.12
     policy.use_decision_eps_floor = True
     # Encourage non-forward alternatives at conflict points.
-    policy.weight_action_diversity = 0.14
-    policy.forward_prob_soft_max = 0.66
-    policy.lr_prob_soft_min = 0.08
-    policy.idle_prob_soft_max = 0.20
+    policy.weight_action_diversity = 0.20
+    policy.forward_prob_soft_max = 0.60
+    policy.lr_prob_soft_min = 0.12
+    policy.idle_prob_soft_max = 0.24
     policy.idle_logit_penalty = 1.80
     policy.stop_logit_penalty = 1.45
     policy.eps_smoothing = eps  # Set epsilon floor

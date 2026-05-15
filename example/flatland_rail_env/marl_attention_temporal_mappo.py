@@ -158,7 +158,10 @@ class TreePayloadEncoder(nn.Module):
 
     NODE_DIM = 8
     EDGE_DIM = 4
-    MAX_NODES = 15
+    # Safe upper cap for dynamic per-batch padding.
+    # Local search can emit >15 nodes, so payload path should not silently
+    # collapse to the serialized-tree limit.
+    MAX_NODES = 72
 
     def __init__(self, hidden_dim: int):
         super().__init__()
@@ -201,8 +204,8 @@ class TreePayloadEncoder(nn.Module):
     def _edge_key(pos, direction, depth) -> Tuple[int, int, int, int]:
         return int(pos[0]), int(pos[1]), int(direction), int(depth)
 
-    def _payload_to_graph(self, payload: Dict[str, Any]) -> Tuple[np.ndarray, List[Tuple[int, int, np.ndarray]], int]:
-        max_nodes = self.MAX_NODES
+    def _payload_to_graph(self, payload: Dict[str, Any], max_nodes: int) -> Tuple[np.ndarray, List[Tuple[int, int, np.ndarray]], int]:
+        max_nodes = int(max(1, max_nodes))
         node_feats = np.zeros((max_nodes, self.NODE_DIM), dtype=np.float32)
         edge_list: List[Tuple[int, int, np.ndarray]] = []
 
@@ -263,14 +266,22 @@ class TreePayloadEncoder(nn.Module):
 
         device = next(self.parameters()).device
         bsz = len(payload_batch)
-        max_nodes = self.MAX_NODES
+
+        # Dynamic padding size per batch (bounded by MAX_NODES for stability).
+        max_nodes_in_batch = 1
+        for payload in payload_batch:
+            if isinstance(payload, dict):
+                nodes = payload.get("nodes", []) or []
+                if isinstance(nodes, list):
+                    max_nodes_in_batch = max(max_nodes_in_batch, len(nodes))
+        max_nodes = min(self.MAX_NODES, max_nodes_in_batch)
 
         node_arr = np.zeros((bsz, max_nodes, self.NODE_DIM), dtype=np.float32)
         node_mask = torch.zeros((bsz, max_nodes), dtype=torch.float32, device=device)
         edge_graphs: List[List[Tuple[int, int, np.ndarray]]] = []
 
         for b, payload in enumerate(payload_batch):
-            n_feat, e_list, n_valid = self._payload_to_graph(payload)
+            n_feat, e_list, n_valid = self._payload_to_graph(payload, max_nodes)
             node_arr[b] = n_feat
             edge_graphs.append(e_list)
             if n_valid > 0:
