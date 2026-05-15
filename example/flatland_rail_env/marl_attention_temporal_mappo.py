@@ -1673,25 +1673,76 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 edge_count = int(len(edges)) if isinstance(edges, list) else 0
 
                 invalid_edges = 0
+                unmapped_edges = 0
+                idx_exact = {}
+                idx_simple = {}
+
+                if isinstance(nodes, list):
+                    for i, n in enumerate(nodes):
+                        if not isinstance(n, dict):
+                            continue
+                        pos = n.get('pos', (0, 0))
+                        d = int(n.get('dir', 0))
+                        dep = int(n.get('depth', i))
+                        try:
+                            pr, pc = int(pos[0]), int(pos[1])
+                        except Exception:
+                            pr, pc = 0, 0
+                        idx_exact[(pr, pc, d, dep)] = i
+                        idx_simple[(pr, pc, d)] = i
+
                 if isinstance(edges, list):
                     for e in edges:
                         if not isinstance(e, dict):
                             invalid_edges += 1
                             continue
-                        src = e.get('src', e.get('from', None))
-                        dst = e.get('dst', e.get('to', None))
-                        try:
-                            si = int(src)
-                            di = int(dst)
-                            if si < 0 or di < 0 or si >= node_count or di >= node_count:
+
+                        # Support both positional edge schema (src_pos/dst_pos)
+                        # and optional index schema (src/dst).
+                        si = None
+                        di = None
+
+                        if 'src' in e and 'dst' in e:
+                            try:
+                                si = int(e.get('src'))
+                                di = int(e.get('dst'))
+                            except Exception:
                                 invalid_edges += 1
-                        except Exception:
-                            invalid_edges += 1
+                                continue
+                        else:
+                            sp = e.get('src_pos', (0, 0))
+                            sd = int(e.get('src_dir', 0))
+                            sdep = int(e.get('src_depth', 0))
+                            dp = e.get('dst_pos', (0, 0))
+                            dd = int(e.get('dst_dir', 0))
+                            ddep = int(e.get('dst_depth', 0))
+                            try:
+                                spk = (int(sp[0]), int(sp[1]), sd, sdep)
+                                dpk = (int(dp[0]), int(dp[1]), dd, ddep)
+                            except Exception:
+                                invalid_edges += 1
+                                continue
+
+                            si = idx_exact.get(spk)
+                            di = idx_exact.get(dpk)
+                            if si is None:
+                                si = idx_simple.get((spk[0], spk[1], spk[2]))
+                            if di is None:
+                                di = idx_simple.get((dpk[0], dpk[1], dpk[2]))
+
+                        if si is None or di is None:
+                            # Endpoint cannot be mapped to currently materialized nodes.
+                            # This can happen with aggressive node budgets / contraction.
+                            unmapped_edges += 1
+                            continue
+                        if si < 0 or di < 0 or si >= node_count or di >= node_count:
+                            unmapped_edges += 1
 
                 self._tree_stat_buffer.append({
                     'nodes': node_count,
                     'edges': edge_count,
                     'invalid_edges': int(invalid_edges),
+                    'unmapped_edges': int(unmapped_edges),
                     'empty_payload': 1 if (node_count == 0 and edge_count == 0) else 0,
                 })
         except Exception:
@@ -2833,9 +2884,6 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             }
             self._log_episode_metrics(episode_metrics)
 
-        for key in self._stat_buf:
-            self._stat_buf[key].clear()
-
         # ── 3) Feature Importance ──────────────────────────────────────────────
         print(f"\n{color(W, C_BLUE)}")
         try:
@@ -2976,10 +3024,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             tarr_nodes = np.array([x['nodes'] for x in self._tree_stat_buffer], dtype=np.float32)
             tarr_edges = np.array([x['edges'] for x in self._tree_stat_buffer], dtype=np.float32)
             tarr_inv   = np.array([x['invalid_edges'] for x in self._tree_stat_buffer], dtype=np.float32)
+            tarr_unmap = np.array([x.get('unmapped_edges', 0) for x in self._tree_stat_buffer], dtype=np.float32)
             tarr_empty = np.array([x['empty_payload'] for x in self._tree_stat_buffer], dtype=np.float32)
 
             total_edges = float(np.maximum(tarr_edges.sum(), 1.0))
             invalid_ratio = float(tarr_inv.sum() / total_edges)
+            unmapped_ratio = float(tarr_unmap.sum() / total_edges)
             empty_ratio = float(tarr_empty.mean())
 
             print(f"\n  Variable tree payload stats (N={len(self._tree_stat_buffer)} frames):")
@@ -2987,9 +3037,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             print(f"    edges mean/std/min/max = {tarr_edges.mean():.2f}/{tarr_edges.std():.2f}/{int(tarr_edges.min())}/{int(tarr_edges.max())}")
             print(f"    empty payload ratio     = {empty_ratio:.3f}")
             print(f"    invalid edge ratio      = {invalid_ratio:.4f}")
+            print(f"    unmapped edge ratio     = {unmapped_ratio:.4f}")
 
             if invalid_ratio > 0.02:
-                tree_issues.append(f"Invalid edge ratio {invalid_ratio:.4f} > 0.02: payload edge indices inconsistent")
+                tree_issues.append(f"Invalid edge ratio {invalid_ratio:.4f} > 0.02: malformed edge fields in payload")
+            if unmapped_ratio > 0.25:
+                tree_issues.append(f"Unmapped edge ratio {unmapped_ratio:.4f} > 0.25: many edges reference nodes outside retained local node set")
             if empty_ratio > 0.80:
                 tree_issues.append(f"Empty payload ratio {empty_ratio:.3f} > 0.80: tree search may be missing coverage")
 
@@ -3142,6 +3195,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         )
         print(f"  {'─'*76}")
         print(f"{color(W, C_BLUE)}\n")
+
+        # Clear training-batch diagnostics only after all report sections
+        # consumed the buffered values (including tree diagnostics).
+        for key in self._stat_buf:
+            self._stat_buf[key].clear()
 
     def _apply_episode_end_bonus(self, episode_memory, done_count, num_agents):
         """Apply cooperative episode-end shaping — PER AGENT ONLY.
