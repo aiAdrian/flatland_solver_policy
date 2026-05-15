@@ -2540,104 +2540,61 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         print("\n" + "="*80 + "\n")
 
-    # Feature-Namen für das feste DecisionPointObservation-Layout (64D)
+    # Feature names/descriptions for current DecisionPointObservation layout
+    # (35 handcrafted base features + 120 serialized tree-node features).
     _OBS_FEATURE_NAMES = [
-        "is_switch",   "hint_L",      "hint_F",      "hint_R",      "is_merge",
-        "local_dl",
-        "swL_progress","swL_dl_sig",  "swL_switches","swL_dist",
-        "swL_target",  "swL_abort",   "swL_dl_ahead","valid_left",
-        "swF_progress","swF_dl_sig",  "swF_switches","swF_dist",
-        "swF_target",  "swF_abort",   "swF_dl_ahead","valid_forward",
-        "swR_progress","swR_dl_sig",  "swR_switches","swR_dist",
-        "swR_target",  "swR_abort",   "swR_dl_ahead","valid_right",
-        "decision_required",
-        "mgF_dl_sig",  "mgF_switches","mgF_target",  "mgF_abort",  "mgF_dl_ahead",
-        "mgB_dl_sig",  "mgB_switches","mgB_target",  "mgB_abort",  "mgB_dl_ahead",
-        "st_0","st_1","st_2","st_3","st_4","st_5","st_6",
-        "act_DN","act_L","act_F","act_R","act_S",
+        "is_switch", "hint_L", "hint_F", "hint_R", "is_merge", "local_dl",
+        "st_0", "st_1", "st_2", "st_3", "st_4", "st_5", "st_6",
+        "act_DN", "act_L", "act_F", "act_R", "act_S",
         "priority_rank",
-        "ct_OUTSIDE","ct_FORWARD_ONLY","ct_MERGING","ct_SWITCH","ct_DONE",
-        "tr_FWD_FWD","tr_FWD_MRG","tr_FWD_SWI","tr_SWI_FWD","tr_MRG_FWD",
+        "ct_OUTSIDE", "ct_FORWARD_ONLY", "ct_MERGING", "ct_SWITCH", "ct_DONE",
+        "tr_FWD_FWD", "tr_FWD_MRG", "tr_FWD_SWI", "tr_SWI_FWD", "tr_MRG_FWD",
+        "mean_deadlock", "confirmed_deadlock", "curr_dist_norm", "max_deadlock", "conflict_density", "branching_ratio",
+    ] + [
+        f"tree_n{node}_{feat}"
+        for node in range(LocalTreeEncoder.MAX_NODES)
+        for feat in ("dl", "trans", "oncoming", "inflow", "depth", "agents", "rel", "edge_agents")
     ]
 
-    # Short prose descriptions for each feature — same order as _OBS_FEATURE_NAMES
     _OBS_FEATURE_DESC = [
-        # 0-5 Base
-        "Switch present (branching possible)",        # is_switch
-        "Shortest path goes Left",                    # hint_L
-        "Shortest path goes Forward",                 # hint_F
-        "Shortest path goes Right",                   # hint_R
-        "Merge point (track join) ahead",             # is_merge
-        "Deadlock detected at current position",      # local_dl
-        # 6-13 Left branch
-        "Left branch: progress toward target",        # swL_progress
-        "Left branch: deadlock risk signal",          # swL_dl_sig
-        "Left branch: number of switches on path",    # swL_switches
-        "Left branch: distance to target",            # swL_dist
-        "Left branch: target reachable via this arm", # swL_target
-        "Left branch: dead-end / abort detected",     # swL_abort
-        "Left branch: deadlock ahead",                # swL_dl_ahead
-        "Left branch: valid action from current cell",# valid_left
-        # 14-21 Forward branch
-        "Fwd branch: progress toward target",         # swF_progress
-        "Fwd branch: deadlock risk signal",           # swF_dl_sig
-        "Fwd branch: number of switches on path",     # swF_switches
-        "Fwd branch: distance to target",             # swF_dist
-        "Fwd branch: target reachable",               # swF_target
-        "Fwd branch: dead-end / abort detected",      # swF_abort
-        "Fwd branch: deadlock ahead",                 # swF_dl_ahead
-        "Fwd branch: valid action from current cell", # valid_forward
-        # 22-29 Right branch
-        "Right branch: progress toward target",       # swR_progress
-        "Right branch: deadlock risk signal",         # swR_dl_sig
-        "Right branch: number of switches on path",   # swR_switches
-        "Right branch: distance to target",           # swR_dist
-        "Right branch: target reachable",             # swR_target
-        "Right branch: dead-end / abort detected",    # swR_abort
-        "Right branch: deadlock ahead",               # swR_dl_ahead
-        "Right branch: valid action from current cell", # valid_right
-        # 30 Decision
-        "Decision required at current cell",          # decision_required
-        # 31-35 Merge-Forward
-        "Merge-Fwd: deadlock risk signal",            # mgF_dl_sig
-        "Merge-Fwd: number of switches on path",      # mgF_switches
-        "Merge-Fwd: target reachable",                # mgF_target
-        "Merge-Fwd: dead-end / abort detected",       # mgF_abort
-        "Merge-Fwd: deadlock ahead",                  # mgF_dl_ahead
-        # 36-40 Merge-Backward
-        "Merge-Back: deadlock risk signal",           # mgB_dl_sig
-        "Merge-Back: number of switches on path",     # mgB_switches
-        "Merge-Back: target reachable",               # mgB_target
-        "Merge-Back: dead-end / abort detected",      # mgB_abort
-        "Merge-Back: deadlock ahead",                 # mgB_dl_ahead
-        # 41-47 TrainState one-hot
-        "TrainState: READY_TO_DEPART",                # st_0
-        "TrainState: MALFUNCTION_OFF_MAP",            # st_1
-        "TrainState: MOVING",                         # st_2
-        "TrainState: STOPPED",                        # st_3
-        "TrainState: MALFUNCTION (on map)",           # st_4
-        "TrainState: WAITING",                        # st_5
-        "TrainState: DONE (reached target)",          # st_6
-        # 48-52 Last action one-hot
-        "Last action: DO_NOTHING",                    # act_DN
-        "Last action: turn Left",                     # act_L
-        "Last action: move Forward",                  # act_F
-        "Last action: turn Right",                    # act_R
-        "Last action: STOP",                          # act_S
-        # 53 Priority
-        "Priority rank: 0=nearest target, 1=farthest",  # priority_rank
-        # 54-58 Cell-type one-hot
-        "Cell type: OUTSIDE (off network)",           # ct_OUTSIDE
-        "Cell type: FORWARD_ONLY (straight track)",   # ct_FORWARD_ONLY
-        "Cell type: MERGING (track join)",            # ct_MERGING
-        "Cell type: SWITCH (branching point)",        # ct_SWITCH
-        "Cell type: DONE (target cell)",              # ct_DONE
-        # 59-63 Selected transitions (non-null in practice)
-        "Transition: FORWARD→FORWARD (straight run)",  # tr_FWD_FWD
-        "Transition: FORWARD→MERGE (approaching join)", # tr_FWD_MRG
-        "Transition: FORWARD→SWITCH (approaching branch)", # tr_FWD_SWI
-        "Transition: SWITCH→FORWARD (leaving branch)",  # tr_SWI_FWD
-        "Transition: MERGE→FORWARD (leaving join)",     # tr_MRG_FWD
+        "Switch present (branching possible)",
+        "Shortest path goes Left",
+        "Shortest path goes Forward",
+        "Shortest path goes Right",
+        "Merge point ahead",
+        "Local corridor deadlock signal",
+        "TrainState: READY_TO_DEPART",
+        "TrainState: MALFUNCTION_OFF_MAP",
+        "TrainState: MOVING",
+        "TrainState: STOPPED",
+        "TrainState: MALFUNCTION",
+        "TrainState: WAITING",
+        "TrainState: DONE",
+        "Last action: DO_NOTHING",
+        "Last action: LEFT",
+        "Last action: FORWARD",
+        "Last action: RIGHT",
+        "Last action: STOP",
+        "Priority rank",
+        "Cell type: OUTSIDE",
+        "Cell type: FORWARD_ONLY",
+        "Cell type: MERGING",
+        "Cell type: SWITCH",
+        "Cell type: DONE",
+        "Transition: FORWARD->FORWARD",
+        "Transition: FORWARD->MERGE",
+        "Transition: FORWARD->SWITCH",
+        "Transition: SWITCH->FORWARD",
+        "Transition: MERGE->FORWARD",
+        "Mean deadlock risk in local tree",
+        "Confirmed local deadlock flag",
+        "Normalized current distance-to-target",
+        "Max deadlock risk in local tree",
+        "Conflict density in local tree",
+        "Branching ratio in local tree",
+    ] + [
+        "Serialized tree node feature"
+        for _ in range(_TREE_BLOCK_DIM)
     ]
 
     def _print_obs_statistics(self):
@@ -2701,7 +2658,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         print(f"  {color('MAPPO DIAGNOSTIC REPORT', C_BOLD + C_CYAN)}")
         print(f"  Episode : {self.episode_count}")
         print(f"  Interval: {self._obs_stat_interval} episodes")
-        print(f"  Context : Flatland 5-agent rail scheduling, DecisionPoint obs 64D")
+        print(f"  Context : Flatland 5-agent rail scheduling, DecisionPoint obs {_BASE_OBS_DIM}D base + {_TREE_BLOCK_DIM}D tree")
         print(W)
 
         # ── 1) Episoden-Kennzahlen ─────────────────────────────────────────────
@@ -3183,7 +3140,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         print(
             f"  PROFILE: MAPPO Flatland 5-agent | Episode={self.episode_count}\n"
-            f"  OBS: DecisionPoint54 + temporal LSTM + comm-attn\n"
+            f"  OBS: DecisionPoint{_BASE_OBS_DIM}+tree{_TREE_BLOCK_DIM} + temporal LSTM + comm-attn\n"
             f"\n"
             f"  OVERALL: {status_text(overall)}\n"
             f"\n"

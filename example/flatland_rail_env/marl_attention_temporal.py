@@ -95,9 +95,34 @@ from marl_attention_temporal_observation.hierarchical_routes_observation import 
 from marl_attention_temporal_observation.decision_point_utils import DecisionPointUtils
 from decider_policy import DeciderPPOPolicy
 
-# Enforce disable GPU
-torch.cuda.is_available = lambda : False
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# Runtime/device config.
+# CPU-first default: this workload contains many small Python-side operations
+# (tree payload assembly/message passing), where GPU can be slower due to
+# transfer and launch overhead. Enable GPU explicitly via FLATLAND_USE_GPU=1.
+FORCE_CPU = str(os.getenv('FLATLAND_FORCE_CPU', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
+USE_GPU_REQUESTED = str(os.getenv('FLATLAND_USE_GPU', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
+USE_GPU_EFFECTIVE = (not FORCE_CPU) and USE_GPU_REQUESTED and torch.cuda.is_available()
+device = torch.device('cuda' if USE_GPU_EFFECTIVE else 'cpu')
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
 
 
 class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
@@ -608,19 +633,27 @@ def create_decider_agent(observation_space: int, action_space: int, eps: float =
     return policy
 
 
+FAST_MODE = str(os.getenv('FLATLAND_FAST_MODE', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+
+default_batch_size = 128 if FAST_MODE else 256
+default_k_epochs = 2 if FAST_MODE else 3
+default_batch_fraction = 0.65 if FAST_MODE else 0.8
+default_max_batches = 6 if FAST_MODE else 10
+default_memory_episodes = 10 if FAST_MODE else 12
+
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
-    hidden_size=64,         # ⬇️ Reduced for 4x faster LSTM (was 128)
-    batch_size=256,
-    learning_rate=2.5e-5,  # Lower LR for high-grad regime; improves PPO update stability
-    discount=0.99,  # Längere Belohnungsketten
-    gae_lambda=0.95,  # Lower variance for stabler PPO updates
-    use_gpu=True,
-    max_episodes_in_training_memory=12,   # Fresher data -> faster adaptation
-    k_epochs=3,
-    batch_fraction=0.8,
-    max_batches_per_training=10,
-    temporal_window=TEMPORAL_WINDOW, # ⚡ MUST MATCH create_temporal_obs_builder_object()!
-    encoder_type='lstm'
+    hidden_size=_env_int('FLATLAND_HIDDEN_SIZE', 64),
+    batch_size=max(32, _env_int('FLATLAND_BATCH_SIZE', default_batch_size)),
+    learning_rate=_env_float('FLATLAND_LR', 2.5e-5),
+    discount=_env_float('FLATLAND_DISCOUNT', 0.99),
+    gae_lambda=_env_float('FLATLAND_GAE_LAMBDA', 0.95),
+    use_gpu=USE_GPU_EFFECTIVE,
+    max_episodes_in_training_memory=max(4, _env_int('FLATLAND_TRAIN_MEMORY_EPISODES', default_memory_episodes)),
+    k_epochs=max(1, _env_int('FLATLAND_K_EPOCHS', default_k_epochs)),
+    batch_fraction=min(1.0, max(0.2, _env_float('FLATLAND_BATCH_FRACTION', default_batch_fraction))),
+    max_batches_per_training=max(1, _env_int('FLATLAND_MAX_BATCHES', default_max_batches)),
+    temporal_window=TEMPORAL_WINDOW,
+    encoder_type=os.getenv('FLATLAND_ENCODER_TYPE', 'lstm')
 )
 
 def create_ma_ppo_agent(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'single') -> LearningPolicy:
@@ -665,7 +698,7 @@ def create_deadlock_avoidance_policy(environment: Environment, action_space: int
         show_debug_plot=show_debug_plot,
     )
 
-def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'single') -> LearningPolicy:
+def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'multiple') -> LearningPolicy:
     """
     Creates  PPO Policy with Temporal Transformer Encoder
     
@@ -727,7 +760,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     return policy
 
 
-def create_ma_ppo_agent_dp_dla(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'single') -> LearningPolicy:
+def create_ma_ppo_agent_dp_dla(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'multiple') -> LearningPolicy:
     policy = create_ma_ppo_agent_dp(
         observation_space,
         action_space,
@@ -826,11 +859,11 @@ if __name__ == "__main__":
     parser.add_argument(
         '--optimizer_mode',
         type=str,
-        default='single',
+        default='multiple',
         choices=['single', 'multiple'],
         metavar='MODE',
         dest='optimizer_mode',
-        help='Optimizer mode: single = consolidated single optimizer (default), multiple = 4 optimizers with synchronized decay'
+        help='Optimizer mode: single = consolidated single optimizer, multiple = 4 optimizers with synchronized decay and stronger critic defaults (default)'
     )
     
     parser.add_argument(

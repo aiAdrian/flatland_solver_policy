@@ -361,8 +361,6 @@ OPTIMIERUNGSTECHNIKEN (Modus A Pure)
    → Raw tree-Metriken werden softmax-normalized für Stabilität
 """
 
-from typing import List
-
 import numpy as np
 import os
 
@@ -405,6 +403,17 @@ class DecisionPointObservation(ObservationBuilder):
     OBS_SIZE = 155  # Modus A Pure: 35 base + 15 nodes × 8 node features (6 node + 2 edge)
     NODE_DIM = 8    # Features per tree node: 6 node + 2 incoming edge (see _serialize_tree_nodes)
     MAX_NODES = 15  # Max nodes in DFS sequence (15 × 8 = 120D; padding with zeros)
+    BASE_OBS_SIZE = 35
+    # Keep only non-redundant handcrafted base channels; tree block [35:155]
+    # is preserved unchanged and remains fully trainable.
+    RELEVANT_BASE_FEATURE_INDICES = (
+        0, 1, 2, 3, 4, 5,      # immediate context
+        6, 7, 8, 9, 10, 11, 12,  # train-state one-hot
+        13, 14, 15, 16, 17,    # last-action one-hot
+        18,                     # priority rank
+        19, 20, 21, 22, 23,    # cell-type one-hot
+        29, 30, 31, 32, 33, 34 # tree summary scalars
+    )
     FEATURE_GROUPS_DOC = [
         ("[0]",    "is_switch",       "1.0 if agent is on switch cell"),
         ("[1-3]",  "hint_L/F/R",      "shortest-path direction hint (one-hot)"),
@@ -417,7 +426,7 @@ class DecisionPointObservation(ObservationBuilder):
         ("[24-28]","tr_*",            "5 selected transitions"),
         ("[29]",   "mean_deadlock",   "mean deadlock risk from tree search"),
         ("[30]",   "confirmed_deadlock","1.0 if confirmed corridor deadlock"),
-        ("[31]",   "mean_deadlock_dup","mean deadlock risk (duplicate for stability)"),
+        ("[31]",   "curr_dist_norm",  "normalized current distance-to-target (1.0 if unreachable)"),
         ("[32]",   "max_deadlock",    "max deadlock risk in local window"),
         ("[33]",   "conflict_density","agent encounters per node"),
         ("[34]",   "branching_ratio", "mean transitions per node"),
@@ -1115,6 +1124,19 @@ class DecisionPointObservation(ObservationBuilder):
             for idx, name, desc in cls.FEATURE_GROUPS_DOC:
                 print(f"   {idx:<8} {name:<18} {desc}")
 
+    @classmethod
+    def _cleanup_base_features(cls, raw_features: np.ndarray) -> None:
+        """Zero redundant base channels while preserving dimensions and tree block.
+
+        This keeps only curated relevant handcrafted features in [0:35].
+        Tree payload serialization in [35:155] is not touched.
+        """
+        if raw_features is None or raw_features.shape[0] < cls.BASE_OBS_SIZE:
+            return
+        keep_mask = np.zeros(cls.BASE_OBS_SIZE, dtype=np.float32)
+        keep_mask[list(cls.RELEVANT_BASE_FEATURE_INDICES)] = 1.0
+        raw_features[:cls.BASE_OBS_SIZE] *= keep_mask
+
     @staticmethod
     def _encode_detect_deadlock(raw: float) -> float:
         return 1.0 if raw > 0 else 0.0
@@ -1436,6 +1458,9 @@ class DecisionPointObservation(ObservationBuilder):
                 self.env.dev_tree_dict[handle] = tree_payload
             except Exception as e:
                 print(f"[Warn] get: Fehler bei dev_tree_dict.update: {e}")
+
+            # Feature cleanup: keep a meaningful scalar instead of a duplicate channel.
+            raw_features[31] = float(curr_dist_norm)
             
             # Tree Statistics [29-34] + serialized nodes [35-154] for LocalTreeEncoder
             if tree_data:
@@ -1445,7 +1470,6 @@ class DecisionPointObservation(ObservationBuilder):
                     _br = [min(1.0, n.get("num_transitions", 1) / 3.0) for n in tree_data]
                     raw_features[29] = float(np.mean(_dl))
                     # [30] already set above with confirmed_deadlock
-                    raw_features[31] = float(np.mean(_dl))
                     raw_features[32] = float(np.max(_dl))
                     raw_features[33] = float(np.mean(_cf))
                     raw_features[34] = float(np.mean(_br))
@@ -1459,6 +1483,9 @@ class DecisionPointObservation(ObservationBuilder):
                     raw_features[35:35 + len(tree_flat)] = tree_flat
                 except Exception as e:
                     print(f"[Warn] get: Fehler bei tree_data-Statistiken: {e}")
+
+            # Final handcrafted-feature cleanup (base only). The tree block stays unchanged.
+            self._cleanup_base_features(raw_features)
             
             agent.cur_opp_agent_handles = sorted(opp_agents)
             return (raw_features, agent.cur_opp_agent_handles)
