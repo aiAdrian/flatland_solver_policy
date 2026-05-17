@@ -12,6 +12,7 @@ from torch.distributions import Categorical
 from torch.nn.utils.rnn import pack_padded_sequence
 
 from policy.learning_policy.learning_policy import LearningPolicy
+from marl_attention_temporal_observation.decision_point_observation import DecisionPointObservation
 
 
 def _load_state_dict_compatible(module: nn.Module, state_dict: Dict[str, torch.Tensor]):
@@ -66,12 +67,12 @@ class EpisodeBuffers:
 
 
 # =============================================================================
-# LOCAL TREE ENCODER (LSTM über DFS-Sequenz — topologie-sensitiv)
+# LOCAL TREE ENCODER (legacy)
 # -----------------------------------------------------------------------------
-# Encodiert den lokalen Suchbaum aus DecisionPointObservation._local_search()
-# als geordnete Sequenz von Knoten in DFS-Pre-Order.
+# Legacy encoder kept only for old checkpoint compatibility.
+# Active training path uses TreePayloadEncoder on raw tree payload.
 #
-# Node features (8D per node, serialized in obs[35:155], 15 nodes × 8D = 120D):
+# Node features (8D per node, legacy flattened representation):
 #   [0] deadlock_risk        float 0-1
 #   [1] norm_transitions     num_transitions / 3 → 0-1
 #   [2] has_oncoming         binary 0/1  (Gegenverkehr am Knoten)
@@ -99,7 +100,7 @@ class LocalTreeEncoder(nn.Module):
     Each node carries 8D features including the incoming edge (rel_dir_bin, edge_has_agents)
     so the LSTM can reconstruct the branching topology from the sequence.
 
-    Input:  (MAX_NODES * NODE_DIM,) = (120,) DFS-ordered flat sequence from obs[35:155]
+    Input:  (MAX_NODES * NODE_DIM,) = (120,) DFS-ordered flat sequence (legacy)
     Output: (hidden_dim,) topology-aware tree embedding
     """
 
@@ -173,8 +174,44 @@ class TreePayloadEncoder(nn.Module):
     - masked mean pooling
     """
 
-    NODE_DIM = 8
-    EDGE_DIM = 11
+    NODE_DIM = 12
+    EDGE_DIM = 20
+    NODE_FEATURE_NAMES = [
+        "deadlock_risk",
+        "num_transitions_norm",
+        "has_oncoming",
+        "backward_inflow_norm",
+        "depth_norm",
+        "has_agents_encountered",
+        "incoming_agent_count_norm",
+        "is_branch",
+        "deadlock_distance_norm",
+        "deadlock_hard_distance_norm",
+        "deadlock_exists_within_probe",
+        "alternative_routes_count_norm",
+    ]
+    EDGE_FEATURE_NAMES = [
+        "action_left",
+        "action_forward",
+        "action_right",
+        "has_agents_on_edge",
+        "has_oncoming_edge",
+        "edge_len_cells_norm",
+        "src_dist_to_target",
+        "dst_dist_to_target",
+        "delta_from_root",
+        "improves_over_current",
+        "target_on_edge",
+        "dst_deadlock_risk",
+        "dst_deadlock_hard_block",
+        "dst_deadlock_distance_norm",
+        "dst_deadlock_hard_distance_norm",
+        "src_deadlock_distance_norm",
+        "deadlock_distance_delta",
+        "is_shortest_path_edge",
+        "branch_choice_prob",
+        "alternative_routes_count_norm",
+    ]
     # Safe upper cap for dynamic per-batch padding.
     # Local search can emit >15 nodes, so payload path should not silently
     # collapse to the serialized-tree limit.
@@ -221,6 +258,60 @@ class TreePayloadEncoder(nn.Module):
     def _edge_key(pos, direction, depth) -> Tuple[int, int, int, int]:
         return int(pos[0]), int(pos[1]), int(direction), int(depth)
 
+    @classmethod
+    def _encode_node_feature(cls, node: Dict[str, Any]) -> np.ndarray:
+        depth = int(node.get("depth", 0))
+        feat = np.array([
+            float(node.get("deadlock_risk", 0.0)),
+            min(1.0, float(node.get("num_transitions", 1)) / 3.0),
+            1.0 if node.get("has_oncoming", False) else 0.0,
+            min(1.0, float(node.get("backward_inflow_count", 0)) / 2.0),
+            min(1.0, float(max(depth, 0)) / 12.0),
+            1.0 if node.get("has_agents_encountered", False) else 0.0,
+            min(1.0, float(node.get("incoming_agent_count", 0)) / 2.0),
+            1.0 if node.get("is_branch", False) else 0.0,
+            float(node.get("deadlock_distance_norm", 0.0)),
+            float(node.get("deadlock_hard_distance_norm", 0.0)),
+            1.0 if node.get("deadlock_exists_within_probe", False) else 0.0,
+            min(1.0, float(node.get("alternative_routes_count", 0)) / 3.0),
+        ], dtype=np.float32)
+        np.clip(feat, 0.0, 1.0, out=feat)
+        return feat
+
+    @classmethod
+    def _encode_edge_feature(cls, edge: Dict[str, Any]) -> np.ndarray:
+        rel_bin = int(edge.get("rel_dir_bin", 1))
+        action_left = float(edge.get("action_left", 1.0 if rel_bin == 0 else 0.0))
+        action_forward = float(edge.get("action_forward", 1.0 if rel_bin == 1 else 0.0))
+        action_right = float(edge.get("action_right", 1.0 if rel_bin == 2 else 0.0))
+        agents_on_edge_count = int(edge.get("agents_on_edge_count", 0))
+        if agents_on_edge_count <= 0:
+            agents_on_edge = edge.get("agents_on_edge", [])
+            if isinstance(agents_on_edge, list):
+                agents_on_edge_count = len(agents_on_edge)
+        return np.array([
+            action_left,
+            action_forward,
+            action_right,
+            1.0 if agents_on_edge_count > 0 else 0.0,
+            1.0 if edge.get("has_oncoming_edge", False) else 0.0,
+            min(1.0, float(edge.get("edge_len_cells", 1)) / 4.0),
+            float(edge.get("src_dist_to_target", 1.0)),
+            float(edge.get("dst_dist_to_target", 1.0)),
+            float(edge.get("delta_from_root", 0.5)),
+            float(edge.get("improves_over_current", 0.0)),
+            1.0 if edge.get("target_on_edge", False) else 0.0,
+            float(edge.get("dst_deadlock_risk", 0.0)),
+            float(edge.get("dst_deadlock_hard_block", 0.0)),
+            float(edge.get("dst_deadlock_distance_norm", 0.0)),
+            float(edge.get("dst_deadlock_hard_distance_norm", 0.0)),
+            float(edge.get("src_deadlock_distance_norm", 0.0)),
+            float(edge.get("deadlock_distance_delta", 0.0)),
+            float(edge.get("is_shortest_path_edge", 0.0)),
+            float(edge.get("branch_choice_prob", 0.0)),
+            min(1.0, float(edge.get("alternative_routes_count", 0)) / 3.0),
+        ], dtype=np.float32)
+
     def _payload_to_graph(self, payload: Dict[str, Any], max_nodes: int) -> Tuple[np.ndarray, List[Tuple[int, int, np.ndarray]], int]:
         max_nodes = int(max(1, max_nodes))
         node_feats = np.zeros((max_nodes, self.NODE_DIM), dtype=np.float32)
@@ -240,14 +331,7 @@ class TreePayloadEncoder(nn.Module):
         for i in range(n_valid):
             node = nodes[i]
             depth = int(node.get("depth", 0))
-            node_feats[i, 0] = float(node.get("deadlock_risk", 0.0))
-            node_feats[i, 1] = min(1.0, float(node.get("num_transitions", 1)) / 3.0)
-            node_feats[i, 2] = 1.0 if node.get("has_oncoming", False) else 0.0
-            node_feats[i, 3] = min(1.0, float(node.get("backward_inflow_count", 0)) / 2.0)
-            node_feats[i, 4] = min(1.0, float(max(depth, 0)) / 12.0)
-            node_feats[i, 5] = 1.0 if len(node.get("agents_encountered", [])) > 0 else 0.0
-            node_feats[i, 6] = 0.5
-            node_feats[i, 7] = 0.0
+            node_feats[i] = self._encode_node_feature(node)
 
             key = self._node_key(node)
             idx_exact[key] = i
@@ -314,32 +398,19 @@ class TreePayloadEncoder(nn.Module):
             return None
 
         for edge in edges:
-            s_key = self._edge_key(edge.get("src_pos", (0, 0)), edge.get("src_dir", 0), edge.get("src_depth", 0))
-            d_key = self._edge_key(edge.get("dst_pos", (0, 0)), edge.get("dst_dir", 0), edge.get("dst_depth", 0))
-
-            s_idx = _resolve_node_index(s_key)
-            d_idx = _resolve_node_index(d_key)
+            if "src" in edge and "dst" in edge:
+                s_idx = int(edge.get("src"))
+                d_idx = int(edge.get("dst"))
+            else:
+                s_key = self._edge_key(edge.get("src_pos", (0, 0)), edge.get("src_dir", 0), edge.get("src_depth", 0))
+                d_key = self._edge_key(edge.get("dst_pos", (0, 0)), edge.get("dst_dir", 0), edge.get("dst_depth", 0))
+                s_idx = _resolve_node_index(s_key)
+                d_idx = _resolve_node_index(d_key)
 
             if s_idx is None or d_idx is None:
                 continue
 
-            rel_bin = int(edge.get("rel_dir_bin", 1))
-            action_left = float(edge.get("action_left", 1.0 if rel_bin == 0 else 0.0))
-            action_forward = float(edge.get("action_forward", 1.0 if rel_bin == 1 else 0.0))
-            action_right = float(edge.get("action_right", 1.0 if rel_bin == 2 else 0.0))
-            edge_feat = np.array([
-                action_left,
-                action_forward,
-                action_right,
-                1.0 if len(edge.get("agents_on_edge", [])) > 0 else 0.0,
-                1.0 if edge.get("has_oncoming_edge", False) else 0.0,
-                min(1.0, float(edge.get("edge_len_cells", 1)) / 4.0),
-                float(edge.get("src_dist_to_target", 1.0)),
-                float(edge.get("dst_dist_to_target", 1.0)),
-                float(edge.get("delta_from_root", 0.5)),
-                float(edge.get("improves_over_current", 0.0)),
-                1.0 if edge.get("target_on_edge", False) else 0.0,
-            ], dtype=np.float32)
+            edge_feat = self._encode_edge_feature(edge)
             edge_list.append((int(s_idx), int(d_idx), edge_feat))
 
         np.clip(node_feats, 0.0, 1.0, out=node_feats)
@@ -395,8 +466,7 @@ class TreePayloadEncoder(nn.Module):
 
 
 # Constants shared across encoder classes
-_BASE_OBS_DIM = 35   # Handcrafted features [0-34] from DecisionPointObservation
-_TREE_BLOCK_DIM = LocalTreeEncoder.MAX_NODES * LocalTreeEncoder.NODE_DIM  # = 120
+_BASE_OBS_DIM = int(DecisionPointObservation.BASE_OBS_SIZE)
 
 
 # =============================================================================
@@ -422,7 +492,7 @@ class TemporalTransformerEncoder(nn.Module):
     🚀 INNOVATION: Hierarchical Temporal-Spatial Transformer
     
     Architecture:
-    1. Observation Encoder: Maps 35D (Modus A Pure) or 94D (HierarchicalRoutes) obs → 128D embedding
+    1. Observation Encoder: Maps base observation vector → hidden embedding
     2. TEMPORAL Attention: Links t-2, t-1, t → learns movement patterns
     3. SPATIAL Attention: Links self + opponents → learns interactions
     4. Output Projection: Final 128D context embedding
@@ -434,7 +504,7 @@ class TemporalTransformerEncoder(nn.Module):
     """
     
     def __init__(self, 
-                 obs_dim: int,           # 35D DecisionPoint Modus A Pure or 94D HierarchicalRoutes
+                 obs_dim: int,
                  hidden_dim: int,        # 128D
                  num_heads: int = 4,
                  temporal_window: int = 3,
@@ -447,8 +517,8 @@ class TemporalTransformerEncoder(nn.Module):
         
         # ========================================================================
         # LEVEL 1: Observation Encoder (spatial features → embeddings)
-        # obs_encoder processes only the BASE_OBS_DIM (35D) handcrafted features.
-        # Tree node features obs[35:155] are handled separately by tree_encoder.
+        # obs_encoder processes only the handcrafted base vector.
+        # Tree information is provided separately as raw payload.
         # ========================================================================
         self.base_obs_dim = min(obs_dim, _BASE_OBS_DIM)  # = 35
         self.obs_encoder = nn.Sequential(
@@ -491,15 +561,8 @@ class TemporalTransformerEncoder(nn.Module):
             nn.LeakyReLU(0.01)
         )
 
-        # LocalTreeEncoder: DeepSets-style encoder for tree nodes from obs[35:155].
-        # Replaces old slot-based tree_proj (which referenced non-existent indices).
-        self.tree_encoder = LocalTreeEncoder(hidden_dim)
+        # Tree signal comes exclusively from raw local-search payload.
         self.tree_payload_encoder = TreePayloadEncoder(hidden_dim)
-        self.tree_fusion = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.LeakyReLU(0.01),
-        )
         self.tree_norm = nn.LayerNorm(hidden_dim)
 
         # Explicit communication: sender message + receiver addressing.
@@ -517,7 +580,6 @@ class TemporalTransformerEncoder(nn.Module):
         self.last_comm_valid_count = 0
         
         self._init_weights()
-        # tree_encoder is initialized with near-zero weights inside LocalTreeEncoder.__init__()
         self.to(self.device)
     
     def _init_weights(self):
@@ -544,7 +606,7 @@ class TemporalTransformerEncoder(nn.Module):
         
         # ⚠️ PROTECTION: Replace NaN/Inf with 0
         if torch.isnan(t).any() or torch.isinf(t).any():
-            print(f"⚠️ WARNING: Input contains NaN/Inf, replacing with 0")
+            print("⚠️ WARNING: Input contains NaN/Inf, replacing with 0")
             t = torch.nan_to_num(t, nan=0.0, posinf=1.0, neginf=-1.0)
         
         # ⚠️ PROTECTION: Clamp extreme values
@@ -571,38 +633,16 @@ class TemporalTransformerEncoder(nn.Module):
                 return step[0], [], {}
         return step, [], {}
 
-    def _encode_tree_block(self, obs_1d: torch.Tensor) -> torch.Tensor:
-        """Extract obs[35:155] tree node block and encode via LocalTreeEncoder."""
-        end = _BASE_OBS_DIM + _TREE_BLOCK_DIM
-        if obs_1d.shape[0] > _BASE_OBS_DIM:
-            tree_flat = obs_1d[_BASE_OBS_DIM:min(end, obs_1d.shape[0])]
-            if tree_flat.shape[0] < _TREE_BLOCK_DIM:
-                pad = torch.zeros(_TREE_BLOCK_DIM - tree_flat.shape[0], device=self.device)
-                tree_flat = torch.cat([tree_flat, pad], dim=0)
-        else:
-            tree_flat = torch.zeros(_TREE_BLOCK_DIM, device=self.device)
-        return self.tree_encoder(tree_flat)
-
     def _encode_tree_payload(self, tree_payload: Dict[str, Any]) -> torch.Tensor:
         return self.tree_payload_encoder.forward_batch([tree_payload])[0]
 
     def _encode_tree_signal(self, obs_1d: torch.Tensor, tree_payload: Dict[str, Any]) -> torch.Tensor:
-        block_emb = self._encode_tree_block(obs_1d)
-        payload_emb = self._encode_tree_payload(tree_payload if isinstance(tree_payload, dict) else {})
-        return self.tree_fusion(torch.cat([block_emb, payload_emb], dim=-1))
+        del obs_1d
+        return self._encode_tree_payload(tree_payload if isinstance(tree_payload, dict) else {})
 
     def _encode_tree_signal_batch(self, last_obs_b: torch.Tensor, tree_payloads: List[Dict[str, Any]]) -> torch.Tensor:
-        batch_size = last_obs_b.shape[0]
-        if last_obs_b.shape[1] > _BASE_OBS_DIM:
-            tree_flat_b = last_obs_b[:, _BASE_OBS_DIM:_BASE_OBS_DIM + _TREE_BLOCK_DIM]
-            if tree_flat_b.shape[1] < _TREE_BLOCK_DIM:
-                pad = torch.zeros(batch_size, _TREE_BLOCK_DIM - tree_flat_b.shape[1], device=self.device)
-                tree_flat_b = torch.cat([tree_flat_b, pad], dim=1)
-        else:
-            tree_flat_b = torch.zeros(batch_size, _TREE_BLOCK_DIM, device=self.device)
-        block_emb_b = self.tree_encoder.forward_batch(tree_flat_b)
-        payload_emb_b = self.tree_payload_encoder.forward_batch(tree_payloads)
-        return self.tree_fusion(torch.cat([block_emb_b, payload_emb_b], dim=-1))
+        del last_obs_b
+        return self.tree_payload_encoder.forward_batch(tree_payloads)
 
     def _apply_communication(self, self_context: torch.Tensor, opp_embeddings: List[torch.Tensor]):
         """Fuse explicit communication from opponents into receiver context."""
@@ -644,7 +684,7 @@ class TemporalTransformerEncoder(nn.Module):
         
         Args:
             temporal_seq: [(obs_t-2, opp_t-2), (obs_t-1, opp_t-1), (obs_t, opp_t)]
-                         Each obs is a 35D or 94D numpy array
+                         Each obs is a base observation vector
             handle: Agent handle (for debugging)
         
         Returns:
@@ -659,7 +699,7 @@ class TemporalTransformerEncoder(nn.Module):
         for step in temporal_seq:
             obs_self, _, _ = self._unpack_temporal_step(step)
             obs_t = self._to_1d_tensor(obs_self)
-            base_obs = obs_t[:self.base_obs_dim]  # First 35D handcrafted features only
+            base_obs = obs_t[:self.base_obs_dim]
             emb_t = self.obs_encoder(base_obs)    # (H,)
             self_obs_sequence.append(emb_t)
         
@@ -686,7 +726,7 @@ class TemporalTransformerEncoder(nn.Module):
         # Take only t (current timestep) as representation
         self_temporal_context = temporal_output[0, -1, :]  # (128,)
 
-        # LocalTreeEncoder: encode node features from obs[35:155] at timestep t.
+        # Encode raw local-tree payload at current timestep.
         last_obs, _, last_payload = self._unpack_temporal_step(temporal_seq[-1])
         last_obs_t = self._to_1d_tensor(last_obs)
         tree_emb = self._encode_tree_signal(last_obs_t, last_payload)
@@ -702,12 +742,12 @@ class TemporalTransformerEncoder(nn.Module):
         # Get current opponent observations (only from t, not entire history)
         _, current_opponents, _ = self._unpack_temporal_step(temporal_seq[-1])  # Last timestep
         
-        # Encode opponents (current timestep only, base 35D features) only if spatial attention is enabled
+        # Encode opponents (current timestep base features) if spatial attention is enabled.
         opp_embeddings = []
         if use_spatial and len(current_opponents) > 0:
             for opp_obs in current_opponents:
                 opp_t = self._to_1d_tensor(opp_obs)
-                opp_base = opp_t[:self.base_obs_dim]  # First 35D only
+                opp_base = opp_t[:self.base_obs_dim]
                 opp_emb = self.obs_encoder(opp_base)
                 opp_embeddings.append(opp_emb)
         
@@ -788,7 +828,7 @@ class TemporalTransformerEncoder(nn.Module):
         # Stack: (batch_size, temporal_window, 33)
         all_self_obs_tensor = torch.stack(all_self_obs, dim=0)
         
-        # Encode base obs features only (first 35D); tree block encoded separately
+        # Encode base obs features; tree signal comes from payload path.
         flat_obs = all_self_obs_tensor.view(-1, all_self_obs_tensor.shape[-1])
         flat_base_obs = flat_obs[:, :self.base_obs_dim]  # (B*T, 35)
         flat_embeddings = self.obs_encoder(flat_base_obs)  # (B*T, H)
@@ -828,7 +868,7 @@ class TemporalTransformerEncoder(nn.Module):
                 opp_embs = []
                 for opp_obs in opps:
                     opp_t = self._to_1d_tensor(opp_obs)
-                    opp_base = opp_t[:self.base_obs_dim]  # First 35D only
+                    opp_base = opp_t[:self.base_obs_dim]
                     opp_embs.append(self.obs_encoder(opp_base))
                 
                 all_agents = [self_ctx] + opp_embs
@@ -897,8 +937,8 @@ class TemporalLSTMEncoder(nn.Module):
         self.temporal_window = temporal_window
         self.device = torch.device(device)
 
-        # obs_encoder processes only the BASE_OBS_DIM (35D) handcrafted features.
-        # Tree node features obs[35:155] are handled by tree_encoder (LocalTreeEncoder).
+        # obs_encoder processes only the handcrafted base vector.
+        # Tree information is provided separately as raw payload.
         self.base_obs_dim = min(obs_dim, _BASE_OBS_DIM)  # = 35
         self.obs_encoder = nn.Sequential(
             nn.Linear(self.base_obs_dim, hidden_dim),
@@ -934,15 +974,9 @@ class TemporalLSTMEncoder(nn.Module):
         self.comm_norm = nn.LayerNorm(hidden_dim)
         self.comm_dropout = nn.Dropout(p=0.10)
 
-        # LocalTreeEncoder: DeepSets-style encoder for tree nodes from obs[35:155].
-        self._tree_slots = None  # Unused; kept for checkpoint backward-compatibility stub.
-        self.tree_encoder = LocalTreeEncoder(hidden_dim)
+        # Tree signal comes exclusively from raw local-search payload.
+        self._tree_slots = None  # Backward-compatibility stub for old checkpoints.
         self.tree_payload_encoder = TreePayloadEncoder(hidden_dim)
-        self.tree_fusion = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.LeakyReLU(0.01),
-        )
         self.tree_norm = nn.LayerNorm(hidden_dim)
 
         self.last_comm_reg = torch.tensor(0.0, device=self.device)
@@ -951,7 +985,6 @@ class TemporalLSTMEncoder(nn.Module):
         self.last_comm_valid_count = 0
 
         self._init_weights()
-        # tree_encoder is initialized with near-zero weights inside LocalTreeEncoder.__init__()
         self.to(self.device)
 
     def _init_weights(self):
@@ -997,38 +1030,16 @@ class TemporalLSTMEncoder(nn.Module):
                 return step[0], [], {}
         return step, [], {}
 
-    def _encode_tree_block(self, obs_1d: torch.Tensor) -> torch.Tensor:
-        """Extract obs[35:155] tree node block and encode via LocalTreeEncoder."""
-        end = _BASE_OBS_DIM + _TREE_BLOCK_DIM
-        if obs_1d.shape[0] > _BASE_OBS_DIM:
-            tree_flat = obs_1d[_BASE_OBS_DIM:min(end, obs_1d.shape[0])]
-            if tree_flat.shape[0] < _TREE_BLOCK_DIM:
-                pad = torch.zeros(_TREE_BLOCK_DIM - tree_flat.shape[0], device=self.device)
-                tree_flat = torch.cat([tree_flat, pad], dim=0)
-        else:
-            tree_flat = torch.zeros(_TREE_BLOCK_DIM, device=self.device)
-        return self.tree_encoder(tree_flat)
-
     def _encode_tree_payload(self, tree_payload: Dict[str, Any]) -> torch.Tensor:
         return self.tree_payload_encoder.forward_batch([tree_payload])[0]
 
     def _encode_tree_signal(self, obs_1d: torch.Tensor, tree_payload: Dict[str, Any]) -> torch.Tensor:
-        block_emb = self._encode_tree_block(obs_1d)
-        payload_emb = self._encode_tree_payload(tree_payload if isinstance(tree_payload, dict) else {})
-        return self.tree_fusion(torch.cat([block_emb, payload_emb], dim=-1))
+        del obs_1d
+        return self._encode_tree_payload(tree_payload if isinstance(tree_payload, dict) else {})
 
     def _encode_tree_signal_batch(self, last_obs_b: torch.Tensor, tree_payloads: List[Dict[str, Any]]) -> torch.Tensor:
-        batch_size = last_obs_b.shape[0]
-        if last_obs_b.shape[1] > _BASE_OBS_DIM:
-            tree_flat_b = last_obs_b[:, _BASE_OBS_DIM:_BASE_OBS_DIM + _TREE_BLOCK_DIM]
-            if tree_flat_b.shape[1] < _TREE_BLOCK_DIM:
-                pad = torch.zeros(batch_size, _TREE_BLOCK_DIM - tree_flat_b.shape[1], device=self.device)
-                tree_flat_b = torch.cat([tree_flat_b, pad], dim=1)
-        else:
-            tree_flat_b = torch.zeros(batch_size, _TREE_BLOCK_DIM, device=self.device)
-        block_emb_b = self.tree_encoder.forward_batch(tree_flat_b)
-        payload_emb_b = self.tree_payload_encoder.forward_batch(tree_payloads)
-        return self.tree_fusion(torch.cat([block_emb_b, payload_emb_b], dim=-1))
+        del last_obs_b
+        return self.tree_payload_encoder.forward_batch(tree_payloads)
 
     def _apply_communication(self, self_context: torch.Tensor, opp_embeddings: List[torch.Tensor]):
         if len(opp_embeddings) == 0:
@@ -1066,7 +1077,7 @@ class TemporalLSTMEncoder(nn.Module):
         for step in temporal_seq:
             obs_self, _, _ = self._unpack_temporal_step(step)
             obs_t = self._to_1d_tensor(obs_self)
-            base_obs = obs_t[:self.base_obs_dim]  # First 35D only
+            base_obs = obs_t[:self.base_obs_dim]
             emb_t = self.obs_encoder(base_obs)
             self_obs_sequence.append(emb_t)
 
@@ -1074,7 +1085,7 @@ class TemporalLSTMEncoder(nn.Module):
         temporal_output, _ = self.temporal_lstm(self_seq_tensor)
         self_temporal_context = temporal_output[0, -1, :]
 
-        # LocalTreeEncoder: encode node features from obs[35:155] at timestep t.
+        # Encode raw local-tree payload at current timestep.
         last_obs, _, last_payload = self._unpack_temporal_step(temporal_seq[-1])
         last_obs_t = self._to_1d_tensor(last_obs)
         tree_emb = self._encode_tree_signal(last_obs_t, last_payload)
@@ -1088,7 +1099,7 @@ class TemporalLSTMEncoder(nn.Module):
         if use_spatial and len(current_opponents) > 0:
             for opp_obs in current_opponents:
                 opp_t = self._to_1d_tensor(opp_obs)
-                opp_base = opp_t[:self.base_obs_dim]  # First 35D only
+                opp_base = opp_t[:self.base_obs_dim]
                 opp_embeddings.append(self.obs_encoder(opp_base))
 
         if use_spatial and len(opp_embeddings) > 0:
@@ -1160,7 +1171,7 @@ class TemporalLSTMEncoder(nn.Module):
                 opp_embs = []
                 for opp_obs in opps:
                     opp_t = self._to_1d_tensor(opp_obs)
-                    opp_base = opp_t[:self.base_obs_dim]  # First 35D only
+                    opp_base = opp_t[:self.base_obs_dim]
                     opp_embs.append(self.obs_encoder(opp_base))
 
                 all_agents = [self_ctx] + opp_embs
@@ -1279,10 +1290,7 @@ class ActorCriticModel(nn.Module):
     def _load(self, obj, filename):
         if os.path.exists(filename):
             print(' >> ', filename)
-            try:
-                obj.load_state_dict(torch.load(filename, map_location=self.device))
-            except:
-                print(" >> failed!")
+            obj.load_state_dict(torch.load(filename, map_location=self.device))
         return obj
 
     def load(self, filename):
@@ -1293,8 +1301,95 @@ class ActorCriticModel(nn.Module):
 
 
 # =============================================================================
-# PPO PARAMETERS (extended with temporal_window)
+# PPO PARAMETERS (extended with temporal_window + optimization flags)
 # =============================================================================
+
+"""MARL_ATTENTION_TEMPORAL_MAPPO_Param: Configuration namedtuple for Multi-Agent PPO policy
+
+STANDARD PARAMETERS:
+  hidden_size (int)
+    - Encoder hidden dimension (default 64)
+    - Lower values = faster training but reduced capacity
+    - Range: 32, 64, 128, 256
+    
+  batch_size (int)
+    - Mini-batch size for PPO updates (default 128)
+    - Larger values = more stable but more memory
+    
+  learning_rate (float)
+    - Adam optimizer learning rate (default 2.5e-5)
+    - Critical for convergence stability
+    
+  discount (float)
+    - Discount factor γ (default 0.99)
+    - Controls how much future rewards matter
+    
+  temporal_window (int)
+    - History window size in timesteps (default 3)
+    - How many past observations to include in sequence
+    
+  encoder_type (str)
+    - 'lstm' or 'transformer' (default 'transformer')
+    - Which encoder architecture to use
+
+OPTIMIZATION FLAGS (NEW - v2.0):
+  encoder_shared (bool)
+    - Share single encoder between actor+critic
+    - False (default): Separate encoders
+      • Full model capacity: each head has dedicated feature extractor
+      • ~2× parameters and ~2× forward time
+      • Better feature specialization
+      • Use when: CPU not bottleneck, or convergence issues with sharing
+      
+    - True: Shared encoder
+      • ~50% faster training (one encoder forward instead of two)
+      • -50% parameters (single encoder vs two)
+      • Forced feature alignment between actor and critic
+      • Potential conflicting gradients (actor vs critic objectives)
+      • Use when: CPU bottleneck or memory-limited
+      
+  use_spatial_attention (bool)
+    - Enable multi-head attention between agent and opponents (MAAC)
+    - True (default): Full MAAC (Multi-Agent Actor-Critic)
+      • Agent attends to self + all opponents
+      • Learns coordination, collision-avoidance patterns
+      • ~20% slower but essential for interaction-rich scenarios
+      • From: Iqbal & Sha (2019) \"Actor-Attention-Critic\"
+      
+    - False: Skip spatial attention
+      • ~20% faster training
+      • Use temporal context only (no opponent information)
+      • Each agent learns independent policy
+      • Better for: simple scenarios with minimal interactions
+
+ENVIRONMENT VARIABLES (for launching training):
+  FLATLAND_HIDDEN_SIZE=<int>
+    Sets hidden_size. Default: 64
+    Example: export FLATLAND_HIDDEN_SIZE=32
+    
+  FLATLAND_ENCODER_TYPE=<'lstm'|'transformer'>
+    Sets encoder architecture. Default: 'transformer'
+    Example: export FLATLAND_ENCODER_TYPE=lstm
+    
+  FLATLAND_ENCODER_SHARED=<'true'|'false'>
+    Enable shared encoder mode. Default: 'false'
+    Example: export FLATLAND_ENCODER_SHARED=true
+    
+  FLATLAND_USE_SPATIAL_ATTENTION=<'true'|'false'>
+    Enable spatial attention. Default: 'true'
+    Example: export FLATLAND_USE_SPATIAL_ATTENTION=false
+
+LAUNCH EXAMPLES:
+  # Default (full MAAC, separate encoders)
+  python marl_attention_temporal.py final_continue
+  
+  # Lightweight CPU-friendly (70% faster)
+  FLATLAND_ENCODER_SHARED=true FLATLAND_USE_SPATIAL_ATTENTION=false \\
+  python marl_attention_temporal.py final_continue
+  
+  # Balanced (shared encoder, keep spatial attention)
+  FLATLAND_ENCODER_SHARED=true python marl_attention_temporal.py final_continue
+"""
 
 MARL_ATTENTION_TEMPORAL_MAPPO_Param = namedtuple('MARL_ATTENTION_TEMPORAL_MAPPO_Param',
                             ['hidden_size', 'batch_size', 'learning_rate',
@@ -1333,7 +1428,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.episode_count = 0
         self.optimizer_mode = optimizer_mode.lower()  # 'single' or 'multiple'
 
-        self.state_size = state_size  # temporal obs size per timestep (35D/94D)
+        self.state_size = state_size  # temporal obs size per timestep
         self.action_size = action_size
         self.num_heads = 4
 
@@ -1373,20 +1468,21 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             self.K_epoch = 3  # Back to baseline
             
         self.surrogate_eps_clip = 0.12  # tighter trust region to reduce KL spikes
-        self.weight_loss = 2.0  # Prioritize critic fitting to stabilize actor guidance
-        self.weight_entropy = 0.03  # Increased to counter entropy collapse observed after ~800 episodes.
-        self.weight_policy = 1.0
-        self.weight_aux_deadlock = 0.08
+        self.weight_loss = 1.6  # Reduce critic dominance so actor gets stronger update signal
+        self.weight_entropy = 0.11  # +0.02 to boost exploration for low done-rate regime
+        # Exploration boost: increase decision_eps_floor and max_eps_random
+        self.decision_eps_floor = 0.12  # +0.02 keep exploration active in sparse-decision regimes
+        self.max_eps_random = 0.18      # +0.02 raise global random exploration ceiling
+        self.weight_policy = 1.25
+        self.weight_aux_deadlock = 0.12
         # Sparse-switch maps: keep forward dominant and avoid forcing turn frequency.
-        self.weight_action_diversity = 0.06
-        self.forward_prob_soft_max = 0.72
-        self.lr_prob_soft_min = 0.05
-        self.idle_prob_soft_max = 0.30
+        self.weight_action_diversity = 0.12
+        self.forward_prob_soft_max = 0.52
+        self.lr_prob_soft_min = 0.11
+        self.idle_prob_soft_max = 0.22
         # Apply action-diversity shaping only at meaningful conflict/decision contexts.
         self.action_diversity_gate_enabled = True
-        self.action_diversity_decision_idx = 30
-        self.action_diversity_local_deadlock_idx = 5
-        self.action_diversity_gate_threshold = 0.35
+        self.action_diversity_gate_threshold = 0.65
         self.aux_deadlock_pos_weight = 4.0
         self.weight_comm = 3.0e-4  # weak communication sparsity regularizer
         self.comm_reg_start_episode = 300
@@ -1467,7 +1563,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 device=self.device
             )
             self.encoder_critic = self.encoder_actor  # Pointer to same object
-            print(f"✅ Shared Encoder: actor + critic use 1 encoder (50% faster)")
+            print("✅ Shared Encoder: actor + critic use 1 encoder (50% faster)")
         else:
             # Default: separate encoders for actor + critic
             self.encoder_actor = encoder_cls(
@@ -1788,179 +1884,176 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         transition = (state, action, reward, next_state, done, aux_deadlock)
         self.current_episode_memory.push_transition(handle, transition)
         # Observation-Statistik: letzten Frame des temporalen Fensters sammeln
-        try:
-            last_frame = np.asarray(state[-1][0], dtype=np.float32).reshape(-1)
-            if last_frame.shape[0] > 0:
-                self._obs_stat_buffer.append(last_frame)
-        except Exception:
-            pass
+        if not isinstance(state, (list, tuple)) or len(state) == 0:
+            raise ValueError("step() expected non-empty temporal state sequence")
+        last_state_step = state[-1]
+        if not isinstance(last_state_step, (list, tuple)) or len(last_state_step) < 1:
+            raise ValueError("step() expected temporal state entries as tuple/list with base observation")
+        last_frame = np.asarray(last_state_step[0], dtype=np.float32).reshape(-1)
+        if last_frame.shape[0] > 0:
+            self._obs_stat_buffer.append(last_frame)
 
         # Tree-payload stats: verify variable node/edge counts and edge index validity.
-        try:
-            payload = state[-1][2] if isinstance(state[-1], (list, tuple)) and len(state[-1]) >= 3 else {}
-            if isinstance(payload, dict):
-                nodes = payload.get('nodes', [])
-                edges = payload.get('edges', [])
-                node_count = int(len(nodes)) if isinstance(nodes, list) else 0
-                edge_count = int(len(edges)) if isinstance(edges, list) else 0
+        payload = state[-1][2] if isinstance(state[-1], (list, tuple)) and len(state[-1]) >= 3 else {}
+        if not isinstance(payload, dict):
+            raise ValueError("step() expected tree payload as dict in temporal state")
 
-                invalid_edges = 0
-                unmapped_edges = 0
-                idx_exact = {}
-                idx_simple = {}
+        nodes = payload.get('nodes', [])
+        edges = payload.get('edges', [])
+        if not isinstance(nodes, list):
+            raise TypeError("tree payload 'nodes' must be a list")
+        if not isinstance(edges, list):
+            raise TypeError("tree payload 'edges' must be a list")
 
-                if isinstance(nodes, list):
-                    for i, n in enumerate(nodes):
-                        if not isinstance(n, dict):
-                            continue
-                        pos = n.get('pos', (0, 0))
-                        d = int(n.get('dir', 0))
-                        dep = int(n.get('depth', i))
-                        try:
-                            pr, pc = int(pos[0]), int(pos[1])
-                        except Exception:
-                            pr, pc = 0, 0
-                        idx_exact[(pr, pc, d, dep)] = i
-                        idx_simple[(pr, pc, d)] = i
+        node_count = int(len(nodes))
+        edge_count = int(len(edges))
+        invalid_edges = 0
+        unmapped_edges = 0
+        node_feat_sum = np.zeros(TreePayloadEncoder.NODE_DIM, dtype=np.float64)
+        node_feat_sq_sum = np.zeros(TreePayloadEncoder.NODE_DIM, dtype=np.float64)
+        edge_feat_sum = np.zeros(TreePayloadEncoder.EDGE_DIM, dtype=np.float64)
+        edge_feat_sq_sum = np.zeros(TreePayloadEncoder.EDGE_DIM, dtype=np.float64)
+        node_feat_count = 0
+        edge_feat_count = 0
+        idx_exact = {}
+        idx_simple = {}
 
-                if isinstance(edges, list):
-                    for e in edges:
-                        if not isinstance(e, dict):
-                            invalid_edges += 1
-                            continue
+        for i, n in enumerate(nodes):
+            if not isinstance(n, dict):
+                raise TypeError(f"tree payload node at index {i} must be a dict")
+            pos = n.get('pos', (0, 0))
+            if not isinstance(pos, (list, tuple)) or len(pos) < 2:
+                raise ValueError(f"tree payload node at index {i} has invalid pos field")
+            d = int(n.get('dir', 0))
+            dep = int(n.get('depth', i))
+            pr, pc = int(pos[0]), int(pos[1])
+            idx_exact[(pr, pc, d, dep)] = i
+            idx_simple[(pr, pc, d)] = i
+            n_feat = TreePayloadEncoder._encode_node_feature(n).astype(np.float64)
+            node_feat_sum += n_feat
+            node_feat_sq_sum += (n_feat * n_feat)
+            node_feat_count += 1
 
-                        # Support both positional edge schema (src_pos/dst_pos)
-                        # and optional index schema (src/dst).
-                        si = None
-                        di = None
+        for e in edges:
+            if not isinstance(e, dict):
+                raise TypeError("tree payload edge entries must be dicts")
 
-                        if 'src' in e and 'dst' in e:
-                            try:
-                                si = int(e.get('src'))
-                                di = int(e.get('dst'))
-                            except Exception:
-                                invalid_edges += 1
-                                continue
-                        else:
-                            sp = e.get('src_pos', (0, 0))
-                            sd = int(e.get('src_dir', 0))
-                            sdep = int(e.get('src_depth', 0))
-                            dp = e.get('dst_pos', (0, 0))
-                            dd = int(e.get('dst_dir', 0))
-                            ddep = int(e.get('dst_depth', 0))
-                            try:
-                                spk = (int(sp[0]), int(sp[1]), sd, sdep)
-                                dpk = (int(dp[0]), int(dp[1]), dd, ddep)
-                            except Exception:
-                                invalid_edges += 1
-                                continue
+            # Support both positional edge schema (src_pos/dst_pos)
+            # and optional index schema (src/dst).
+            si = None
+            di = None
 
-                            si = idx_exact.get(spk)
-                            di = idx_exact.get(dpk)
-                            if si is None:
-                                si = idx_simple.get((spk[0], spk[1], spk[2]))
-                            if di is None:
-                                di = idx_simple.get((dpk[0], dpk[1], dpk[2]))
+            if 'src' in e and 'dst' in e:
+                si = int(e.get('src'))
+                di = int(e.get('dst'))
+            else:
+                sp = e.get('src_pos', (0, 0))
+                dp = e.get('dst_pos', (0, 0))
+                if not isinstance(sp, (list, tuple)) or len(sp) < 2:
+                    raise ValueError("tree payload edge has invalid src_pos")
+                if not isinstance(dp, (list, tuple)) or len(dp) < 2:
+                    raise ValueError("tree payload edge has invalid dst_pos")
+                sd = int(e.get('src_dir', 0))
+                sdep = int(e.get('src_depth', 0))
+                dd = int(e.get('dst_dir', 0))
+                ddep = int(e.get('dst_depth', 0))
+                spk = (int(sp[0]), int(sp[1]), sd, sdep)
+                dpk = (int(dp[0]), int(dp[1]), dd, ddep)
 
-                        if si is None or di is None:
-                            # Endpoint cannot be mapped to currently materialized nodes.
-                            # This can happen with aggressive node budgets / contraction.
-                            unmapped_edges += 1
-                            continue
-                        if si < 0 or di < 0 or si >= node_count or di >= node_count:
-                            unmapped_edges += 1
+                si = idx_exact.get(spk)
+                di = idx_exact.get(dpk)
+                if si is None:
+                    si = idx_simple.get((spk[0], spk[1], spk[2]))
+                if di is None:
+                    di = idx_simple.get((dpk[0], dpk[1], dpk[2]))
 
-                self._tree_stat_buffer.append({
-                    'nodes': node_count,
-                    'edges': edge_count,
-                    'invalid_edges': int(invalid_edges),
-                    'unmapped_edges': int(unmapped_edges),
-                    'empty_payload': 1 if (node_count == 0 and edge_count == 0) else 0,
-                })
-        except Exception:
-            pass
+            if si is None or di is None:
+                # Endpoint cannot be mapped to currently materialized nodes.
+                # This can happen with aggressive node budgets / contraction.
+                unmapped_edges += 1
+                continue
+            if si < 0 or di < 0 or si >= node_count or di >= node_count:
+                unmapped_edges += 1
+                continue
+
+            e_feat = TreePayloadEncoder._encode_edge_feature(e).astype(np.float64)
+            edge_feat_sum += e_feat
+            edge_feat_sq_sum += (e_feat * e_feat)
+            edge_feat_count += 1
+
+        self._tree_stat_buffer.append({
+            'nodes': node_count,
+            'edges': edge_count,
+            'invalid_edges': int(invalid_edges),
+            'unmapped_edges': int(unmapped_edges),
+            'empty_payload': 1 if (node_count == 0 and edge_count == 0) else 0,
+            'node_feat_sum': node_feat_sum,
+            'node_feat_sq_sum': node_feat_sq_sum,
+            'node_feat_count': int(node_feat_count),
+            'edge_feat_sum': edge_feat_sum,
+            'edge_feat_sq_sum': edge_feat_sq_sum,
+            'edge_feat_count': int(edge_feat_count),
+        })
 
     @staticmethod
     def _extract_deadlock_label_from_temporal_state(temporal_state) -> float:
-        """Build a robust [0,1] deadlock-risk label from next-state features.
+        """Build a robust [0,1] deadlock-risk label from temporal payload data."""
+        if not isinstance(temporal_state, (list, tuple)) or len(temporal_state) == 0:
+            raise ValueError("temporal_state must be a non-empty sequence")
+        last_step = temporal_state[-1]
 
-        Works with both 35D DecisionPointObservation (Modus A Pure) and 94D
-        HierarchicalRoutesObservation (35D base + sparse neighbors).
-        
-        Modus A Pure feature indices:
-          [5]      = local_deadlock (confirmed)
-          [30]     = confirmed_deadlock (tree-based)
-          [31]     = max_deadlock (peak in search)
-          [32]     = conflict_density (normalized)
-        """
-        try:
-            last_obs = np.asarray(temporal_state[-1][0], dtype=np.float32).reshape(-1)
-        except Exception:
+        payload = {}
+        if isinstance(last_step, (list, tuple)) and len(last_step) >= 3:
+            if not isinstance(last_step[2], dict):
+                raise TypeError("temporal_state payload entry must be a dict")
+            payload = last_step[2]
+
+        nodes = payload.get("nodes", []) if isinstance(payload.get("nodes", []), list) else []
+        edges = payload.get("edges", []) if isinstance(payload.get("edges", []), list) else []
+
+        if not nodes and not edges:
             return 0.0
 
-        if last_obs.shape[0] == 0:
-            return 0.0
+        max_deadlock = max((float(n.get("deadlock_risk", 0.0)) for n in nodes), default=0.0)
+        oncoming_node = 1.0 if any(bool(n.get("has_oncoming", False)) for n in nodes) else 0.0
+        oncoming_edge = 1.0 if any(bool(e.get("has_oncoming_edge", False)) for e in edges) else 0.0
+        dead_end_ratio = 0.0
+        if nodes:
+            dead_end_ratio = float(sum(1 for n in nodes if int(n.get("num_transitions", 0)) == 0)) / float(len(nodes))
 
-        def _safe(idx: int) -> float:
-            if 0 <= idx < last_obs.shape[0]:
-                return float(last_obs[idx])
-            return 0.0
-
-        # Modus A Pure deadlock signals
-        local_deadlock  = _safe(5)       # Immediate context signal
-        tree_confirmed  = _safe(30)      # Tree-based confirmation
-        tree_max_risk   = _safe(31)      # Worst case in subtree
-        conflict_density = _safe(32)     # Conflict frequency (0 to 1)
-        
-        # Optional extra cues in hierarchical sparse-neighbor block.
-        # Per-neighbor 6D block: index +3 == local conflict flag.
-        # Current supported layouts:
-        #   - 35D base -> no sparse block
-        #   - 94D base -> sparse block starts at 35
-        sparse_local = 0.0
-        if last_obs.shape[0] >= 94:
-            sparse_start = 35
-            sparse_local = max(
-                _safe(sparse_start + 3),
-                _safe(sparse_start + 9),
-                _safe(sparse_start + 15),
-                _safe(sparse_start + 21),
-            )
-
-        # Combine signals: local direct signal + tree-based estimates
         risk = max(
-            local_deadlock,
-            tree_confirmed,
-            min(1.0, 0.5 * tree_max_risk),
-            min(1.0, 0.3 * conflict_density),
-            sparse_local,
+            max_deadlock,
+            0.70 * oncoming_node,
+            0.70 * oncoming_edge,
+            0.45 * dead_end_ratio,
         )
         return float(np.clip(risk, 0.0, 1.0))
 
     def _extract_action_diversity_gate_from_temporal_state(self, temporal_state) -> float:
-        """Return gate in [0,1] for where diversity shaping should be active.
+        """Return gate in [0,1] where diversity shaping should be active.
 
-        Gate is active only at decision points and local deadlock contexts.
-        This avoids penalizing unavoidable forward moves on straight corridors.
+        Gate is driven by tree-payload conflict/branching signals instead of
+        fixed observation indices.
         """
-        try:
-            last_obs = np.asarray(temporal_state[-1][0], dtype=np.float32).reshape(-1)
-        except Exception:
+        if not isinstance(temporal_state, (list, tuple)) or len(temporal_state) == 0:
+            raise ValueError("temporal_state must be a non-empty sequence")
+        last_step = temporal_state[-1]
+
+        payload = {}
+        if isinstance(last_step, (list, tuple)) and len(last_step) >= 3:
+            if not isinstance(last_step[2], dict):
+                raise TypeError("temporal_state payload entry must be a dict")
+            payload = last_step[2]
+
+        nodes = payload.get("nodes", []) if isinstance(payload.get("nodes", []), list) else []
+        if len(nodes) == 0:
             return 0.0
 
-        if last_obs.shape[0] == 0:
-            return 0.0
-
-        def _safe(idx: int) -> float:
-            if 0 <= idx < last_obs.shape[0]:
-                return float(last_obs[idx])
-            return 0.0
-
-        decision_required = _safe(int(getattr(self, 'action_diversity_decision_idx', 30)))
-        local_deadlock = _safe(int(getattr(self, 'action_diversity_local_deadlock_idx', 5)))
+        branching_ratio = float(sum(1 for n in nodes if int(n.get("num_transitions", 0)) > 1)) / float(len(nodes))
+        max_deadlock = max((float(n.get("deadlock_risk", 0.0)) for n in nodes), default=0.0)
+        has_oncoming = 1.0 if any(bool(n.get("has_oncoming", False)) for n in nodes) else 0.0
+        gate_signal = max(branching_ratio, max_deadlock, 0.75 * has_oncoming)
         thr = float(getattr(self, 'action_diversity_gate_threshold', 0.5))
-
-        gate_signal = max(decision_required, local_deadlock)
         if gate_signal < thr:
             return 0.0
         return float(np.clip(gate_signal, 0.0, 1.0))
@@ -2561,7 +2654,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     filled = int(bar_length * progress)
                     bar = '█' * filled + '░' * (bar_length - filled)
                     print(f"\r  [{bar}] Epoch {k_loop+1}/{k_epochs_eff}, Batch {batch_idx+1}/{num_batches} ({progress*100:3.1f}%)", end='')
-                    print(f"\t", end='')
+                    print("\t", end='')
                     print(f"| Loss: {loss.item():.4f}", end='')
                     print(f"| P_Loss: {policy_loss_component.item():.4f}", end='')
                     print(f"| V_Loss: {value_loss_component.item():.4f}", end='')
@@ -2662,60 +2755,42 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         print("\n" + "="*80 + "\n")
 
     # Feature names/descriptions for current DecisionPointObservation layout
-    # (35 handcrafted base features + 120 serialized tree-node features).
+    # (24D base vector; tree context is provided out-of-band via payload).
     _OBS_FEATURE_NAMES = [
-        "is_switch", "hint_L", "hint_F", "hint_R", "is_merge", "local_dl",
+        "path_left", "path_forward", "path_right",
+        "delta_left", "delta_forward", "delta_right",
         "st_0", "st_1", "st_2", "st_3", "st_4", "st_5", "st_6",
-        "act_DN", "act_L", "act_F", "act_R", "act_S",
         "priority_rank",
-        "ct_OUTSIDE", "ct_FORWARD_ONLY", "ct_MERGING", "ct_SWITCH", "ct_DONE",
-        "tr_FWD_FWD", "tr_FWD_MRG", "tr_FWD_SWI", "tr_SWI_FWD", "tr_MRG_FWD",
-        "mean_deadlock", "confirmed_deadlock", "curr_dist_norm", "max_deadlock", "conflict_density", "branching_ratio",
-    ] + [
-        f"tree_n{node}_{feat}"
-        for node in range(LocalTreeEncoder.MAX_NODES)
-        for feat in ("dl", "trans", "oncoming", "inflow", "depth", "agents", "rel", "edge_agents")
+        "is_pre_merge", "is_switch", "is_started", "is_done",
+        "sp_left", "sp_forward", "sp_right",
+        "deadlock_ahead", "deadlock_hard_block", "deadlock_escapable",
     ]
 
     _OBS_FEATURE_DESC = [
-        "Switch present (branching possible)",
-        "Shortest path goes Left",
-        "Shortest path goes Forward",
-        "Shortest path goes Right",
-        "Merge point ahead",
-        "Local corridor deadlock signal",
-        "TrainState: READY_TO_DEPART",
-        "TrainState: MALFUNCTION_OFF_MAP",
+        "Relative transition exists: left",
+        "Relative transition exists: forward",
+        "Relative transition exists: right",
+        "Distance delta to left successor (clipped)",
+        "Distance delta to forward successor (clipped)",
+        "Distance delta to right successor (clipped)",
+        "TrainState: READY",
         "TrainState: MOVING",
         "TrainState: STOPPED",
         "TrainState: MALFUNCTION",
-        "TrainState: WAITING",
         "TrainState: DONE",
-        "Last action: DO_NOTHING",
-        "Last action: LEFT",
-        "Last action: FORWARD",
-        "Last action: RIGHT",
-        "Last action: STOP",
-        "Priority rank",
-        "Cell type: OUTSIDE",
-        "Cell type: FORWARD_ONLY",
-        "Cell type: MERGING",
-        "Cell type: SWITCH",
-        "Cell type: DONE",
-        "Transition: FORWARD->FORWARD",
-        "Transition: FORWARD->MERGE",
-        "Transition: FORWARD->SWITCH",
-        "Transition: SWITCH->FORWARD",
-        "Transition: MERGE->FORWARD",
-        "Mean deadlock risk in local tree",
-        "Confirmed local deadlock flag",
-        "Normalized current distance-to-target",
-        "Max deadlock risk in local tree",
-        "Conflict density in local tree",
-        "Branching ratio in local tree",
-    ] + [
-        "Serialized tree node feature"
-        for _ in range(_TREE_BLOCK_DIM)
+        "TrainState: WAITING",
+        "State flag: not started (position is None)",
+        "Normalized priority rank",
+        "One step before merge-conflict point",
+        "Current cell is a switch",
+        "State flag: agent is on map",
+        "State flag: agent is done",
+        "Shortest-path hint: left",
+        "Shortest-path hint: forward",
+        "Shortest-path hint: right",
+        "Ahead conflict with mismatched direction",
+        "Ahead conflict + no immediate free exit",
+        "Ahead conflict and blocker has free alternative",
     ]
 
     def _print_obs_statistics(self):
@@ -2779,7 +2854,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         print(f"  {color('MAPPO DIAGNOSTIC REPORT', C_BOLD + C_CYAN)}")
         print(f"  Episode : {self.episode_count}")
         print(f"  Interval: {self._obs_stat_interval} episodes")
-        print(f"  Context : Flatland 5-agent rail scheduling, DecisionPoint obs {_BASE_OBS_DIM}D base + {_TREE_BLOCK_DIM}D tree")
+        print(f"  Context : Flatland 5-agent rail scheduling, DecisionPoint obs {_BASE_OBS_DIM}D base + raw tree payload")
         print(W)
 
         # ── 1) Episoden-Kennzahlen ─────────────────────────────────────────────
@@ -2977,64 +3052,63 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         # ── 3) Feature Importance ──────────────────────────────────────────────
         print(f"\n{color(W, C_BLUE)}")
-        try:
-            W_mat = self.encoder_actor.obs_encoder[0].weight.detach().cpu().numpy()
-            sens   = np.abs(W_mat).mean(axis=0)
-            obs_dim   = sens.shape[0]
-            max_s     = sens.max() if sens.max() > 0 else 1.0
-            order     = np.argsort(sens)[::-1]
-            sens_norm = sens / max_s          # relative importance in [0,1]
+        W_mat = self.encoder_actor.obs_encoder[0].weight.detach().cpu().numpy()
+        sens = np.abs(W_mat).mean(axis=0)
+        obs_dim = sens.shape[0]
+        max_s = sens.max() if sens.max() > 0 else 1.0
+        order = np.argsort(sens)[::-1]
+        sens_norm = sens / max_s          # relative importance in [0,1]
 
-            print(f"  SECTION 3 — FEATURE IMPORTANCE  "
-                  f"(mean |weight| first encoder layer, {obs_dim}D input)")
-            print(f"  Interpretation guide:")
-            print(f"    rel_imp = mean|W_col| / max(mean|W_col|)")
-            print(f"    >0.50 = highly used  |  0.10-0.50 = moderate  "
-                  f"|  <0.05 = nearly ignored  |  <0.01 = dead")
-            print()
-            print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+{'─'*44}+")
-            print(f"  | {'Rk':>2} | {'[i]':>3} | {'Name':<20s} | {'abs_sens':>7} "
-                  f"| {'rel_imp':>7} | {'Bar (24-wide)':<24s} | {'Interpretation':<24s} | {'Description':<42s} |")
-            print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+{'─'*44}+")
+        print(f"  SECTION 3 — FEATURE IMPORTANCE  "
+              f"(mean |weight| first encoder layer, {obs_dim}D input)")
+        print("  Interpretation guide:")
+        print("    rel_imp = mean|W_col| / max(mean|W_col|)")
+        print("    >0.50 = highly used  |  0.10-0.50 = moderate  |  <0.05 = nearly ignored  |  <0.01 = dead")
+        print()
+        print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+{'─'*44}+")
+        print(f"  | {'Rk':>2} | {'[i]':>3} | {'Name':<20s} | {'abs_sens':>7} "
+              f"| {'rel_imp':>7} | {'Bar (24-wide)':<24s} | {'Interpretation':<24s} | {'Description':<42s} |")
+        print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+{'─'*44}+")
 
-            def imp_note(rel):
-                if rel > 0.50: return "highly used by network"
-                if rel > 0.20: return "moderately used"
-                if rel > 0.05: return "low usage"
-                if rel > 0.01: return "nearly ignored"
-                return "DEAD — no gradient signal"
+        def imp_note(rel):
+            if rel > 0.50:
+                return "highly used by network"
+            if rel > 0.20:
+                return "moderately used"
+            if rel > 0.05:
+                return "low usage"
+            if rel > 0.01:
+                return "nearly ignored"
+            return "DEAD — no gradient signal"
 
-            for rank in range(obs_dim):
-                i    = order[rank]
-                s    = sens[i]
-                r    = sens_norm[i]
-                bar  = ('█' * int(r * 24)).ljust(24)
-                note = imp_note(r)
-                desc = fdesc(i)[:42]
-                print(f"  | {rank+1:2d} | [{i:2d}] | {fname(i):<20s} | "
-                      f"{s:7.5f} | {r:7.4f} | {bar} | {note:<24s} | {desc:<42s} |")
+        for rank in range(obs_dim):
+            i = order[rank]
+            s = sens[i]
+            r = sens_norm[i]
+            bar = ('█' * int(r * 24)).ljust(24)
+            note = imp_note(r)
+            desc = fdesc(i)[:42]
+            print(f"  | {rank+1:2d} | [{i:2d}] | {fname(i):<20s} | "
+                  f"{s:7.5f} | {r:7.4f} | {bar} | {note:<24s} | {desc:<42s} |")
 
-            print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+{'─'*44}+")
+        print(f"  +{'─'*4}+{'─'*5}+{'─'*22}+{'─'*9}+{'─'*9}+{'─'*26}+{'─'*26}+{'─'*44}+")
 
-            dead_thresh = max_s * 0.01
-            dead_feats  = [i for i in range(obs_dim) if sens[i] < dead_thresh]
-            top3        = [fname(order[k]) for k in range(min(3, obs_dim))]
-            print(f"\n  Top-3 most used : {', '.join(top3)}")
-            if dead_feats:
-                print(f"  Dead features   : {len(dead_feats)} ignored "
-                      f"({', '.join(fname(i) for i in dead_feats[:8])}"
-                      f"{'…' if len(dead_feats) > 8 else ''})")
-                print(f"  {color('WARN', C_YELLOW)}  Dead features waste network capacity and may indicate "
-                      f"structural issues in the observation.")
-            else:
-                print(f"  {color('OK', C_GREEN)}  All features contribute to network (>=1% sensitivity).")
-
-        except Exception as exc:
-            print(f"  (Feature importance not available: {exc})")
+        dead_thresh = max_s * 0.01
+        dead_feats = [i for i in range(obs_dim) if sens[i] < dead_thresh]
+        top3 = [fname(order[k]) for k in range(min(3, obs_dim))]
+        print(f"\n  Top-3 most used : {', '.join(top3)}")
+        if dead_feats:
+            print(f"  Dead features   : {len(dead_feats)} ignored "
+                  f"({', '.join(fname(i) for i in dead_feats[:8])}"
+                  f"{'…' if len(dead_feats) > 8 else ''})")
+            print(f"  {color('WARN', C_YELLOW)}  Dead features waste network capacity and may indicate "
+                  f"structural issues in the observation.")
+        else:
+            print(f"  {color('OK', C_GREEN)}  All features contribute to network (>=1% sensitivity).")
 
         # ── 3b) Tree Encoder Diagnostics (every _obs_stat_interval episodes) ──
         print(f"\n{color(W, C_BLUE)}")
-        print(f"  SECTION 3B — TREE ENCODER DIAGNOSTICS")
+        print("  SECTION 3B — TREE ENCODER DIAGNOSTICS")
 
         def _param_norm(module: nn.Module) -> float:
             sq = 0.0
@@ -3062,6 +3136,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         critic_tree_bad = 0
         actor_payload_bad = 0
         critic_payload_bad = 0
+        has_actor_tree_encoder = hasattr(self.encoder_actor, 'tree_encoder')
+        has_critic_tree_encoder = hasattr(self.encoder_critic, 'tree_encoder')
 
         if hasattr(self.encoder_actor, 'tree_encoder'):
             actor_tree_norm = _param_norm(self.encoder_actor.tree_encoder)
@@ -3082,18 +3158,38 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         tpg_c = float(np.mean(sb['tree_payload_grad_critic'])) if sb['tree_payload_grad_critic'] else 0.0
 
         tree_rows = [
-            ("Actor tree param-norm", actor_tree_norm, "", "OK" if actor_tree_bad == 0 else "ALERT",
-             "healthy" if actor_tree_bad == 0 else "NaN/Inf in params"),
-            ("Critic tree param-norm", critic_tree_norm, "", "OK" if critic_tree_bad == 0 else "ALERT",
-             "healthy" if critic_tree_bad == 0 else "NaN/Inf in params"),
+            (
+                "Actor tree param-norm",
+                actor_tree_norm,
+                "",
+                "OK" if (not has_actor_tree_encoder or actor_tree_bad == 0) else "ALERT",
+                "payload-only encoder (no tree module)" if not has_actor_tree_encoder else ("healthy" if actor_tree_bad == 0 else "NaN/Inf in params"),
+            ),
+            (
+                "Critic tree param-norm",
+                critic_tree_norm,
+                "",
+                "OK" if (not has_critic_tree_encoder or critic_tree_bad == 0) else "ALERT",
+                "payload-only encoder (no tree module)" if not has_critic_tree_encoder else ("healthy" if critic_tree_bad == 0 else "NaN/Inf in params"),
+            ),
             ("Actor payload param-norm", actor_payload_norm, "", "OK" if actor_payload_bad == 0 else "ALERT",
              "healthy" if actor_payload_bad == 0 else "NaN/Inf in params"),
             ("Critic payload param-norm", critic_payload_norm, "", "OK" if critic_payload_bad == 0 else "ALERT",
              "healthy" if critic_payload_bad == 0 else "NaN/Inf in params"),
-            ("Actor tree grad-norm", tg_a, "", "OK" if tg_a > 1e-8 else "WARN",
-             "learning signal" if tg_a > 1e-8 else "near-zero updates"),
-            ("Critic tree grad-norm", tg_c, "", "OK" if tg_c > 1e-8 else "WARN",
-             "learning signal" if tg_c > 1e-8 else "near-zero updates"),
+            (
+                "Actor tree grad-norm",
+                tg_a,
+                "",
+                "OK" if (not has_actor_tree_encoder or tg_a > 1e-8) else "WARN",
+                "payload-only encoder (no tree module)" if not has_actor_tree_encoder else ("learning signal" if tg_a > 1e-8 else "near-zero updates"),
+            ),
+            (
+                "Critic tree grad-norm",
+                tg_c,
+                "",
+                "OK" if (not has_critic_tree_encoder or tg_c > 1e-8) else "WARN",
+                "payload-only encoder (no tree module)" if not has_critic_tree_encoder else ("learning signal" if tg_c > 1e-8 else "near-zero updates"),
+            ),
             ("Actor payload grad-norm", tpg_a, "", "OK" if tpg_a > 1e-8 else "WARN",
              "learning signal" if tpg_a > 1e-8 else "near-zero updates"),
             ("Critic payload grad-norm", tpg_c, "", "OK" if tpg_c > 1e-8 else "WARN",
@@ -3110,6 +3206,51 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             elif "grad-norm" in lbl and st == "WARN":
                 tree_issues.append(f"{lbl}: near-zero gradient flow")
         print(f"  +{'─'*28}+{'─'*14}+{'─'*8}+{'─'*6}+{'─'*26}+")
+
+        def _print_encoded_feature_stats(title: str, names: List[str], means: np.ndarray, stds: np.ndarray):
+            print(f"\n  {title}:")
+            print(f"  +{'─'*4}+{'─'*34}+{'─'*12}+{'─'*12}+")
+            print(f"  | {'#':>2s} | {'Feature':<32s} | {'mean':>10s} | {'std':>10s} |")
+            print(f"  +{'─'*4}+{'─'*34}+{'─'*12}+{'─'*12}+")
+            for i, n in enumerate(names):
+                print(f"  | {i:2d} | {n:<32.32s} | {float(means[i]):10.4f} | {float(stds[i]):10.4f} |")
+            print(f"  +{'─'*4}+{'─'*34}+{'─'*12}+{'─'*12}+")
+
+        def _collect_usage_proxy(encoders: List[nn.Module], names: List[str], layer_path: str) -> Optional[np.ndarray]:
+            vals = []
+            for enc in encoders:
+                mod = enc
+                try:
+                    for p in layer_path.split('.'):
+                        if p.isdigit():
+                            mod = mod[int(p)]
+                        else:
+                            mod = getattr(mod, p)
+                    if isinstance(mod, nn.Linear):
+                        w = mod.weight.detach().abs().mean(dim=0).cpu().numpy().astype(np.float64)
+                        if w.shape[0] == len(names):
+                            vals.append(w)
+                except Exception:
+                    continue
+            if not vals:
+                return None
+            arr = np.mean(np.stack(vals, axis=0), axis=0)
+            denom = float(np.sum(arr))
+            if denom <= 1e-12:
+                return np.zeros_like(arr)
+            return arr / denom
+
+        def _print_usage_top(title: str, names: List[str], rel: np.ndarray, top_k: int = 8):
+            order = np.argsort(-rel)
+            k = min(int(top_k), len(names))
+            print(f"\n  {title}:")
+            print(f"  +{'─'*4}+{'─'*34}+{'─'*14}+")
+            print(f"  | {'#':>2s} | {'Feature':<32s} | {'share%':>12s} |")
+            print(f"  +{'─'*4}+{'─'*34}+{'─'*14}+")
+            for r in range(k):
+                i = int(order[r])
+                print(f"  | {r+1:2d} | {names[i]:<32.32s} | {100.0 * float(rel[i]):12.3f} |")
+            print(f"  +{'─'*4}+{'─'*34}+{'─'*14}+")
 
         if self._tree_stat_buffer:
             tarr_nodes = np.array([x['nodes'] for x in self._tree_stat_buffer], dtype=np.float32)
@@ -3129,6 +3270,70 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             print(f"    empty payload ratio     = {empty_ratio:.3f}")
             print(f"    invalid edge ratio      = {invalid_ratio:.4f}")
             print(f"    unmapped edge ratio     = {unmapped_ratio:.4f}")
+
+            node_sum = np.zeros(TreePayloadEncoder.NODE_DIM, dtype=np.float64)
+            node_sq_sum = np.zeros(TreePayloadEncoder.NODE_DIM, dtype=np.float64)
+            edge_sum = np.zeros(TreePayloadEncoder.EDGE_DIM, dtype=np.float64)
+            edge_sq_sum = np.zeros(TreePayloadEncoder.EDGE_DIM, dtype=np.float64)
+            node_count = 0.0
+            edge_count = 0.0
+            for rec in self._tree_stat_buffer:
+                ns = rec.get('node_feat_sum')
+                nss = rec.get('node_feat_sq_sum')
+                es = rec.get('edge_feat_sum')
+                ess = rec.get('edge_feat_sq_sum')
+                nc = rec.get('node_feat_count', 0)
+                ec = rec.get('edge_feat_count', 0)
+                if isinstance(ns, np.ndarray) and ns.shape[0] == TreePayloadEncoder.NODE_DIM:
+                    node_sum += ns.astype(np.float64)
+                if isinstance(nss, np.ndarray) and nss.shape[0] == TreePayloadEncoder.NODE_DIM:
+                    node_sq_sum += nss.astype(np.float64)
+                if isinstance(es, np.ndarray) and es.shape[0] == TreePayloadEncoder.EDGE_DIM:
+                    edge_sum += es.astype(np.float64)
+                if isinstance(ess, np.ndarray) and ess.shape[0] == TreePayloadEncoder.EDGE_DIM:
+                    edge_sq_sum += ess.astype(np.float64)
+                node_count += float(nc)
+                edge_count += float(ec)
+
+            if node_count > 0.5:
+                node_mean = node_sum / node_count
+                node_var = np.maximum(0.0, (node_sq_sum / node_count) - (node_mean * node_mean))
+                node_std = np.sqrt(node_var)
+                _print_encoded_feature_stats(
+                    "Encoded TREE NODE feature stats",
+                    TreePayloadEncoder.NODE_FEATURE_NAMES,
+                    node_mean,
+                    node_std,
+                )
+            else:
+                print("\n  Encoded TREE NODE feature stats: no valid node features observed.")
+
+            if edge_count > 0.5:
+                edge_mean = edge_sum / edge_count
+                edge_var = np.maximum(0.0, (edge_sq_sum / edge_count) - (edge_mean * edge_mean))
+                edge_std = np.sqrt(edge_var)
+                _print_encoded_feature_stats(
+                    "Encoded TREE EDGE feature stats",
+                    TreePayloadEncoder.EDGE_FEATURE_NAMES,
+                    edge_mean,
+                    edge_std,
+                )
+            else:
+                print("\n  Encoded TREE EDGE feature stats: no valid edge features observed.")
+
+            payload_encoders = []
+            if hasattr(self.encoder_actor, 'tree_payload_encoder'):
+                payload_encoders.append(self.encoder_actor.tree_payload_encoder)
+            if hasattr(self.encoder_critic, 'tree_payload_encoder'):
+                payload_encoders.append(self.encoder_critic.tree_payload_encoder)
+
+            node_usage = _collect_usage_proxy(payload_encoders, TreePayloadEncoder.NODE_FEATURE_NAMES, "node_proj.0")
+            if node_usage is not None:
+                _print_usage_top("MAPPO tree usage proxy (node_proj input share)", TreePayloadEncoder.NODE_FEATURE_NAMES, node_usage)
+
+            edge_usage = _collect_usage_proxy(payload_encoders, TreePayloadEncoder.EDGE_FEATURE_NAMES, "edge_gate.0")
+            if edge_usage is not None:
+                _print_usage_top("MAPPO tree usage proxy (edge_gate input share)", TreePayloadEncoder.EDGE_FEATURE_NAMES, edge_usage)
 
             if invalid_ratio > 0.02:
                 tree_issues.append(f"Invalid edge ratio {invalid_ratio:.4f} > 0.02: malformed edge fields in payload")
@@ -3160,12 +3365,22 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             stds  = data.std(axis=0)
             RANGE_TOL = 0.05
 
+            # Per-feature expected ranges for 24D DecisionPoint base vector.
+            # Deltas [3..5] are intentionally in [-1, 1], others in [0, 1].
+            exp_lo = np.zeros(D, dtype=np.float32)
+            exp_hi = np.ones(D, dtype=np.float32)
+            if D >= 6:
+                exp_lo[3:6] = -1.0
+
             print(f"\n{color(W, C_BLUE)}")
             print(f"  SECTION 4 — OBSERVATION SANITY  (N={N} frames, D={D} features)")
             print()
 
-            oor  = [(i, mins[i], maxs[i]) for i in range(D)
-                    if mins[i] < -RANGE_TOL or maxs[i] > 1.0 + RANGE_TOL]
+            oor  = [
+                (i, mins[i], maxs[i], exp_lo[i], exp_hi[i])
+                for i in range(D)
+                if mins[i] < (exp_lo[i] - RANGE_TOL) or maxs[i] > (exp_hi[i] + RANGE_TOL)
+            ]
             dead = [(i, means[i]) for i in range(D) if stds[i] < 1e-4]
 
             valid_idx = [i for i in range(D) if stds[i] > 1e-6]
@@ -3174,17 +3389,28 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 with np.errstate(divide='ignore', invalid='ignore'):
                     corr = np.corrcoef(data[:, valid_idx].T)
                 corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
-                dups = [(valid_idx[ii], valid_idx[jj], corr[ii, jj])
-                        for ii in range(len(valid_idx))
-                        for jj in range(ii + 1, len(valid_idx))
-                        if abs(corr[ii, jj]) > 0.99]
+                dups_raw = [(valid_idx[ii], valid_idx[jj], corr[ii, jj])
+                            for ii in range(len(valid_idx))
+                            for jj in range(ii + 1, len(valid_idx))
+                            if abs(corr[ii, jj]) > 0.99]
+
+                # Known intentional/derived pairs in the 24D contract:
+                # st_6 = 1 - is_started, is_done mirrors st_4.
+                expected_dup_pairs = {
+                    tuple(sorted((10, 17))),
+                    tuple(sorted((12, 16))),
+                }
+                dups = [
+                    (a, b, c) for (a, b, c) in dups_raw
+                    if tuple(sorted((a, b))) not in expected_dup_pairs
+                ]
 
             obs_issues = []
             if oor:
                 obs_issues.append(
                     f"{len(oor)} feature(s) outside [0,1]: "
-                    + ", ".join(f"[{i}]{fname(i)}(min={lo:+.3f},max={hi:+.3f})"
-                                for i, lo, hi in oor[:5]))
+                    + ", ".join(f"[{i}]{fname(i)}(min={lo:+.3f},max={hi:+.3f},exp=[{elo:+.1f},{ehi:+.1f}])"
+                                for i, lo, hi, elo, ehi in oor[:5]))
             if dead:
                 obs_issues.append(
                     f"{len(dead)} constant feature(s) (zero variance): "
@@ -3200,7 +3426,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                   f"{'min':>5} | {'max':>5} | {'oor':>5} | {'dead':>4} |")
             print(f"  +{'─'*30}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*6}+")
             for i in range(D):
-                is_oor  = mins[i] < -RANGE_TOL or maxs[i] > 1.0 + RANGE_TOL
+                is_oor  = mins[i] < (exp_lo[i] - RANGE_TOL) or maxs[i] > (exp_hi[i] + RANGE_TOL)
                 is_dead = stds[i] < 1e-4
                 if not is_oor and not is_dead:
                     continue   # only print notable features
@@ -3213,15 +3439,15 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             if not oor and not dead:
                 print(f"  {color('OK', C_GREEN)}  All features in [0,1], none constant.")
             if dups:
-                print(f"\n  Duplicate pairs (|corr|>0.99):")
+                print("\n  Duplicate pairs (|corr|>0.99):")
                 for a, b, c in dups:
                     print(f"    [{a}]{fname(a):<20s} <-> [{b}]{fname(b):<20s}  corr={c:+.4f}")
 
             # Key feature means
-            if D > 34:  # 35D Modus A Pure
-                print(f"\n  Key feature means:")
-                print(f"    is_switch={means[0]:.3f}  is_merge={means[4]:.3f}  "
-                      f"local_dl={means[5]:.3f}  priority_rank={means[18]:.3f}")
+            if D > 13:
+                print("\n  Key feature means:")
+                state_mass = float(np.sum(means[6:13]))
+                print(f"    train_state_mass={state_mass:.3f}  priority_rank={means[13]:.3f}")
 
             if obs_issues:
                 print(f"\n  {color('OBS ISSUES:', C_YELLOW)}")
@@ -3235,7 +3461,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # ── 5) Copilot summary block ───────────────────────────────────────────
         print(f"\n{color(W, C_BLUE)}")
         print(f"  {color('SECTION 5 — COPILOT INTERNAL TRIAGE', C_BOLD + C_CYAN)}")
-        print(f"  Compact block for direct next-action decisions:")
+        print("  Compact block for direct next-action decisions:")
         print(f"  {'─'*76}")
 
         all_issues = issues + obs_issues
@@ -3261,7 +3487,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         print(
             f"  PROFILE: MAPPO Flatland 5-agent | Episode={self.episode_count}\n"
-            f"  OBS: DecisionPoint{_BASE_OBS_DIM}+tree{_TREE_BLOCK_DIM} + temporal LSTM + comm-attn\n"
+            f"  OBS: DecisionPoint{_BASE_OBS_DIM} + raw-tree payload + temporal encoder + comm-attn\n"
             f"\n"
             f"  OVERALL: {status_text(overall)}\n"
             f"\n"
@@ -3339,8 +3565,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             if not done:
                 continue
             
-            # Index [30] = confirmed_deadlock in 35D Modus A Pure features
-            deadlock_risk = max(state[0][0][30], next_state[0][0][30])
+            deadlock_risk = max(
+                self._extract_deadlock_label_from_temporal_state(state),
+                self._extract_deadlock_label_from_temporal_state(next_state),
+            )
             delta = per_done_agent_bonus - (DEADLOCK_PENALTY_PER_AGENT_MAX * deadlock_risk)
             delta = float(np.clip(delta, PER_AGENT_DELTA_MIN, PER_AGENT_DELTA_MAX))
             # Store: (handle, ..., delta) — exactly ONE entry per done agent
@@ -3417,27 +3645,21 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
     def _load(self, obj, filename):
         if os.path.exists(filename):
             print(' >> ', filename)
-            try:
-                obj.load_state_dict(torch.load(filename, map_location=self.device))
-            except Exception as e:
-                print(f" >> failed to load: {e}")
+            obj.load_state_dict(torch.load(filename, map_location=self.device))
         return obj
 
     @staticmethod
     def _optimizer_state_compatible(optimizer) -> bool:
         """Validate that tensor-shaped optimizer states match current param shapes."""
-        try:
-            for group in optimizer.param_groups:
-                for p in group['params']:
-                    if p not in optimizer.state:
-                        continue
-                    st = optimizer.state[p]
-                    for _, v in st.items():
-                        if torch.is_tensor(v) and tuple(v.shape) != tuple(p.shape):
-                            return False
-            return True
-        except Exception:
-            return False
+        for group in optimizer.param_groups:
+            for p in group['params']:
+                if p not in optimizer.state:
+                    continue
+                st = optimizer.state[p]
+                for _, v in st.items():
+                    if torch.is_tensor(v) and tuple(v.shape) != tuple(p.shape):
+                        return False
+        return True
 
     def _reset_critic_optimizer(self):
         """Recreate critic-head optimizer after architecture changes."""

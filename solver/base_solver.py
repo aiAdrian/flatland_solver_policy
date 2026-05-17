@@ -135,6 +135,30 @@ class BaseSolver:
     def after_episode_ends(self):
         pass
 
+    def _notify_observation_builder_episode_end(self, episode: int, training_mode: bool):
+        """Notify obs_builder once per episode so it can emit periodic summaries."""
+        if not training_mode:
+            return
+
+        raw_env = getattr(self.env, 'raw_env', None)
+        if raw_env is None:
+            return
+
+        obs_builder = getattr(raw_env, 'obs_builder', None)
+        if obs_builder is None or not hasattr(obs_builder, 'get_many'):
+            return
+
+        try:
+            handles = list(self.env.get_agent_handles())
+            obs_builder.get_many(
+                handles,
+                is_end_of_episode=True,
+                episode_count=episode,
+            )
+        except Exception:
+            # Keep episode teardown robust even if a custom obs builder hook fails.
+            pass
+
     def run_episode(self,
                     episode: int,
                     env: Environment,
@@ -152,6 +176,7 @@ class BaseSolver:
                                                                          info,
                                                                          training_mode)
         policy.end_episode(train=training_mode)
+        self._notify_observation_builder_episode_end(episode, training_mode)
         self.after_episode_ends()
         self._last_episode_agent_status = self._compute_episode_agent_status()
         return tot_reward, tot_terminate, tot_steps
@@ -275,6 +300,8 @@ class BaseSolver:
         deadlock_count_window.extend([0] * checkpoint_interval)
 
         writer = SummaryWriter(comment="_" + self.get_name() + "_training_" + self.policy.get_name())
+        tb_logging_enabled = True
+        tb_logging_warned = False
         
         # ==Pass writer to reward shaper if it supports it==
         if hasattr(self, '_reward_shaper') and self._reward_shaper is not None:
@@ -348,17 +375,24 @@ class BaseSolver:
                 ),
                 end='\n' if episode % checkpoint_interval == 0 else '')
 
-            writer.add_scalar(self.get_name() + "/training_value_reward", tot_reward, episode)
-            writer.add_scalar(self.get_name() + "/training_smoothed_reward", np.mean(scores_window), episode)
-            writer.add_scalar(self.get_name() + "/training_value_done", tot_terminate, episode)
-            writer.add_scalar(self.get_name() + "/training_smoothed_done", np.mean(terminate_window), episode)
-            writer.add_scalar(self.get_name() + "/training_value_deadlock_count", deadlock_count, episode)
-            writer.add_scalar(self.get_name() + "/training_smoothed_deadlock_count", np.mean(deadlock_count_window), episode)
-            writer.add_scalar(self.get_name() + "/training_value_nbr_agents", self.env.get_num_agents(), episode)
-            writer.add_scalar(self.get_name() + "/training_smoothed_nbr_agents", np.mean(nbr_agents_window), episode)
-            writer.add_scalar(self.get_name() + "/training_value_nbr_steps", tot_steps, episode)
-            writer.add_scalar(self.get_name() + "/training_smoothed_nbr_steps", np.mean(tot_steps_window), episode)
-            writer.flush()
+            if tb_logging_enabled:
+                try:
+                    writer.add_scalar(self.get_name() + "/training_value_reward", tot_reward, episode)
+                    writer.add_scalar(self.get_name() + "/training_smoothed_reward", np.mean(scores_window), episode)
+                    writer.add_scalar(self.get_name() + "/training_value_done", tot_terminate, episode)
+                    writer.add_scalar(self.get_name() + "/training_smoothed_done", np.mean(terminate_window), episode)
+                    writer.add_scalar(self.get_name() + "/training_value_deadlock_count", deadlock_count, episode)
+                    writer.add_scalar(self.get_name() + "/training_smoothed_deadlock_count", np.mean(deadlock_count_window), episode)
+                    writer.add_scalar(self.get_name() + "/training_value_nbr_agents", self.env.get_num_agents(), episode)
+                    writer.add_scalar(self.get_name() + "/training_smoothed_nbr_agents", np.mean(nbr_agents_window), episode)
+                    writer.add_scalar(self.get_name() + "/training_value_nbr_steps", tot_steps, episode)
+                    writer.add_scalar(self.get_name() + "/training_smoothed_nbr_steps", np.mean(tot_steps_window), episode)
+                    writer.flush()
+                except Exception as exc:
+                    tb_logging_enabled = False
+                    if not tb_logging_warned:
+                        print(f"\n[Warn] TensorBoard logging disabled after writer failure: {exc}")
+                        tb_logging_warned = True
 
             if episode % checkpoint_interval == 0 or episode >= max_episodes:
                 checkpoint_path = "{}/{}_{}_{}".format(writer.get_logdir(),

@@ -54,39 +54,42 @@ class TemporalMultiAgentObservation(ObservationBuilder):
             type(self)._banner_printed = True
 
     @staticmethod
-    def _opponent_relevance_score(obs_vec: np.ndarray) -> float:
-        """
-        Score opponent relevance using conflict-heavy features from the current
-        DecisionPointObservation layout (155D: 35 base + 15×8 tree block).
+    def _opponent_relevance_score(obs_vec: np.ndarray, tree_payload: Optional[Dict] = None) -> float:
+        """Score opponent relevance from base features + raw local-tree payload.
 
-        Index reference (base 35D block):
-            [0]  is_switch
-            [5]  local_deadlock        corridor blockage binary
-            [29] mean_deadlock         mean deadlock risk from tree search
-            [30] confirmed_deadlock    confirmed corridor deadlock binary
-            [32] max_deadlock          max deadlock risk in local window
-            [33] conflict_density      agent encounters per node
+        Base vector contribution:
+        - [6:13] TrainState one-hot (activity signal)
+        - [13]   priority rank (distance-based urgency)
+
+        Tree payload contribution:
+        - max deadlock risk over nodes
+        - oncoming / incoming conflict cues
+        - local branching pressure
         """
         if obs_vec is None:
             return 0.0
-        v = np.asarray(obs_vec, dtype=np.float32).reshape(-1)
-        if v.shape[0] < 30:
-            return float(np.linalg.norm(v, ord=1))
 
-        decision_strength = float(v[0])                                   # is_switch
-        local_deadlock    = float(v[5])                                   # corridor blockage
-        mean_deadlock     = float(v[29]) if v.shape[0] > 29 else 0.0     # tree mean
-        confirmed_deadlock = float(v[30]) if v.shape[0] > 30 else 0.0   # confirmed
-        max_deadlock      = float(v[32]) if v.shape[0] > 32 else 0.0     # tree max
-        conflict_density  = float(v[33]) if v.shape[0] > 33 else 0.0     # agent encounters/node
+        v = np.asarray(obs_vec, dtype=np.float32).reshape(-1)
+        state_activity = float(np.sum(v[6:13])) if v.shape[0] >= 13 else 0.0
+        priority = float(v[13]) if v.shape[0] > 13 else 0.0
+
+        payload = tree_payload if isinstance(tree_payload, dict) else {}
+        nodes = payload.get("nodes", []) if isinstance(payload.get("nodes", []), list) else []
+
+        max_deadlock = 0.0
+        oncoming_ratio = 0.0
+        branching_ratio = 0.0
+        if len(nodes) > 0:
+            max_deadlock = float(max(float(n.get("deadlock_risk", 0.0)) for n in nodes))
+            oncoming_ratio = float(sum(1 for n in nodes if n.get("has_oncoming", False))) / float(len(nodes))
+            branching_ratio = float(sum(1 for n in nodes if int(n.get("num_transitions", 0)) > 1)) / float(len(nodes))
 
         return (
-            0.2 * decision_strength
-            + 0.25 * local_deadlock
-            + 1.0 * mean_deadlock
-            + 1.0 * confirmed_deadlock
-            + 1.5 * max_deadlock
-            + 0.7 * conflict_density
+            0.25 * state_activity
+            + 0.35 * priority
+            + 1.20 * max_deadlock
+            + 0.90 * oncoming_ratio
+            + 0.70 * branching_ratio
         )
 
     @staticmethod
@@ -94,8 +97,8 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         return DecisionPointObservation.getObservationSize()
 
     def get_observation_size(self) -> int:
-        """Instance-level size that respects the wrapped base_obs (e.g. 66D for
-        DecisionPointObservation or 90D for HierarchicalRoutesObservation)."""
+        """Instance-level size that respects the wrapped base_obs (e.g. 24D for
+        DecisionPointObservation or 48D for HierarchicalRoutesObservation)."""
         getter = getattr(self.base_obs, 'getObservationSize', None)
         if callable(getter):
             try:
@@ -114,11 +117,23 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         self.temporal_history = {}
         self.base_obs.reset()
 
-    def get_many(self, handles: Optional[List[int]] = None):
+    def get_many(self,
+                 handles: Optional[List[int]] = None,
+                 is_end_of_episode: bool = False,
+                 episode_count: Optional[int] = None):
         if handles is None:
             handles = list(range(len(self.env.agents)))
 
-        current_obs = self.base_obs.get_many(handles)
+        # Forward optional episode-end flags to base builders that support them
+        # (e.g. DecisionPointObservation summary/statistics every 100 episodes).
+        try:
+            current_obs = self.base_obs.get_many(
+                handles,
+                is_end_of_episode=is_end_of_episode,
+                episode_count=episode_count,
+            )
+        except TypeError:
+            current_obs = self.base_obs.get_many(handles)
         handle_to_obs = {h: obs_entry for h, obs_entry in zip(handles, current_obs)}
 
         def _unpack_base_obs(entry, handle):
@@ -154,7 +169,8 @@ class TemporalMultiAgentObservation(ObservationBuilder):
                     continue
                 opp_base, _, _ = _unpack_base_obs(opp_entry, opp_handle)
                 opp_base = opp_base[:obs_size]
-                score = self._opponent_relevance_score(opp_base)
+                _, _, opp_payload = _unpack_base_obs(opp_entry, opp_handle)
+                score = self._opponent_relevance_score(opp_base, opp_payload)
                 scored_opponents.append((score, opp_base))
 
             if self.max_opponents > 0 and len(scored_opponents) > self.max_opponents:

@@ -1,440 +1,94 @@
-"""
-DecisionPointObservation: 70D Observation für Multi-Agent Railway Scheduling
-==============================================================================
+"""Decision-point observation used by MAPPO.
 
-ARCHITEKTUR-ÜBERSICHT
-───────────────────
-
-Diese Klasse generiert für jeden Agenten eine **35-dimensionale Merkmalsrepräsentation**
-(Modus A Pure: nur essenzielle Features), zusammen mit einer vollständigen lokalen
-Baum-Struktur für trainierbare Encoder (GNN/Transformer/LSTM).
-
-    Flatland Rail Grid
-           ↓
-    Agent [pos, dir, target]
-           ↓
-    DecisionPointObservation.get(handle)
-    ├─→ [0-5] Immediate Context: is_switch, direction_hint, is_merge, local_deadlock
-    ├─→ tree_payload = _local_search(pos, dir, depth=5)
-    │   ├─ nodes: [pos, dir, depth, num_transitions, deadlock_risk, agents_encountered]
-    │   ├─ edges: [src→dst, rel_dir, agents_on_edge]
-    │   └─ seen_agents: [sorted opponent IDs from tree search]
-    ├─→ [6-28] State/Action Memory: train_state, last_action, priority_rank, cell_type
-    └─→ [29-34] Tree Statistics: mean_deadlock, max_deadlock, conflict_density, branching_ratio
-           ↓
-    (raw_features[35], opponent_agents)
-           ↓
-    TemporalMultiAgentObservation (3-step buffer)
-    ├─ Nutzt opponent_agents zum Ranking (Top-K nach Relevanz)
-    ├─ Nutzt tree_payload für strukturierte Agenten-Kontext
-    └─ Returns: [(ego_features, relevant_opponent_features), ...]
-           ↓
-    MAPPO Policy Network
-    ├─ LSTM: (batch, 3, 35) → (batch, 64) hidden state
-    ├─ Attention: ego-Features + opponent-Features → cross-attention weights
-    └─ Heads: 64-dim → (5-dim action logits, 1-dim value estimate)
-           ↓
-    Action Sampling & Training
-
-MODUS A PURE — Trainable Encoder Architektur:
-───────────────────────────────────────────────
-Modus A Pure bedeutet:
-- Nur essenzielle 35D Features für immediate context + state/action memory
-- Alle Branch-Metrics (Modus B) wurden entfernt
-- Alle Merge-Heuristics (Modus B) wurden entfernt
-- Trainable Encoder hat direkten Zugriff auf tree_payload
-  → nodes/edges können mit Graph Neural Network (GNN) oder Transformer verarbeitet werden
-  → Encoder lernt selbst optimal, wie man Branching-Struktur nutzt
+Layout:
+- BASE_OBS_SIZE=15: local agent state features
+- TREE PAYLOAD: Decision-Point Graph with three node types:
+  - INIT (type=0): Agent initialization/spawn
+  - SWITCH (type=1): Route choice (num_transitions > 1)
+  - PRE_M (type=2): Pre-merge decision (forward vs wait)
   
-Vorteil:
-- Saubere Separation: Handcrafted Features ↔ Learnable Tree Encoding
-- Encoder ist nicht limited durch handcrafted Branch Features
-- Trainable Encoder kann novel patterns entdecken
-- Einfacher zu erweitern (z.B. mit Graph-Attention)
-
-
-DATENFLUSS: Von DecisionPointObservation zu MAPPO Training
-──────────────────────────────────────────────────────────
-
-1. get(handle) wird pro Agent & Timestep aufgerufen
-2. Lokale Baumsuche (DFS, depth=5) sammelt strukturierte Daten:
-   - nodes: Position, Richtung, Deadlock-Risiko, sichtbare Agenten
-   - edges: Verbindungen, relative Richtungen, Agenten auf Kanten
-   - seen_agents: Sortierte Liste entdeckter Gegner
-   - visited_states: Alle besuchten (pos, dir, depth)-Tupel
-   
-3. tree_payload wird in env.dev_tree_dict[handle] gespeichert
-   → Vollständig verfügbar für trainierbare Graph-Encoder
-   → Encoder (z.B. Graph-Attention) könnte direkt nodes/edges nutzen
-   
-4. 35D raw_features werden zurückgegeben:
-   → [0-5]: Immediate Context (is_switch, merge, deadlock)
-   → [6-28]: State/Action Memory (agent state, last action, priority, cell type)
-   → [29-34]: Tree-Statistiken (aggregierte Deadlock/Conflict-Metriken)
-   
-5. seen_agents wird an agent.cur_opp_agent_handles übergeben
-   → TemporalMultiAgentObservation nutzt diese zum Ranking
-   → "Welche der sichtbaren Gegner sind relevant für diesen Timestep?"
-   
-6. TemporalMultiAgentObservation puffert 3 Timesteps:
-   → Input: [(ego_35D, opp_agents_list), ...] pro Timestep
-   → Output: [(ego_t-2, opponent_t-2), (ego_t-1, opponent_t-1), (ego_t, opponent_t)]
-   → LSTM eingang: (3, 35) für ego, Top-K (3, 35) pro opponent
-   
-7. LSTM/Transformer encodiert: (3, 35) → 64-dim hidden state
-   → Erfasst zeitliche Muster (Deadlock-Risiko steigt? Gegner näher?)
-   
-8. Policy-Head erzeugt Action-Logits; Value-Head schätzt Zukunftswert
-   
-9. PPO-Update optimiert die Gewichte basierend auf Rewards
-
-OPTIONAL: Trainable Graph-Encoder für Tree-Struktur
-─────────────────────────────────────────────────────
-Statt features [29-34] (aggregierte Statistiken) könnte ein trainable Graph-Encoder
-die nodes/edges direkt verarbeiten:
-
-  tree_payload.nodes  ──┐
-  tree_payload.edges  ──┼─→ Graph Attention / GNN ──→ 64-dim tree_embedding
-  tree_payload.seen_agents ──┘
+  Corridors are compressed into edges. Merges modeled as edge context (merge_conflict flag).
+  Depth counts decision-point transitions, not cell hops.
   
-Dann: ego_35D + tree_embedding → Policy/Value Heads
-Vorteil:
-- Encoder lernt optimal Branching-Struktur (nicht handcrafted)
-- Gegner-Kontext direkt aus edges kodiert
-- Flexibel für neue Szenarien
-
-
-FEATURE-LAYOUT: 40D Dimensionen (Modus A Pure)
-────────────────────────────────────────────
-
-Modus A nutzt ausschließlich:
-1. Immediate Context [0-5]
-2. State/Action Memory [6-28]
-3. Tree Statistics [29-34]
-
-Alle Branch-Metrics und Merge-Heuristics werden vom trainable Encoder
-aus tree_payload.nodes/edges direkt verarbeitet.
-
-[0-5]       Switch & Merge Topology (6 Features) — Immediate Context
-  [0]       is_switch: 1.0 falls Agent auf Switch, sonst 0
-  [1-3]     shortest_path_hint: One-Hot für beste Richtung (L/F/R)
-  [4]       is_merge: 1.0 falls nächster Schritt vor Merge
-  [5]       local_deadlock: Binary Korridorblockade-Risiko
-
-[6-28]      State & Action Memory (23 Features)
-  [6-12]    train_state: One-Hot (7 states: READY, MOVING, ...)
-  [13-17]   last_action: One-Hot (5 actions: DN, L, F, R, STOP)
-  [18]      priority_rank: Normalisiert (0-1) nach verbleibender Distanz
-  [19-23]   cell_type: One-Hot (5 types: OUTSIDE, SWITCH, MERGE, FWD, DONE)
-  [24-28]   transitions: Pattern-Bits für Zelltyp-Übergänge
-
-[29-34]     Tree Statistics (6 Features) ← TRAINABLE ENCODER INPUT
-  [29]      mean_deadlock_risk: Durchschnitt aus lokaler Baumsuche
-  [30]      confirmed_deadlock: 1.0 falls kritische Blockade erkannt
-  [31]      mean_deadlock_risk: (Duplikat für Redundanz)
-  [32]      max_deadlock_risk: Worst-case in lokalem Fenster
-  [33]      conflict_density: Agenten-Begegnungen pro Knoten
-  [34]      branching_ratio: Durchschnittliche Übergänge pro Knoten
-
-[41-63]     State & Action Memory (23 Features)
-  [41-47]   train_state: One-Hot (7 states: READY, MOVING, ...)
-  [48-52]   last_action: One-Hot (5 actions: DN, L, F, R, STOP)
-  [53]      priority_rank: Normalisiert (0-1) nach verbleibender Distanz
-  [54-58]   cell_type: One-Hot (5 types: OUTSIDE, SWITCH, MERGE, FWD, DONE)
-  [59-63]   transitions: Pattern-Bits für Zelltyp-Übergänge
-
-[64-69]     Tree Statistics (6 Features) ← TRAINABLE ENCODER INPUT
-  [64]      mean_deadlock_risk: Durchschnitt aus lokaler Baumsuche
-  [65]      confirmed_deadlock: 1.0 falls kritische Blockade erkannt
-  [66]      mean_deadlock_risk: (Duplikat für Redundanz)
-  [67]      max_deadlock_risk: Worst-case in lokalem Fenster
-  [68]      conflict_density: Agenten-Begegnungen pro Knoten
-  [69]      branching_ratio: Durchschnittliche Übergänge pro Knoten
-
-
-TREE PAYLOAD: Struktur der Baumsuche-Ausgabe
-──────────────────────────────────────────────
-
-tree_payload = {
-    "nodes": [
-        {
-            "pos": (row, col),
-            "dir": direction,
-            "depth": depth_in_search,
-            "num_transitions": count_outgoing_edges,
-            "deadlock_risk": float 0.0-1.0,
-            "agents_encountered": [agent_id_1, agent_id_2, ...],
-            "has_oncoming": bool,
-            "incoming_agents": [agent_id_3, ...],
-            "backward_inflow_count": int
-        },
-        ...
-    ],
-    "edges": [
-        {
-            "src_pos": (r, c),
-            "src_dir": direction,
-            "dst_pos": (r', c'),
-            "dst_dir": direction',
-            "src_depth": int,
-            "dst_depth": int,
-            "rel_dir_bin": 0|1|2,  # Left/Forward/Right
-            "edge_len_cells": 1,
-            "agents_on_edge": [agent_ids],
-            "has_oncoming_edge": bool
-        },
-        ...
-    ],
-    "seen_agents": [sorted_agent_ids],  ← GEGNER in lokaler Umgebung entdeckt!
-    "visited_states": [(r, c, dir, depth), ...]
-}
-
-Speicherort: env.dev_tree_dict[handle] 
-→ Verfügbar für Encoders, die strukturierte Tree-Daten nutzen
-
-
-SEEN_AGENTS: Gegner-Erkennung in der lokalen Baumsuche
-────────────────────────────────────────────────────────
-
-tree_payload["seen_agents"] ist eine **sortierte Liste aller Agent-IDs**, die während
-der lokalen Tiefensuche entdeckt wurden. Diese agents werden in zwei Kontexten gefunden:
-
-1. **Im Knoten** (Agent befindet sich auf einer Position):
-   - nodes[i]["agents_encountered"]: Gegner auf Knoten (i)
-   - nodes[i]["incoming_agents"]: Gegner, die in diesen Knoten einfahren können
-   
-2. **Auf Kanten** (Agent bewegt sich zwischen Knoten):
-   - edges[j]["agents_on_edge"]: Gegner auf der Kante zwischen (i) → (j)
-
-Diese werden alle gesammelt in tree_payload["seen_agents"] → sortierte List[int]
-
-**Datenfluss**:
-  tree_payload["seen_agents"]
-         ↓
-  get() Rückgabe: (70D features, opponent_agents)
-         ↓
-  agent.cur_opp_agent_handles = opponent_agents
-         ↓
-  TemporalMultiAgentObservation:
-    - Nutzt opponent_agents zum Ranking (welche Gegner sind relevant?)
-    - Puffert Top-K Gegner über 3 Timesteps
-    - Returns: [(ego_features, [relevant_opponent_handles]), ...]
-         ↓
-  MAPPO Multi-Agent Attention:
-    - Ego-Features → Policy/Value Heads
-    - Opponent-Features → Cross-Attention Module
-    - Policy lernt: "Gibt es Gegner hier? Wie nah sind sie?"
-
-**Trainbar?**
-- seen_agents werden NICHT direkt in 70D-Features kodiert (keine One-Hots)
-- Stattdessen: tree_payload.nodes/edges enthalten Agenten-Kontext
-- TemporalMultiAgentObservation macht das Ranking
-- MAPPO-Attention macht die Gewichtsanpassung
-→ **Vollständig trainierbar über End-to-End MAPPO!**
-
-**Warum nicht in [0-69] kodiert?**
-- 70D ist schon eng (Agent-IDs sind dynamisch, Agent-Anzahl variabel)
-- Stattdessen: Strukturelle Agenten-Information in tree_payload
-  - nodes[i].agents_encountered → "Agenten auf Knoten i"
-  - edges[j].agents_on_edge → "Agenten auf Kante j"
-- Trainable Encoder entscheidet selbst, wie relevant diese sind
-- TemporalMultiAgentObservation kümmert sich um Cross-Agent Ranking
-
-
-TREE PAYLOAD: Struktur der Baumsuche-Ausgabe
-──────────────────────────────────────────────
-
-tree_payload = {
-    "nodes": [
-        {
-            "pos": (row, col),
-            "dir": direction,
-            "depth": depth_in_search,
-            "num_transitions": count_outgoing_edges,
-            "deadlock_risk": float 0.0-1.0,
-            "agents_encountered": [agent_id_1, agent_id_2, ...],
-            "has_oncoming": bool,
-            "incoming_agents": [agent_id_3, ...],
-            "backward_inflow_count": int
-        },
-        ...
-    ],
-    "edges": [
-        {
-            "src_pos": (r, c),
-            "src_dir": direction,
-            "dst_pos": (r', c'),
-            "dst_dir": direction',
-            "src_depth": int,
-            "dst_depth": int,
-            "rel_dir_bin": 0|1|2,  # Left/Forward/Right
-            "edge_len_cells": 1,
-            "agents_on_edge": [agent_ids],
-            "has_oncoming_edge": bool
-        },
-        ...
-    ],
-    "seen_agents": [sorted_agent_ids],  ← GEGNER in lokaler Umgebung entdeckt!
-    "visited_states": [(r, c, dir, depth), ...]
-}
-
-Speicherort: env.dev_tree_dict[handle] 
-→ Verfügbar für Encoders, die strukturierte Tree-Daten nutzen
-
-
-INTEGRATION MIT MAPPO TRAINING (35D Features + Tree Payload)
-────────────────────────────────────────────────────────────
-
-Die 35D Features + tree_payload fließen in folgender Pipeline:
-
-1. Temporal Buffer (TemporalMultiAgentObservation):
-   3 Timesteps à 35D → (3, 35) Tensor für LSTM-Eingabe
-   (Tree-Payload kann zusätzlich über env.dev_tree_dict[handle] abgerufen werden)
-
-2. LSTM-Encoder:
-   (batch, 3, 35) → (batch, 64) hidden state
-   → Erfasst zeitliche Trends (Deadlock-Risk steigt?)
-
-3. Optional: Graph-Encoder für tree_payload
-   tree_payload.nodes/edges → GNN → 64-dim tree_embedding
-   ego_features + tree_embedding → consolidated representation
-
-4. Multi-Agent Attention:
-   Ego-Features + Top-K Opponent-Features → Cross-attention
-   → "Agent 5 kommt näher, erhöhe Vorsicht"
-
-5. Policy & Value Heads:
-   64-dim hidden state → (5-dim action logits, 1-dim value estimate)
-
-6. PPO Objective:
-   L = L_policy + λ_v * L_value + β * L_entropy
-   
-   L_policy: Ratio-Clipping (verhindert zu große Policy-Sprünge)
-   L_value:  MSE zwischen geschätztem & tatsächlichem Return
-   L_entropy: Bonus für Exploration
-
-
-MODUS A PURE — Trainable Tree Encoder Architektur
-────────────────────────────────────────────────
-
-**Current Implementation (Modus A Pure):**
-- [0-34]: Handcrafted aber differentiable Features (essenziel)
-- [0-5]: Immediate context (is_switch, direction_hint, is_merge, local_deadlock)
-- [6-28]: Agent state/action memory (train_state, last_action, priority, cell_type, transitions)
-- [29-34]: Aggregierte Tree-Statistiken (mean_deadlock, max_deadlock, conflict_density, branching_ratio)
-- tree_payload: Vollständige lokale Baum-Struktur (nodes/edges/seen_agents)
-  → Verfügbar für trainable Graph-Encoder, z.B.:
-     - Graph Attention Networks (GAT)
-     - Message-Passing Neural Networks (MPNN)
-     - Transformer mit strukturiertem Input
-
-**Trainable Processing:**
-1. 35D features + tree_payload → LSTM/Transformer Encoder
-2. Tree-Struktur kann optional durch GNN aufbereitet werden
-3. Policy + Value Heads lernen end-to-end mit PPO
-
-**Vorteil Modus A Pure:**
-- Handcrafted Features sind minimal und essenziel
-- Tree-Struktur ist interpretierbar und vollständig verfügbar
-- Trainable Encoder hat maximale Flexibilität
-- Klare Separation: Feature Engineering ↔ Learning
-
-**ALLE Modus B CODE (deterministic TreeLSTM, Branch Features, Merge Heuristics) ENTFERNT.**
-
-
-OPTIMIERUNGSTECHNIKEN (Modus A Pure)
-──────────────────────────────────────
-
-1. Feature-Skalierung: Alle Features normalisiert [0,1]
-   → Stabilere Gradienten, schnelleres Lernen
-
-2. Soft Deadlock-Encoding: sigmoid-ähnliche Funktion
-   → 1/(1 + dl_distance/2.5)
-   → Nähe zu Deadlock wird sanft stärker signalisiert
-
-3. Priority Ranking: Relative Distanz zum Ziel
-   → Agenten "wetteifern" fair, keine dominanten Agenten
-
-4. Tree Statistics Normalisierung:
-   - conflict_density = min(1.0, agents_on_node / 2.0)
-   - branching_ratio = min(1.0, num_transitions / 3.0)
-   → Raw tree-Metriken werden softmax-normalized für Stabilität
+  Each node contains deadlock_risk, deadlock_ahead, deadlock_hard_block signals.
+  Each edge contains merge_conflict flag and merge_incoming_degree for merge context.
+  
+- exported via env.dev_tree_dict[handle]
 """
+
+# pyright: reportMissingImports=false
+
+import os
+from enum import IntEnum
 
 import numpy as np
-import os
-
 from flatland.core.env_observation_builder import ObservationBuilder
 from flatland.core.grid.grid4_utils import get_new_position
-from flatland.envs.fast_methods import fast_count_nonzero, fast_argmax
-from flatland.envs.rail_env_action import RailEnvActions
-from flatland.envs.step_utils.states import TrainState
-from .decision_point_utils import DecisionPointUtils
+from flatland.envs.fast_methods import fast_argmax, fast_count_nonzero
+
+from marl_attention_temporal_observation.decision_point_utils import DecisionPointUtils
+
+_UNREACHABLE = float("inf")
 
 
-_UNREACHABLE = -1.0
+class NodeType(IntEnum):
+    """Decision-point node types for local-search-tree.
+    
+    Nodes exist ONLY at real decision points:
+    - INIT: Agent spawn/entry (virtual decision)
+    - SWITCH: Multiple route choices (num_transitions > 1, not pre-merge)
+    - PRE_M: Pre-merge decision (agent chooses forward vs wait)
+    
+    MERGE is NOT a node—it's modeled as edge context (no agent decision possible).
+    Corridors are compressed into edges between decision nodes.
+    """
+    INIT = 0      # Initialization / agent spawn
+    SWITCH = 1    # Switch/route choice (num_transitions > 1)
+    PRE_M = 2     # Pre-merge decision (one exit, next node has multiple entries)
 
 
 class DecisionPointObservation(ObservationBuilder):
-    """
-    Beobachtungs-Builder für Flatland (Modus A Pure — Trainable Encoder).
-    
-    Generiert 35D-Features + tree_payload(nodes/edges) für trainierbare Encoder-Integration.
-    
-    Modus A Pure (All Handcrafted Branch/Merge Features Removed):
-    - [0-5]: Immediate Context (is_switch, direction_hint, is_merge, local_deadlock)
-    - [6-28]: State/Action Memory (train_state, last_action, priority, cell_type, transitions)
-    - [29-34]: Tree Statistics (mean_deadlock, max_deadlock, conflict_density, branching_ratio)
-    - tree_payload.nodes/edges: Direkt verfügbar für trainable Graph-Encoder (GNN/Transformer)
-    
-    Alle Modus B Code (deterministische Branch Navigation, Merge Heuristics) wurde entfernt.
-    
-    Methoden:
-    - __init__: Initialisiert die Klasse (Modus A).
-    - set_env: Setzt die Umgebung.
-    - reset: Initialisiert die Agentenkarte.
-    - _local_search: Tiefensuche (5 Schritte) → nodes/edges-Struktur.
-    - get: Gibt (35D features, opponent_agents) zurück.
-    - get_many: Batch-Version von get().
-    
-    OUTPUT-FORMAT:
-    get(handle) → (raw_features[35D], opponent_agents)
-                  + env.dev_tree_dict[handle] = tree_payload mit nodes/edges/seen_agents
-    """
+    _get_many_call_count = 0
+    _last_100_features = []  # List of np.arrays (n_agents, n_features)
+    _last_100_tree_stats = []  # List of tree_stats pro Episode
 
-    OBS_SIZE = 155  # Modus A Pure: 35 base + 15 nodes × 8 node features (6 node + 2 edge)
-    NODE_DIM = 8    # Features per tree node: 6 node + 2 incoming edge (see _serialize_tree_nodes)
-    MAX_NODES = 15  # Max nodes in DFS sequence (15 × 8 = 120D; padding with zeros)
-    BASE_OBS_SIZE = 35
-    # Keep only non-redundant handcrafted base channels; tree block [35:155]
-    # is preserved unchanged and remains fully trainable.
-    RELEVANT_BASE_FEATURE_INDICES = (
-        0, 1, 2, 3, 4, 5,      # immediate context
-        6, 7, 8, 9, 10, 11, 12,  # train-state one-hot
-        13, 14, 15, 16, 17,    # last-action one-hot
-        18,                     # priority rank
-        19, 20, 21, 22, 23,    # cell-type one-hot
-        29, 30, 31, 32, 33, 34 # tree summary scalars
-    )
+    # Export 15 base features (17D reduced: removed redundant [12]is_started and [13]is_done).
+    # [12]is_started was inverse of [8]st_6; [13]is_done was duplicate of [7]st_4.
+    BASE_OBS_SIZE = 15
+    OBS_SIZE = BASE_OBS_SIZE
+    # Legacy alias; active runtime cap is configured via self.local_search_max_nodes.
+    MAX_NODES = 48
+
     FEATURE_GROUPS_DOC = [
-        ("[0]",    "is_switch",       "1.0 if agent is on switch cell"),
-        ("[1-3]",  "hint_L/F/R",      "shortest-path direction hint (one-hot)"),
-        ("[4]",    "is_merge",        "1.0 if agent is one step before merge node"),
-        ("[5]",    "local_deadlock",  "binary corridor blockage/deadlock risk"),
-        ("[6-12]", "st_0..st_6",      "TrainState one-hot (READY, MOVING, ..., DONE)"),
-        ("[13-17]","act_DN/L/F/R/S",  "last saved action one-hot"),
-        ("[18]",   "priority_rank",   "normalized rank by remaining distance"),
-        ("[19-23]","ct_*",            "current cell-type one-hot"),
-        ("[24-28]","tr_*",            "5 selected transitions"),
-        ("[29]",   "mean_deadlock",   "mean deadlock risk from tree search"),
-        ("[30]",   "confirmed_deadlock","1.0 if confirmed corridor deadlock"),
-        ("[31]",   "curr_dist_norm",  "normalized current distance-to-target (1.0 if unreachable)"),
-        ("[32]",   "max_deadlock",    "max deadlock risk in local window"),
-        ("[33]",   "conflict_density","agent encounters per node"),
-        ("[34]",   "branching_ratio", "mean transitions per node"),
-        ("[35-154]","tree_nodes[15×8]",
-         "15 DFS-ordered nodes: [dl_risk, norm_trans, oncoming, inflow, norm_depth, "
-         "has_agents, incoming_rel_dir, edge_has_agents]"),
+        ("[0-2]",   "path_left/forward/right",  "1 if relative transition exists"),
+        ("[3-5]",   "delta_left/forward/right", "clipped distance delta in [-1,1] for relative move"),
+        ("[6-8]",   "st_3/st_4/st_6",           "TrainState MALFUNCTION + DONE + not-started (dead states removed)"),
+        ("[9]",     "priority_rank",            "normalized rank by remaining distance"),
+        ("[10-11]", "merge/switch",             "cell semantics (redundant lifecycle flags removed)"),
+        ("[12-14]", "sp_left/sp_forward/sp_right", "shortest-path action hint one-hot"),
+        ("payload", "raw_tree_payload",         "exported separately via env.dev_tree_dict[handle]. Nodes/edges include deadlock_risk."),
+    ]
+
+    # Canonical base-feature specification for indices 0..14 (15D base obs).
+    # Removed [12]is_started (inverse of [8]st_6) and [13]is_done (duplicate of [7]st_4).
+    # Deadlock features moved to tree payload (node and edge features).
+    # Keep this list in sync with get() and runtime summary names.
+    BASE_FEATURE_SPECS = [
+        (0,  "path_left",            "1 if relative left transition exists else 0"),
+        (1,  "path_forward",         "1 if relative forward transition exists else 0"),
+        (2,  "path_right",           "1 if relative right transition exists else 0"),
+        (3,  "delta_left",           "clipped distance delta to next_left in [-1,1], else 0"),
+        (4,  "delta_forward",        "clipped distance delta to next_forward in [-1,1], else 0"),
+        (5,  "delta_right",          "clipped distance delta to next_right in [-1,1], else 0"),
+        (6,  "st_3",                 "TrainState MALFUNCTION one-hot (only alive state)"),
+        (7,  "st_4",                 "TrainState DONE one-hot (only alive state)"),
+        (8,  "st_6",                 "1 if agent is not started (position is None) else 0"),
+        (9,  "priority_rank",        "normalized distance-rank priority"),
+        (10, "is_pre_merge",         "1 if one step before merge-conflict point else 0"),
+        (11, "is_switch",            "1 if current cell has >1 transitions else 0"),
+        (12, "sp_left",              "shortest-path hint one-hot: left"),
+        (13, "sp_forward",           "shortest-path hint one-hot: forward"),
+        (14, "sp_right",             "shortest-path hint one-hot: right"),
     ]
 
     def __init__(self,
@@ -449,11 +103,12 @@ class DecisionPointObservation(ObservationBuilder):
         self.search_depth = max(1, int(search_depth))
         self.observation_profile = observation_profile
         self.use_trainable_tree_encoder = bool(use_trainable_tree_encoder)
+        self.local_search_min_search_depth = 8
         # Local-tree search control to avoid branch explosion at higher depths.
         # Up to depth 1: expand all transitions.
         # From depth >= 2: always keep shortest-path branch and sample side branches.
         self.local_search_random_start_depth = 2
-        self.local_search_max_side_branches = 1
+        self.local_search_max_side_branches = 3
         self.local_search_distance_bias = 2.0
         # Optional advanced controls for deeper searches.
         self.local_search_mode = "stochastic"  # stochastic | mcts
@@ -461,85 +116,20 @@ class DecisionPointObservation(ObservationBuilder):
         self.local_search_mcts_horizon = 4
         self.local_search_ucb_c = 1.2
         self.local_search_contract_depth = 7
-        self.local_search_max_nodes = 48
+        self.local_search_disable_corridor_contraction = True
+        self.local_search_max_nodes = 72
         self.local_search_min_nodes = 24
         self.local_search_adaptive_budget = True
         self.local_search_adaptive_branch_bonus = 6
         self.local_search_adaptive_conflict_bonus = 8
         self.local_search_adaptive_depth_bonus = 2
-        self.local_search_deadlock_probe_depth = 6
-        self.local_search_deadlock_max_states = 64
+        self.local_search_deadlock_probe_depth = 14
+        self.local_search_deadlock_max_states = 256
         self.local_tree_clip_features = True
         self.env = None
         self.agent_map = None
         self._print_feature_layout_doc()
-
-    @staticmethod
-    def _serialize_tree_nodes(
-        tree_data: list,
-        tree_edges: list = None,
-        depth_limit: int = 5,
-        clip_to_unit: bool = True,
-    ) -> np.ndarray:
-        """Serialize DFS-ordered tree nodes + incoming edge features into obs[35:155].
-
-        Nodes must be in DFS pre-order (as produced by _local_search via frontier.pop()).
-        Each node carries 8D including the incoming edge so the LSTM can reconstruct
-        the branching topology from the sequence order alone.
-
-        Returns:
-            np.float32 array of shape (MAX_NODES * NODE_DIM,) = (120,)
-            DFS pre-order; padding rows beyond len(tree_data) are zero.
-
-        Node feature layout (8D per node):
-            [0] deadlock_risk        float 0-1
-            [1] norm_transitions     num_transitions / 3.0
-            [2] has_oncoming         binary 0/1  (oncoming agent at this node)
-            [3] norm_inflow          backward_inflow_count / 2.0
-            [4] norm_depth           depth / depth_limit (5.0)
-            [5] has_agents           1 if agents_encountered else 0
-            [6] incoming_rel_dir     rel_dir_bin / 2.0: 0=left, 0.5=fwd, 1=right (0.5 for root)
-            [7] edge_has_agents      1 if agents on incoming edge else 0  (0 for root)
-        """
-        MAX_N = DecisionPointObservation.MAX_NODES
-        NODE_D = DecisionPointObservation.NODE_DIM  # 8
-        arr = np.zeros(MAX_N * NODE_D, dtype=np.float32)
-
-        # Build lookup: (dst_pos, dst_dir) → most-informative incoming edge
-        edge_lookup = {}
-        if tree_edges:
-            for e in tree_edges:
-                key = (e["dst_pos"], int(e["dst_dir"]))
-                existing = edge_lookup.get(key)
-                # Keep edge with agents if present (more informative)
-                if existing is None or len(e.get("agents_on_edge", [])) > len(existing.get("agents_on_edge", [])):
-                    edge_lookup[key] = e
-
-        for i, node in enumerate(tree_data[:MAX_N]):
-            base = i * NODE_D
-            depth = int(node.get("depth", 0))
-            arr[base + 0] = float(node.get("deadlock_risk", 0.0))
-            arr[base + 1] = min(1.0, float(node.get("num_transitions", 1)) / 3.0)
-            arr[base + 2] = 1.0 if node.get("has_oncoming", False) else 0.0
-            arr[base + 3] = min(1.0, float(node.get("backward_inflow_count", 0)) / 2.0)
-            safe_depth_limit = max(1, int(depth_limit))
-            arr[base + 4] = min(1.0, depth / float(safe_depth_limit))
-            arr[base + 5] = 1.0 if len(node.get("agents_encountered", [])) > 0 else 0.0
-            # Incoming edge features (root at depth=0 has no incoming edge)
-            if depth > 0:
-                key = (node["pos"], int(node["dir"]))
-                incoming = edge_lookup.get(key)
-                if incoming is not None:
-                    arr[base + 6] = float(incoming.get("rel_dir_bin", 1)) / 2.0
-                    arr[base + 7] = 1.0 if len(incoming.get("agents_on_edge", [])) > 0 else 0.0
-                else:
-                    arr[base + 6] = 0.5  # default: forward if edge not found
-            else:
-                arr[base + 6] = 0.5  # root: no turn (encode as forward)
-        if bool(clip_to_unit):
-            np.clip(arr, 0.0, 1.0, out=arr)
-        return arr
-
+ 
     def set_env(self, env):
         super().set_env(env)
         self.env = env
@@ -593,10 +183,25 @@ class DecisionPointObservation(ObservationBuilder):
     def _safe_distance(self, handle, position, direction, distance_map, default=np.inf):
         if distance_map is None:
             return default
-        try:
-            return float(distance_map[handle, position[0], position[1], direction])
-        except Exception:
+        if position is None or direction is None:
             return default
+        return float(distance_map[handle, position[0], position[1], direction])
+
+    @staticmethod
+    def _distance_to_unit(distance: float, max_dist: float) -> float:
+        if not np.isfinite(distance):
+            return 1.0
+        denom = max(1.0, float(max_dist))
+        return float(np.clip(float(distance) / denom, 0.0, 1.0))
+
+    @staticmethod
+    def _progress_delta_to_unit(root_dist: float, dst_dist: float, max_dist: float) -> float:
+        if not np.isfinite(root_dist) and np.isfinite(dst_dist):
+            return 1.0
+        if not np.isfinite(root_dist) or not np.isfinite(dst_dist):
+            return 0.0
+        denom = max(1.0, float(max_dist))
+        return float(np.clip((float(root_dist) - float(dst_dist)) / denom, -1.0, 1.0))
 
     @staticmethod
     def _pos_tuple(pos):
@@ -617,13 +222,7 @@ class DecisionPointObservation(ObservationBuilder):
         if self.agent_map is None:
             return -1
         p = self._pos_tuple(pos)
-        try:
-            return int(self.agent_map[p])
-        except Exception:
-            try:
-                return int(self.agent_map[p[0], p[1]])
-            except Exception:
-                return -1
+        return int(self.agent_map[p[0], p[1]])
 
     def _mcts_rollout_score(self, handle, start_pos, start_dir, start_depth, horizon, distance_map):
         """Small Monte-Carlo rollout score for one root branch.
@@ -647,21 +246,14 @@ class DecisionPointObservation(ObservationBuilder):
                 score -= 0.05
 
             if self.agent_map is not None:
-                try:
-                    other_idx = self._agent_at_pos(pos)
-                    if other_idx != -1 and other_idx != handle:
-                        score -= 0.7
-                        other_dir = self.env.agents[other_idx].direction
-                        if other_dir is not None and DecisionPointUtils.is_opposite_direction(direction, other_dir):
-                            score -= 0.8
-                except Exception:
-                    pass
+                other_idx = self._agent_at_pos(pos)
+                if other_idx != -1 and other_idx != handle:
+                    score -= 0.7
+                    other_dir = self.env.agents[other_idx].direction
+                    if other_dir is not None and DecisionPointUtils.is_opposite_direction(direction, other_dir):
+                        score -= 0.8
 
-            try:
-                transitions = self._rail_get_transitions(pos, direction)
-            except Exception:
-                score -= 0.5
-                break
+            transitions = self._rail_get_transitions(pos, direction)
 
             choices = [nd for nd in range(4) if transitions[nd]]
             if not choices:
@@ -680,81 +272,15 @@ class DecisionPointObservation(ObservationBuilder):
             alpha = max(0.1, float(self.local_search_distance_bias))
             weights = np.power(closeness, alpha)
             wsum = float(np.sum(weights))
-            probs = (weights / wsum) if np.isfinite(wsum) and wsum > 0 else np.full(len(cand), 1.0 / len(cand))
-            pick = int(np.random.choice(len(cand), p=probs))
-            direction = int(cand[pick][0])
-            pos = cand[pick][1]
+            if wsum <= 0.0 or not np.isfinite(wsum):
+                probs = np.full(len(cand), 1.0 / len(cand), dtype=np.float64)
+            else:
+                probs = weights / wsum
 
-        # Small depth penalty so shorter informative branches are slightly preferred.
-        score -= 0.02 * float(start_depth)
+            idx = int(np.random.choice(len(cand), p=probs))
+            direction, pos, _ = cand[idx]
+
         return score
-
-    @staticmethod
-    def _distance_to_unit(value: float, max_dist: float) -> float:
-        if value is None or not np.isfinite(value):
-            return 1.0
-        return float(np.clip(float(value) / max(1.0, float(max_dist)), 0.0, 1.0))
-
-    @staticmethod
-    def _progress_delta_to_unit(reference_dist: float, candidate_dist: float, max_dist: float) -> float:
-        if not np.isfinite(reference_dist) and not np.isfinite(candidate_dist):
-            return 0.5
-        if not np.isfinite(reference_dist) and np.isfinite(candidate_dist):
-            return 1.0
-        if np.isfinite(reference_dist) and not np.isfinite(candidate_dist):
-            return 0.0
-        delta = (float(reference_dist) - float(candidate_dist)) / max(1.0, float(max_dist))
-        return float(np.clip(0.5 + 0.5 * np.clip(delta, -1.0, 1.0), 0.0, 1.0))
-
-    def _contract_corridor_segment(self, handle, pos, direction, depth, depth_limit, target=None):
-        """Compress linear corridor steps into one edge after contract depth.
-
-        Stops contraction at decision points, conflicts, or depth limit.
-        """
-        if self.env is None or self.env.rail is None:
-            return pos, int(direction), 1, bool(target is not None and pos == target)
-
-        contract_depth = max(0, int(self.local_search_contract_depth))
-        if depth < contract_depth:
-            return pos, int(direction), 1, bool(target is not None and pos == target)
-
-        cur_pos = pos
-        cur_dir = int(direction)
-        edge_len = 1
-        target_on_edge = bool(target is not None and cur_pos == target)
-
-        while (depth + edge_len) < depth_limit:
-            if self.agent_map is not None:
-                try:
-                    other_idx = self._agent_at_pos(cur_pos)
-                    if other_idx != -1 and other_idx != handle:
-                        break
-                except Exception:
-                    break
-
-            try:
-                transitions = self._rail_get_transitions(cur_pos, cur_dir)
-            except Exception:
-                break
-
-            next_dirs = [nd for nd in range(4) if transitions[nd]]
-            if len(next_dirs) != 1:
-                break
-
-            nd = int(next_dirs[0])
-            next_pos = get_new_position(cur_pos, nd)
-            cur_pos = next_pos
-            cur_dir = nd
-            edge_len += 1
-
-            if target is not None and cur_pos == target:
-                target_on_edge = True
-                break
-
-            if edge_len >= 6:
-                break
-
-        return cur_pos, cur_dir, edge_len, target_on_edge
 
     def _compute_adaptive_node_budget(
         self,
@@ -762,21 +288,119 @@ class DecisionPointObservation(ObservationBuilder):
         start_pos,
         start_dir,
         depth_limit,
-        transition_cache,
-        incoming_degree_cache,
-    ):
-        """Compute per-step node budget for local search.
-
-        The budget is reduced in simple scenes and increased near conflicts,
-        while staying bounded in [min_nodes, max_nodes].
-        """
-        max_nodes = max(8, int(getattr(self, "local_search_max_nodes", 48)))
-        min_nodes = max(8, int(getattr(self, "local_search_min_nodes", 24)))
-        if min_nodes > max_nodes:
-            min_nodes = max_nodes
-
+        transition_cache=None,
+        incoming_degree_cache=None,
+    ) -> int:
+        max_nodes = int(getattr(self, "local_search_max_nodes", 48))
+        min_nodes = int(getattr(self, "local_search_min_nodes", 24))
         if not bool(getattr(self, "local_search_adaptive_budget", True)):
-            return max_nodes
+            return max(min_nodes, max_nodes)
+
+        bonus = int(max(0, int(depth_limit) - 3)) * int(getattr(self, "local_search_adaptive_depth_bonus", 2))
+        transitions = self._rail_get_transitions(start_pos, start_dir)
+        if fast_count_nonzero(transitions) > 1:
+            bonus += int(getattr(self, "local_search_adaptive_branch_bonus", 6))
+
+        budget = max_nodes + bonus
+        return max(min_nodes, min(max_nodes + 2 * int(getattr(self, "local_search_adaptive_depth_bonus", 2)), budget))
+
+    def _select_local_search_branches(
+        self,
+        handle,
+        depth,
+        current_pos,
+        current_dir,
+        transitions,
+        distance_map,
+    ) -> list:
+        candidates = []
+        for nd in range(4):
+            if not transitions[nd]:
+                continue
+            np_pos = get_new_position(current_pos, nd)
+            ndist = self._safe_distance(handle, np_pos, nd, distance_map)
+            candidates.append((nd, np_pos, ndist))
+
+        if not candidates:
+            return []
+        if len(candidates) == 1:
+            return candidates
+
+        ordered = self._sort_branch_candidates_relative(candidates, current_dir)
+        shortest = min(ordered, key=lambda c: (c[2] if np.isfinite(c[2]) else float("inf")))
+        side = [c for c in ordered if c is not shortest]
+
+        if int(depth) < int(getattr(self, "local_search_random_start_depth", 2)):
+            return ordered
+
+        k_side = max(0, int(getattr(self, "local_search_max_side_branches", 1)))
+        if k_side == 0 or not side:
+            return [shortest]
+
+        side_sorted = sorted(side, key=lambda c: (c[2] if np.isfinite(c[2]) else float("inf")))
+        return [shortest] + side_sorted[:k_side]
+
+    def _contract_corridor_segment(self, handle, pos, direction, depth, depth_limit, target):
+        cur_pos = pos
+        cur_dir = int(direction)
+        edge_len = 1
+        target_on_edge = bool(target is not None and cur_pos == target)
+        if bool(getattr(self, "local_search_disable_corridor_contraction", False)):
+            return cur_pos, cur_dir, edge_len, target_on_edge
+        visited = set()
+
+        while int(depth) + edge_len < int(depth_limit):
+            if target_on_edge:
+                break
+            state = (int(cur_pos[0]), int(cur_pos[1]), int(cur_dir))
+            if state in visited:
+                break
+            visited.add(state)
+
+            transitions = self._rail_get_transitions(cur_pos, cur_dir)
+            if fast_count_nonzero(transitions) != 1:
+                break
+
+            ndir = int(fast_argmax(transitions))
+            next_pos = get_new_position(cur_pos, ndir)
+            if next_pos[0] < 0 or next_pos[0] >= self.env.height or next_pos[1] < 0 or next_pos[1] >= self.env.width:
+                break
+
+            cur_pos = next_pos
+            cur_dir = ndir
+            edge_len += 1
+            target_on_edge = bool(target is not None and cur_pos == target)
+
+        return cur_pos, cur_dir, edge_len, target_on_edge
+
+    def _local_search(self, handle, start_pos, start_dir, depth_limit):
+        """Build decision-point graph: only INIT, SWITCH, PRE_M nodes.
+        
+        Corridors are compressed into edges. Merges are NOT nodes but edge context.
+        Depth counts decision-point transitions, not cell hops.
+        
+        Returns {nodes, edges, seen_agents, visited_states}
+        where each node has type, features, and deadlock signals.
+        """
+        if start_pos is None or start_dir is None or self.env is None or self.env.rail is None:
+            raise ValueError(f"_local_search received invalid start data for agent {handle}")
+
+        distance_map = self.env.distance_map.get()
+        agent_target = getattr(self.env.agents[handle], 'target', None)
+        max_dist = max(1.0, float(getattr(self, '_max_dist', 1.0)))
+        root_dist = self._safe_distance(handle, start_pos, start_dir, distance_map)
+
+        # Caches and state tracking
+        frontier = [(start_pos, start_dir, 0)]  # (pos, dir, decision_depth)
+        visited = {}  # (pos, dir) -> best_depth
+        state_to_node_idx = {}  # (pos, dir) -> node_id
+        tree_nodes = []
+        pending_edges = []
+        seen_agents = set()
+        visited_states = []
+
+        transition_cache = {}
+        deadlock_cache = {}
 
         def _get_transitions_cached(pos, direction):
             key = (int(pos[0]), int(pos[1]), int(direction))
@@ -786,440 +410,341 @@ class DecisionPointObservation(ObservationBuilder):
             transition_cache[key] = trans
             return trans
 
-        budget = min_nodes
-        try:
-            root_trans = _get_transitions_cached(start_pos, start_dir)
-            branch_count = int(fast_count_nonzero(root_trans))
-        except Exception:
-            branch_count = 1
+        max_nodes = int(getattr(self, "local_search_max_nodes", 72))
 
-        branch_bonus_unit = max(0, int(getattr(self, "local_search_adaptive_branch_bonus", 6)))
-        budget += branch_bonus_unit * max(0, branch_count - 1)
+        while frontier:
+            current_pos, current_dir, decision_depth = frontier.pop()
+            state_key = (int(current_pos[0]), int(current_pos[1]), int(current_dir))
 
-        depth_bonus_unit = max(0, int(getattr(self, "local_search_adaptive_depth_bonus", 2)))
-        budget += depth_bonus_unit * max(0, int(depth_limit) - 6)
-
-        start_key = (int(start_pos[0]), int(start_pos[1]))
-        try:
-            if start_key in incoming_degree_cache:
-                in_deg = incoming_degree_cache[start_key]
-            else:
-                in_deg = self._incoming_degree(start_pos, transition_cache=transition_cache)
-                incoming_degree_cache[start_key] = in_deg
-        except Exception:
-            in_deg = 0
-
-        if in_deg > 1:
-            conflict_bonus = max(0, int(getattr(self, "local_search_adaptive_conflict_bonus", 8)))
-            budget += conflict_bonus
-
-        if self.agent_map is not None:
-            try:
-                start_agent = self._agent_at_pos(start_pos)
-                if start_agent != -1 and start_agent != handle:
-                    budget += max(0, int(getattr(self, "local_search_adaptive_conflict_bonus", 8)))
-            except Exception:
-                pass
-
-        return max(min_nodes, min(max_nodes, int(budget)))
-
-    def _select_local_search_branches(self, handle, depth, current_pos, current_dir, transitions, distance_map):
-        """Select branches for local search with depth-aware stochastic pruning.
-
-        Strategy:
-        - depth < random_start_depth: keep all valid branches
-        - depth >= random_start_depth:
-          1) always keep shortest branch (distance-map)
-          2) sample limited side branches with short-branch bias
-        """
-        candidates = []
-        for next_dir in self._relative_dir_order(current_dir):
-            if not transitions[next_dir]:
+            # Pruning: already visited at better depth
+            if state_key in visited and visited[state_key] <= decision_depth:
                 continue
-            next_pos = get_new_position(current_pos, next_dir)
-            dist = np.inf
-            if distance_map is not None:
-                try:
-                    dist = float(distance_map[handle, next_pos[0], next_pos[1], next_dir])
-                except Exception:
-                    dist = np.inf
-            candidates.append((next_dir, next_pos, dist))
+            visited[state_key] = decision_depth
 
-        candidates = self._sort_branch_candidates_relative(candidates, current_dir)
+            # Budget: max nodes
+            if len(tree_nodes) >= max_nodes:
+                break
 
-        if len(candidates) <= 1:
-            return candidates
+            # Check what node type this is
+            transitions = _get_transitions_cached(current_pos, current_dir)
+            num_transitions = fast_count_nonzero(transitions)
 
-        if depth < int(self.local_search_random_start_depth):
-            return candidates
+            # Determine node type
+            is_init = decision_depth == 0
+            is_switch = num_transitions > 1
+            is_pre_merge = self._is_pre_merge_one_exit(current_pos, current_dir, transitions) if not is_switch else False
 
-        finite_dists = [c[2] for c in candidates if np.isfinite(c[2])]
-        fallback_large = (max(finite_dists) + 1.0) if finite_dists else 1.0
-        normalized = []
-        for c in candidates:
-            d = c[2] if np.isfinite(c[2]) else fallback_large
-            normalized.append((c[0], c[1], d))
-
-        normalized.sort(key=lambda x: x[2])
-        shortest = normalized[0]
-        side = normalized[1:]
-
-        k_side = min(int(self.local_search_max_side_branches), len(side))
-        if k_side <= 0:
-            return self._sort_branch_candidates_relative([shortest], current_dir)
-
-        # Optional MCTS-lite root action selection (flat UCT at current node).
-        if str(getattr(self, "local_search_mode", "stochastic")).lower() == "mcts":
-            rollout_budget = max(1, int(getattr(self, "local_search_mcts_rollouts", 6)))
-            rollout_horizon = max(1, int(getattr(self, "local_search_mcts_horizon", 4)))
-            ucb_c = max(0.01, float(getattr(self, "local_search_ucb_c", 1.2)))
-
-            stats = {}
-            for cand in normalized:
-                stats[cand[0]] = {"visits": 0, "value": 0.0, "cand": cand}
-
-            for _ in range(rollout_budget):
-                total_visits = sum(v["visits"] for v in stats.values()) + 1
-                best_dir = None
-                best_ucb = -1e18
-                for dkey, rec in stats.items():
-                    v = rec["visits"]
-                    mean = (rec["value"] / v) if v > 0 else 0.0
-                    ucb = mean + ucb_c * np.sqrt(np.log(float(total_visits)) / float(v + 1))
-                    if ucb > best_ucb:
-                        best_ucb = ucb
-                        best_dir = dkey
-
-                selected = stats[best_dir]["cand"]
-                roll_score = self._mcts_rollout_score(
+            # Only create nodes for INIT, SWITCH, PRE_M
+            if not (is_init or is_switch or is_pre_merge):
+                # Skip: corridor/merge cell—jump to next decision point via corridor contraction
+                final_pos, final_dir, edge_len, target_on_edge = self._contract_corridor_segment(
                     handle=handle,
-                    start_pos=selected[1],
-                    start_dir=selected[0],
-                    start_depth=depth + 1,
-                    horizon=rollout_horizon,
-                    distance_map=distance_map,
+                    pos=current_pos,
+                    direction=current_dir,
+                    depth=decision_depth,
+                    depth_limit=depth_limit,
+                    target=agent_target,
                 )
-                stats[best_dir]["visits"] += 1
-                stats[best_dir]["value"] += float(roll_score)
+                # Frontier: add end-of-corridor as new search state
+                if edge_len > 0 or final_pos == current_pos:
+                    frontier.append((final_pos, final_dir, decision_depth + 1))
+                continue
 
-            ordered = sorted(
-                normalized,
-                key=lambda c: ((stats[c[0]]["value"] / max(1, stats[c[0]]["visits"])), -c[2]),
-                reverse=True,
-            )
-            chosen = ordered[: 1 + k_side]
-            if shortest[0] not in [c[0] for c in chosen]:
-                chosen = [shortest] + chosen[:k_side]
-            return self._sort_branch_candidates_relative(chosen, current_dir)
+            # === Create Decision-Point Node ===
+            node_idx = len(tree_nodes)
+            state_to_node_idx[state_key] = node_idx
+            visited_states.append((int(decision_depth), int(current_dir)))
 
-        dvals = np.array([s[2] for s in side], dtype=np.float64)
-        dmin = float(np.min(dvals))
-        closeness = 1.0 / (1.0 + np.maximum(0.0, dvals - dmin))
-        alpha = max(0.1, float(self.local_search_distance_bias))
-        weights = np.power(closeness, alpha)
-        wsum = float(np.sum(weights))
-        if wsum <= 0.0 or not np.isfinite(wsum):
-            probs = np.full(len(side), 1.0 / len(side), dtype=np.float64)
-        else:
-            probs = weights / wsum
+            # Determine node type enum value
+            if is_init:
+                node_type_value = NodeType.INIT
+            elif is_switch:
+                node_type_value = NodeType.SWITCH
+            else:  # is_pre_merge
+                node_type_value = NodeType.PRE_M
 
-        idx = np.random.choice(len(side), size=k_side, replace=False, p=probs)
-        chosen_side = [side[int(i)] for i in np.atleast_1d(idx)]
-        return self._sort_branch_candidates_relative([shortest] + chosen_side, current_dir)
-
-    def _local_search(self, handle, start_pos, start_dir, depth_limit):
-        """Run a bounded local graph search around one agent and emit tree payload.
-
-        Purpose:
-            Build a structured, variable-size neighborhood graph that captures
-            switch/merge topology, nearby agents, and deadlock cues for the
-            trainable tree encoder path.
-
-        Args:
-            handle: current ego agent id.
-            start_pos: agent position (row, col).
-            start_dir: agent direction in {0,1,2,3}.
-            depth_limit: maximum exploration depth in rail-cell steps.
-
-        Search mechanics:
-            1) Frontier-based traversal with best-depth pruning per state
-               (state = position + direction). A state is expanded only if it is
-               reached at a strictly better (smaller) depth.
-            2) Adaptive node budget via `_compute_adaptive_node_budget(...)` limits
-               total expanded nodes per call to keep runtime bounded.
-            3) At each expanded state, transitions are read once via cache, then
-               candidate branches are selected by `_select_local_search_branches(...)`.
-               The shortest-path successor is always retained; side branches are
-               sampled/ranked depending on local-search mode.
-            4) Optional corridor contraction via `_contract_corridor_segment(...)`
-               compresses linear tracks into one edge while preserving edge length
-               (`edge_len_cells`).
-            5) Deadlock signal per node is computed by `_calculate_deadlock_risk(...)`
-               and adjusted by oncoming and backward-inflow bonuses.
-
-        Returns:
-            dict with keys:
-              - nodes: list[dict], one entry per visited local state
-                fields: pos, dir, depth, num_transitions, deadlock_risk,
-                        agents_encountered, has_oncoming, incoming_agents,
-                        backward_inflow_count
-              - edges: list[dict], directed local transitions
-                fields: src_pos/src_dir/src_depth, dst_pos/dst_dir/dst_depth,
-                        rel_dir_bin, edge_len_cells, agents_on_edge,
-                        has_oncoming_edge
-              - seen_agents: sorted list[int] of all opponents observed in nodes,
-                incoming scans, or edges
-              - visited_states: list[(row, col, dir, depth)] in expansion order
-
-        Notes:
-            - Output size is intentionally variable (node/edge counts differ per
-              timestep and agent).
-            - On any severe failure, a safe empty payload is returned.
-        """
-        try:
-            if start_pos is None or start_dir is None or self.env is None or self.env.rail is None:
-                print(f"[Warn] _local_search: Ungültige Startdaten für Agent {handle}.")
-                return {"nodes": [], "edges": [], "seen_agents": [], "visited_states": []}
-            best_depth_by_state = {}
-            frontier = [(start_pos, start_dir, 0)]
-            tree_nodes = []
-            tree_edges = []
-            seen_agents = set()
-            visited_states = []
-            transition_cache = {}
-            incoming_degree_cache = {}
-            incoming_agents_cache = {}
-            deadlock_cache = {}
-
-            def _get_transitions_cached(pos, direction):
-                key = (int(pos[0]), int(pos[1]), int(direction))
-                if key in transition_cache:
-                    return transition_cache[key]
-                trans = self._rail_get_transitions(pos, direction)
-                transition_cache[key] = trans
-                return trans
-
-            distance_map = None
-            try:
-                distance_map = self.env.distance_map.get()
-            except Exception:
-                distance_map = None
-            max_nodes = self._compute_adaptive_node_budget(
-                handle=handle,
-                start_pos=start_pos,
-                start_dir=start_dir,
-                depth_limit=depth_limit,
-                transition_cache=transition_cache,
-                incoming_degree_cache=incoming_degree_cache,
-            )
-            agent_target = getattr(self.env.agents[handle], 'target', None)
-            max_dist = max(1.0, float(getattr(self, '_max_dist', 1.0)))
-            root_dist = self._safe_distance(handle, start_pos, start_dir, distance_map)
-            while frontier:
-                current_pos, current_dir, depth = frontier.pop()
-                state_key = (int(current_pos[0]), int(current_pos[1]), int(current_dir))
-                prev_best = best_depth_by_state.get(state_key)
-                if depth > depth_limit or (prev_best is not None and depth >= prev_best):
-                    continue
-                if len(tree_nodes) >= max_nodes:
-                    break
-                best_depth_by_state[state_key] = int(depth)
-                visited_states.append((int(current_pos[0]), int(current_pos[1]), int(current_dir), int(depth)))
-                try:
-                    transitions = _get_transitions_cached(current_pos, current_dir)
-                except Exception as e:
-                    print(f"[Warn] _local_search: Fehler bei get_transitions: {e}")
-                    continue
-                num_transitions = fast_count_nonzero(transitions)
-                agents_encountered = []
-                has_oncoming = False
-                incoming_agents = []
-                if self.agent_map is not None:
-                    try:
-                        agent_idx = self._agent_at_pos(current_pos)
-                        if agent_idx != -1 and agent_idx != handle:
-                            agents_encountered.append(agent_idx)
-                            seen_agents.add(int(agent_idx))
-                            other_dir = self.env.agents[agent_idx].direction
-                            if other_dir is not None and DecisionPointUtils.is_opposite_direction(current_dir, other_dir):
-                                has_oncoming = True
-                    except Exception as e:
-                        print(f"[Warn] _local_search: Fehler bei agent_map: {e}")
-                try:
-                    pos_key = (int(current_pos[0]), int(current_pos[1]))
-                    if pos_key in incoming_degree_cache:
-                        in_deg = incoming_degree_cache[pos_key]
-                    else:
-                        in_deg = self._incoming_degree(current_pos, transition_cache=transition_cache)
-                        incoming_degree_cache[pos_key] = in_deg
-
-                    if in_deg > 1:
-                        ia_key = (pos_key[0], pos_key[1], int(handle))
-                        if ia_key in incoming_agents_cache:
-                            incoming_agents = incoming_agents_cache[ia_key]
-                        else:
-                            incoming_agents = self._incoming_agent_handles(
-                                current_pos,
-                                handle,
-                                transition_cache=transition_cache,
-                            )
-                            incoming_agents_cache[ia_key] = incoming_agents
-                        for a in incoming_agents:
-                            seen_agents.add(int(a))
-                except Exception as e:
-                    print(f"[Warn] _local_search: Fehler bei incoming-agent scan: {e}")
-                try:
-                    if state_key in deadlock_cache:
-                        base_risk = deadlock_cache[state_key]
-                    else:
-                        base_risk = self._calculate_deadlock_risk(
-                            handle,
-                            current_pos,
-                            current_dir,
-                            max_depth=int(getattr(self, "local_search_deadlock_probe_depth", 6)),
-                            max_states=int(getattr(self, "local_search_deadlock_max_states", 64)),
-                            transition_cache=transition_cache,
-                        )
-                        deadlock_cache[state_key] = base_risk
-                except Exception as e:
-                    print(f"[Warn] _local_search: Fehler bei _calculate_deadlock_risk: {e}")
-                    base_risk = 1.0
-                inflow_bonus = 0.15 * min(2, len(incoming_agents))
-                adjusted_risk = min(1.0, base_risk + (0.5 if has_oncoming else 0.0) + inflow_bonus)
-                node_info = {
-                    "pos": current_pos,
-                    "dir": current_dir,
-                    "depth": depth,
-                    "num_transitions": num_transitions,
-                    "deadlock_risk": adjusted_risk,
-                    "agents_encountered": agents_encountered,
-                    "has_oncoming": has_oncoming,
-                    "incoming_agents": incoming_agents,
-                    "backward_inflow_count": len(incoming_agents),
-                }
-                tree_nodes.append(node_info)
-                selected = self._select_local_search_branches(
-                    handle=handle,
-                    depth=depth,
-                    current_pos=current_pos,
-                    current_dir=current_dir,
-                    transitions=transitions,
-                    distance_map=distance_map,
+            # Compute deadlock profile for this decision point
+            if state_key in deadlock_cache:
+                deadlock_profile = deadlock_cache[state_key]
+            else:
+                deadlock_profile = self._calculate_deadlock_profile(
+                    handle,
+                    current_pos,
+                    current_dir,
+                    max_depth=int(getattr(self, "local_search_deadlock_probe_depth", 14)),
+                    max_states=int(getattr(self, "local_search_deadlock_max_states", 256)),
+                    transition_cache=transition_cache,
                 )
-                next_frontier_states = []
-                for next_dir, next_pos, _dist in selected:
-                    final_pos, final_dir, edge_len, target_on_edge = self._contract_corridor_segment(
-                        handle=handle,
-                        pos=next_pos,
-                        direction=next_dir,
-                        depth=depth + 1,
-                        depth_limit=depth_limit,
-                        target=agent_target,
-                    )
-                    next_depth = min(int(depth_limit), int(depth + edge_len))
-                    if next_depth <= depth:
-                        next_depth = depth + 1
-                    src_dist = self._safe_distance(handle, current_pos, current_dir, distance_map)
-                    dst_dist = self._safe_distance(handle, final_pos, final_dir, distance_map)
-                    src_dist_norm = self._distance_to_unit(src_dist, max_dist)
-                    dst_dist_norm = self._distance_to_unit(dst_dist, max_dist)
-                    delta_from_root_norm = self._progress_delta_to_unit(root_dist, dst_dist, max_dist)
-                    improves_over_current = 1.0 if (not np.isfinite(root_dist) and np.isfinite(dst_dist)) or (
-                        np.isfinite(root_dist) and np.isfinite(dst_dist) and float(dst_dist) < float(root_dist)
-                    ) else 0.0
-                    action_left, action_forward, action_right = self._rel_dir_one_hot(current_dir, next_dir)
-                    edge_agents = []
-                    if self.agent_map is not None:
-                        try:
-                            nidx = self._agent_at_pos(final_pos)
-                            if nidx != -1 and nidx != handle:
-                                edge_agents.append(int(nidx))
-                                seen_agents.add(int(nidx))
-                        except Exception as e:
-                            print(f"[Warn] _local_search: Fehler bei edge-agent scan: {e}")
-                    tree_edges.append({
-                        "src_pos": current_pos,
-                        "src_dir": int(current_dir),
-                        "dst_pos": final_pos,
-                        "dst_dir": int(final_dir),
-                        "src_depth": int(depth),
-                        "dst_depth": int(next_depth),
-                        "rel_dir_bin": self._dir_to_rel_bin(current_dir, next_dir),
-                        "action_left": float(action_left),
-                        "action_forward": float(action_forward),
-                        "action_right": float(action_right),
-                        "edge_len_cells": int(edge_len),
-                        "src_dist_to_target": float(src_dist_norm),
-                        "dst_dist_to_target": float(dst_dist_norm),
-                        "delta_from_root": float(delta_from_root_norm),
-                        "improves_over_current": float(improves_over_current),
-                        "target_on_edge": bool(target_on_edge or (agent_target is not None and final_pos == agent_target)),
-                        "agents_on_edge": edge_agents,
-                        "has_oncoming_edge": bool(len(edge_agents) > 0),
-                    })
-                    next_frontier_states.append((final_pos, final_dir, next_depth))
-                for next_state in reversed(next_frontier_states):
-                    frontier.append(next_state)
-            return {
-                "nodes": tree_nodes,
-                "edges": tree_edges,
-                "seen_agents": sorted(seen_agents),
-                "visited_states": visited_states,
+                deadlock_cache[state_key] = deadlock_profile
+
+            # Detect agents at/near this position
+            agents_at_pos = []
+            has_oncoming = False
+            if self.agent_map is not None:
+                agent_idx = self._agent_at_pos(current_pos)
+                if agent_idx != -1 and agent_idx != handle:
+                    agents_at_pos.append(agent_idx)
+                    seen_agents.add(int(agent_idx))
+                    other_dir = self.env.agents[agent_idx].direction
+                    if other_dir is not None and DecisionPointUtils.is_opposite_direction(current_dir, other_dir):
+                        has_oncoming = True
+
+            # Node info for decision point
+            deadlock_min_depth = int(deadlock_profile.get("min_deadlock_depth", -1))
+            deadlock_hard_min_depth = int(deadlock_profile.get("min_hard_block_depth", -1))
+            inflow_bonus = 0.08 * min(2, len(agents_at_pos))
+            base_risk = float(deadlock_profile.get("risk", 0.0))
+            adjusted_risk = min(1.0, base_risk + (0.20 if has_oncoming else 0.0) + inflow_bonus)
+
+            node_info = {
+                "id": int(node_idx),
+                "type": int(node_type_value),  # NodeType enum value
+                "type_name": ["INIT", "SWITCH", "PRE_M"][int(node_type_value)],
+                "decision_depth": int(decision_depth),
+                "num_transitions": int(num_transitions),
+                "deadlock_risk": float(adjusted_risk),
+                "deadlock_ahead": 1.0 if deadlock_min_depth >= 0 else 0.0,
+                "deadlock_hard_block": 1.0 if deadlock_hard_min_depth >= 0 else 0.0,
+                "deadlock_min_depth": int(deadlock_min_depth),
+                "deadlock_hard_min_depth": int(deadlock_hard_min_depth),
+                "deadlock_distance_norm": float(deadlock_profile.get("deadlock_distance_norm", 0.0)),
+                "deadlock_hard_distance_norm": float(deadlock_profile.get("hard_block_distance_norm", 0.0)),
+                "has_agents": bool(len(agents_at_pos) > 0),
+                "has_oncoming": bool(has_oncoming),
             }
-        except Exception as e:
-            print(f"[Warn] _local_search: Schwerwiegender Fehler: {e}")
-            return {"nodes": [], "edges": [], "seen_agents": [], "visited_states": []}
+            tree_nodes.append(node_info)
 
-    def _calculate_deadlock_risk(self, handle, pos, direction, max_depth=6, max_states=64, transition_cache=None):
-        """Defensive Deadlock-Risk-Berechnung: Gibt bei Fehlern Risiko=1.0 zurück."""
-        try:
-            if pos is None or direction is None or self.env is None or self.env.rail is None:
-                print(f"[Warn] _calculate_deadlock_risk: Ungültige Eingaben für Agent {handle}.")
-                return 1.0
+            # === Expand to next decision points ===
+            # Select branches (shortest-path + sampled alternatives)
+            selected = self._select_local_search_branches(
+                handle=handle,
+                depth=decision_depth,
+                current_pos=current_pos,
+                current_dir=current_dir,
+                transitions=transitions,
+                distance_map=distance_map,
+            )
 
-            if transition_cache is None:
-                transition_cache = {}
+            for next_dir, next_pos, _dist in selected:
+                # Contract corridor to next decision point
+                final_pos, final_dir, edge_len, target_on_edge = self._contract_corridor_segment(
+                    handle=handle,
+                    pos=next_pos,
+                    direction=next_dir,
+                    depth=decision_depth + 1,
+                    depth_limit=depth_limit,
+                    target=agent_target,
+                )
 
-            def _get_transitions_cached(cell_pos, cell_dir):
-                key = (int(cell_pos[0]), int(cell_pos[1]), int(cell_dir))
-                if key in transition_cache:
-                    return transition_cache[key]
-                trans = self._rail_get_transitions(cell_pos, cell_dir)
-                transition_cache[key] = trans
-                return trans
+                # Build edge info (may be incomplete if final_pos is not yet a node)
+                src_dist = self._safe_distance(handle, current_pos, current_dir, distance_map)
+                dst_dist = self._safe_distance(handle, final_pos, final_dir, distance_map)
+                src_dist_norm = self._distance_to_unit(src_dist, max_dist)
+                dst_dist_norm = self._distance_to_unit(dst_dist, max_dist)
+                delta_from_root_norm = self._progress_delta_to_unit(root_dist, dst_dist, max_dist)
+                improves_over_current = 1.0 if (not np.isfinite(root_dist) and np.isfinite(dst_dist)) or (
+                    np.isfinite(root_dist) and np.isfinite(dst_dist) and float(dst_dist) < float(root_dist)
+                ) else 0.0
 
-            visited = set()
-            frontier = [(pos, direction, 0)]
-            deadlock_risk = 0.0
-            while frontier:
-                if len(visited) >= max(8, int(max_states)):
-                    break
-                current_pos, current_dir, depth = frontier.pop()
-                if depth > max(1, int(max_depth)):
-                    continue
-                visited_key = (self._pos_tuple(current_pos), int(current_dir))
-                if visited_key in visited:
-                    continue
-                visited.add(visited_key)
-                try:
-                    transitions = _get_transitions_cached(current_pos, current_dir)
-                except Exception as e:
-                    print(f"[Warn] _calculate_deadlock_risk: Fehler bei get_transitions: {e}")
-                    deadlock_risk += 1.0
-                    continue
-                num_transitions = fast_count_nonzero(transitions)
-                if num_transitions == 0:
-                    deadlock_risk += 1.0
-                elif num_transitions > 1:
-                    deadlock_risk += 0.5
-                for next_dir in range(4):
-                    if transitions[next_dir]:
-                        next_pos = get_new_position(current_pos, next_dir)
-                        frontier.append((next_pos, next_dir, depth + 1))
-            return min(deadlock_risk / 10.0, 1.0)
-        except Exception as e:
-            print(f"[Warn] _calculate_deadlock_risk: Schwerwiegender Fehler: {e}")
-            return 1.0
+                # Action encoding (relative direction)
+                action_left, action_forward, action_right = self._rel_dir_one_hot(current_dir, next_dir)
+
+                # Detect agents on corridor
+                edge_agents = []
+                if self.agent_map is not None:
+                    nidx = self._agent_at_pos(final_pos)
+                    if nidx != -1 and nidx != handle:
+                        edge_agents.append(int(nidx))
+                        seen_agents.add(int(nidx))
+
+                # Check for merge context on this edge
+                merge_incoming_degree = self._incoming_degree(final_pos, transition_cache=transition_cache)
+                has_merge_conflict = merge_incoming_degree > 2
+
+                next_state_key = (int(final_pos[0]), int(final_pos[1]), int(final_dir))
+                pending_edges.append({
+                    "src_state_key": state_key,
+                    "dst_state_key": next_state_key,
+                    "src_decision_depth": int(decision_depth),
+                    "dst_decision_depth": int(decision_depth + 1),
+                    "rel_dir_bin": self._dir_to_rel_bin(current_dir, next_dir),
+                    "action_left": float(action_left),
+                    "action_forward": float(action_forward),
+                    "action_right": float(action_right),
+                    "edge_len_cells": int(edge_len),
+                    "src_dist_to_target": float(src_dist_norm),
+                    "dst_dist_to_target": float(dst_dist_norm),
+                    "delta_from_root": float(delta_from_root_norm),
+                    "improves_over_current": float(improves_over_current),
+                    "target_on_edge": bool(target_on_edge or (agent_target is not None and final_pos == agent_target)),
+                    "agents_on_edge_count": int(len(edge_agents)),
+                    "has_oncoming_edge": bool(len(edge_agents) > 0),
+                    "merge_conflict": bool(has_merge_conflict),
+                    "merge_incoming_degree": int(merge_incoming_degree),
+                })
+
+                # Add to frontier for next decision-point search
+                frontier.append((final_pos, final_dir, decision_depth + 1))
+
+        # === Link edges to node indices ===
+        tree_edges = []
+        for edge_spec in pending_edges:
+            src_state = edge_spec["src_state_key"]
+            dst_state = edge_spec["dst_state_key"]
+            src_idx = state_to_node_idx.get(src_state)
+            dst_idx = state_to_node_idx.get(dst_state)
+
+            # Both endpoints must be decision nodes
+            if src_idx is None or dst_idx is None:
+                continue
+
+            edge = {
+                "src": int(src_idx),
+                "dst": int(dst_idx),
+                "src_decision_depth": int(edge_spec["src_decision_depth"]),
+                "dst_decision_depth": int(edge_spec["dst_decision_depth"]),
+                "rel_dir_bin": int(edge_spec["rel_dir_bin"]),
+                "action_left": float(edge_spec["action_left"]),
+                "action_forward": float(edge_spec["action_forward"]),
+                "action_right": float(edge_spec["action_right"]),
+                "edge_len_cells": int(edge_spec["edge_len_cells"]),
+                "src_dist_to_target": float(edge_spec["src_dist_to_target"]),
+                "dst_dist_to_target": float(edge_spec["dst_dist_to_target"]),
+                "delta_from_root": float(edge_spec["delta_from_root"]),
+                "improves_over_current": float(edge_spec["improves_over_current"]),
+                "target_on_edge": bool(edge_spec["target_on_edge"]),
+                "agents_on_edge_count": int(edge_spec["agents_on_edge_count"]),
+                "has_oncoming_edge": bool(edge_spec["has_oncoming_edge"]),
+                "merge_conflict": bool(edge_spec["merge_conflict"]),
+                "merge_incoming_degree": int(edge_spec["merge_incoming_degree"]),
+            }
+
+            # Add deadlock context from source and destination nodes
+            if src_idx < len(tree_nodes) and dst_idx < len(tree_nodes):
+                src_node = tree_nodes[src_idx]
+                dst_node = tree_nodes[dst_idx]
+                edge["src_deadlock_risk"] = float(src_node.get("deadlock_risk", 0.0))
+                edge["src_deadlock_distance_norm"] = float(src_node.get("deadlock_distance_norm", 0.0))
+                edge["dst_deadlock_risk"] = float(dst_node.get("deadlock_risk", 0.0))
+                edge["dst_deadlock_hard_block"] = float(dst_node.get("deadlock_hard_block", 0.0))
+                edge["dst_deadlock_distance_norm"] = float(dst_node.get("deadlock_distance_norm", 0.0))
+                edge["dst_deadlock_hard_distance_norm"] = float(dst_node.get("deadlock_hard_distance_norm", 0.0))
+                edge["deadlock_distance_delta"] = float(np.clip(
+                    edge["dst_deadlock_distance_norm"] - edge["src_deadlock_distance_norm"],
+                    -1.0, 1.0
+                ))
+
+            tree_edges.append(edge)
+
+        return {
+            "nodes": tree_nodes,
+            "edges": tree_edges,
+            "seen_agents": sorted(seen_agents),
+            "visited_states": visited_states,
+        }
+
+    @staticmethod
+    def _depth_to_proximity(depth_value: int, max_depth: int) -> float:
+        if depth_value is None or int(depth_value) < 0:
+            return 0.0
+        denom = max(1, int(max_depth))
+        # 1.0 means immediate deadlock, 0.0 means no deadlock in probe horizon.
+        return float(np.clip(1.0 - (float(depth_value) / float(denom)), 0.0, 1.0))
+
+    def _calculate_deadlock_profile(self, handle, pos, direction, max_depth=14, max_states=256, transition_cache=None):
+        """Compute local deadlock profile with risk and explicit distance-to-deadlock signals."""
+        if pos is None or direction is None or self.env is None or self.env.rail is None:
+            raise ValueError(f"_calculate_deadlock_profile received invalid inputs for agent {handle}")
+
+        if transition_cache is None:
+            transition_cache = {}
+
+        def _get_transitions_cached(cell_pos, cell_dir):
+            key = (int(cell_pos[0]), int(cell_pos[1]), int(cell_dir))
+            if key in transition_cache:
+                return transition_cache[key]
+            trans = self._rail_get_transitions(cell_pos, cell_dir)
+            transition_cache[key] = trans
+            return trans
+
+        visited = set()
+        frontier = [(pos, direction, 0)]
+        deadlock_risk = 0.0
+        min_deadlock_depth = None
+        min_hard_block_depth = None
+        min_soft_block_depth = None
+        min_merge_conflict_depth = None
+        while frontier:
+            if len(visited) >= max(8, int(max_states)):
+                break
+            current_pos, current_dir, depth = frontier.pop()
+            if depth > max(1, int(max_depth)):
+                continue
+            visited_key = (self._pos_tuple(current_pos), int(current_dir))
+            if visited_key in visited:
+                continue
+            visited.add(visited_key)
+            transitions = _get_transitions_cached(current_pos, current_dir)
+            num_transitions = fast_count_nonzero(transitions)
+            in_deg = self._incoming_degree(current_pos, transition_cache=transition_cache)
+
+            has_oncoming = False
+            if self.agent_map is not None:
+                occ = self._agent_at_pos(current_pos)
+                if occ != -1 and occ != handle:
+                    occ_dir = self.env.agents[occ].direction
+                    if occ_dir is not None and DecisionPointUtils.is_opposite_direction(current_dir, occ_dir):
+                        has_oncoming = True
+
+            hard_block = bool(num_transitions == 0)
+            soft_block = bool(has_oncoming and num_transitions <= 1)
+            merge_conflict = bool(in_deg > 2 and num_transitions == 1 and depth <= 6)
+
+            if hard_block or soft_block:
+                if min_deadlock_depth is None or int(depth) < int(min_deadlock_depth):
+                    min_deadlock_depth = int(depth)
+            if hard_block:
+                if min_hard_block_depth is None or int(depth) < int(min_hard_block_depth):
+                    min_hard_block_depth = int(depth)
+            if soft_block:
+                if min_soft_block_depth is None or int(depth) < int(min_soft_block_depth):
+                    min_soft_block_depth = int(depth)
+            if merge_conflict:
+                if min_merge_conflict_depth is None or int(depth) < int(min_merge_conflict_depth):
+                    min_merge_conflict_depth = int(depth)
+
+            if hard_block:
+                deadlock_risk += 1.0
+            elif soft_block:
+                deadlock_risk += 0.65
+            elif merge_conflict:
+                deadlock_risk += 0.30
+            elif has_oncoming:
+                deadlock_risk += 0.18
+            elif num_transitions <= 1:
+                deadlock_risk += 0.03
+
+            for next_dir in range(4):
+                if transitions[next_dir]:
+                    next_pos = get_new_position(current_pos, next_dir)
+                    frontier.append((next_pos, next_dir, depth + 1))
+
+        probe_depth = max(1, int(max_depth))
+        risk_norm = max(4.0, min(24.0, float(len(visited)) * 0.35))
+        effective_hard_depth = min_hard_block_depth
+        if effective_hard_depth is None:
+            effective_hard_depth = min_soft_block_depth
+        return {
+            "risk": float(min(deadlock_risk / risk_norm, 1.0)),
+            "min_deadlock_depth": int(min_deadlock_depth) if min_deadlock_depth is not None else -1,
+            "min_hard_block_depth": int(effective_hard_depth) if effective_hard_depth is not None else -1,
+            "min_soft_block_depth": int(min_soft_block_depth) if min_soft_block_depth is not None else -1,
+            "min_merge_conflict_depth": int(min_merge_conflict_depth) if min_merge_conflict_depth is not None else -1,
+            "deadlock_distance_norm": float(self._depth_to_proximity(min_deadlock_depth, probe_depth)),
+            "hard_block_distance_norm": float(self._depth_to_proximity(effective_hard_depth, probe_depth)),
+            "soft_block_distance_norm": float(self._depth_to_proximity(min_soft_block_depth, probe_depth)),
+            "merge_conflict_distance_norm": float(self._depth_to_proximity(min_merge_conflict_depth, probe_depth)),
+        }
 
     @staticmethod
     def getObservationSize() -> int:
@@ -1228,22 +753,16 @@ class DecisionPointObservation(ObservationBuilder):
     @classmethod
     def _print_feature_layout_doc(cls):
         if os.getenv("DEBUG_OBSERVATION", "0") == "1":
-            print(">> DecisionPointObservation (Modus A Pure) — 35D Feature-Layout:")
+            print(">> DecisionPointObservation (17D Base + Tree Payload) - Feature-Layout:")
             for idx, name, desc in cls.FEATURE_GROUPS_DOC:
                 print(f"   {idx:<8} {name:<18} {desc}")
+            print("   0..16    base_feature_specs  exact index-to-meaning mapping (17D total)")
+            print("   Tree Payload: nodes and edges contain deadlock_risk, deadlock_ahead, deadlock_hard_block")
 
     @classmethod
     def _cleanup_base_features(cls, raw_features: np.ndarray) -> None:
-        """Zero redundant base channels while preserving dimensions and tree block.
-
-        This keeps only curated relevant handcrafted features in [0:35].
-        Tree payload serialization in [35:155] is not touched.
-        """
-        if raw_features is None or raw_features.shape[0] < cls.BASE_OBS_SIZE:
-            return
-        keep_mask = np.zeros(cls.BASE_OBS_SIZE, dtype=np.float32)
-        keep_mask[list(cls.RELEVANT_BASE_FEATURE_INDICES)] = 1.0
-        raw_features[:cls.BASE_OBS_SIZE] *= keep_mask
+        # No masking: all 17 base features are kept as-is.
+        return
 
     @staticmethod
     def _encode_detect_deadlock(raw: float) -> float:
@@ -1297,8 +816,7 @@ class DecisionPointObservation(ObservationBuilder):
                 for nd in range(4):
                     if not trans[nd]:
                         continue
-                    npos = get_new_position(prev_pos, nd)
-                    if npos == cell_pos:
+                    if get_new_position(prev_pos, nd) == cell_pos:
                         incoming_edges.add((prev_pos[0], prev_pos[1], d, nd))
         return len(incoming_edges)
 
@@ -1323,25 +841,19 @@ class DecisionPointObservation(ObservationBuilder):
             prev_pos = get_new_position(cell_pos, (prev_dir + 2) % 4)
             if prev_pos[0] < 0 or prev_pos[0] >= self.env.height or prev_pos[1] < 0 or prev_pos[1] >= self.env.width:
                 continue
-            try:
-                agent_idx = self._agent_at_pos(prev_pos)
-            except Exception:
-                continue
+            agent_idx = self._agent_at_pos(prev_pos)
             if agent_idx == -1 or agent_idx == handle_exclude:
                 continue
-            try:
-                a_dir = self.env.agents[agent_idx].direction
-                if a_dir is None:
-                    continue
-                trans = _get_transitions_cached(prev_pos, a_dir)
-                for nd in range(4):
-                    if not trans[nd]:
-                        continue
-                    if get_new_position(prev_pos, nd) == cell_pos:
-                        found.add(agent_idx)
-                        break
-            except Exception:
+            a_dir = self.env.agents[agent_idx].direction
+            if a_dir is None:
                 continue
+            trans = _get_transitions_cached(prev_pos, a_dir)
+            for nd in range(4):
+                if not trans[nd]:
+                    continue
+                if get_new_position(prev_pos, nd) == cell_pos:
+                    found.add(agent_idx)
+                    break
         return sorted(found)
 
     def _is_pre_merge_one_exit(self, pos, direction, transitions) -> bool:
@@ -1381,228 +893,122 @@ class DecisionPointObservation(ObservationBuilder):
         return decision_type
 
     def get(self, handle: int = 0):
+        """Return (base_features, seen_agents, raw_tree_payload) for one agent.
+        Export 17 base features (dead TrainStates removed, deadlock moved to tree).
+        Deadlock information is embedded in tree payload nodes/edges.
         """
-        Generiere 35D Observation für einen einzelnen Agenten (Modus A Pure).
-        
-        Pipeline:
-        1. Immediate Context [0-5]: is_switch, direction_hint, is_merge, local_deadlock
-        2. Lokale Baumsuche (DFS depth=5) → tree_payload
-        3. State/Action Memory [6-28]: agent state, last action, priority, cell type
-        4. Tree Statistics [29-34]: aggregierte Deadlock/Conflict-Metriken
-        5. Speichere tree_payload in env.dev_tree_dict[handle]
-        6. Rückgabe: (35D features, opponent_agents_list)
-        
-        WICHTIG: Alle Branch-Metrics [6-29] und Merge-Heuristics [30-40] wurden entfernt.
-        Trainable Encoder nutzen tree_payload direkt (nodes/edges/seen_agents).
-        
-        Args:
-            handle: Agent ID
-            
-        Returns:
-            (raw_features[35], opponent_agents): 
-                - raw_features: np.float32[35] normalisiert [0,1]
-                - opponent_agents: List[int] sichtbare Gegner aus tree_payload
-                
-        Side Effects:
-            - env.dev_tree_dict[handle] = tree_payload mit vollständiger Struktur
-              (nodes/edges/seen_agents für trainable encoder)
-            - agent.cur_opp_agent_handles = opponent_agents
-        """
-        raw_features = np.zeros(DecisionPointObservation.OBS_SIZE, dtype=np.float32)
-        try:
-            agent = self.env.agents[handle]
-            pos = agent.position if agent.position is not None else agent.initial_position
-            direction = agent.direction if agent.direction is not None else agent.initial_direction
-            target = agent.target
-            if pos is None or target is None or direction is None:
-                print(f"[Warn] get: Ungültige Agenten-Startdaten für {handle}.")
-                return (raw_features, [])
-            distance_map = self.env.distance_map.get()
-            curr_dist_raw = distance_map[handle, pos[0], pos[1], direction]
-            curr_reachable = bool(np.isfinite(curr_dist_raw))
-            max_dist = self._max_dist
-            # IMPORTANT: np.inf distance is a valid planning state in Flatland.
-            # We do not log warnings for it; instead we encode it in features below.
-            curr_dist_norm = (float(curr_dist_raw) / max_dist) if curr_reachable else 1.0
-            try:
-                transitions = self._rail_get_transitions(pos, direction)
-            except Exception as e:
-                print(f"[Warn] get: Fehler bei get_transitions: {e}")
-                transitions = [0, 0, 0, 0]
-            # Lokale Suche → Baum-Payload für trainierbare Encoder-Integration
-            tree_payload = self._local_search(handle, pos, direction, self.search_depth)
-            tree_data = tree_payload.get("nodes", [])
-            local_search_seen_agents = set(tree_payload.get("seen_agents", []))
-            
-            merge_switch = False
-            try:
-                merge_switch = self._is_pre_merge_one_exit(pos, direction, transitions)
-            except Exception as e:
-                print(f"[Warn] get: Fehler bei _is_pre_merge_one_exit: {e}")
-            decision_type = 0
-            if agent.state.name == "READY_TO_DEPART":
-                decision_type = 1
+        raw_features = np.zeros(self.BASE_OBS_SIZE, dtype=np.float32)
+
+        agent = self.env.agents[handle]
+        pos = agent.position if agent.position is not None else agent.initial_position
+        direction = agent.direction if agent.direction is not None else agent.initial_direction
+        target = agent.target
+        if pos is None or target is None or direction is None:
+            raise ValueError(f"Agent {handle} has invalid start data for observation building")
+        distance_map = self.env.distance_map.get()
+
+        # Lokale Suche → Baum-Payload für trainierbare Encoder-Integration
+        search_depth = max(int(self.search_depth), int(getattr(self, "local_search_min_search_depth", 8)))
+        tree_payload = self._local_search(handle, pos, direction, search_depth)
+        local_search_seen_agents = set(tree_payload.get("seen_agents", []))
+
+        # Keep structured tree context available for downstream temporal wrappers.
+        if not hasattr(self.env, "dev_tree_dict"):
+            self.env.dev_tree_dict = {}
+        self.env.dev_tree_dict[handle] = tree_payload
+
+        # Fill base features according to the 24D schema.
+        transitions = self._rail_get_transitions(pos, direction)
+        left_dir = (int(direction) - 1) % 4
+        fwd_dir = int(direction) % 4
+        right_dir = (int(direction) + 1) % 4
+
+        raw_features[0] = 1.0 if transitions[left_dir] else 0.0
+        raw_features[1] = 1.0 if transitions[fwd_dir] else 0.0
+        raw_features[2] = 1.0 if transitions[right_dir] else 0.0
+
+        current_dist = self._safe_distance(handle, pos, direction, distance_map)
+        for feat_idx, ndir in ((3, left_dir), (4, fwd_dir), (5, right_dir)):
+            if transitions[ndir]:
+                npos = get_new_position(pos, ndir)
+                ndist = self._safe_distance(handle, npos, ndir, distance_map)
+                if np.isfinite(current_dist) and np.isfinite(ndist):
+                    # Keep progress deltas bounded for stable PPO value scaling.
+                    raw_features[feat_idx] = float(np.clip(float(current_dist - ndist), -1.0, 1.0))
+                else:
+                    raw_features[feat_idx] = 0.0
             else:
-                if self._is_switch_at_current_cell(pos, direction):
-                    decision_type += 2
-                if merge_switch:
-                    decision_type += 4
-            if agent.state.name == "DONE":
-                decision_type = 8
-            raw_features[0] = 1.0 if (decision_type & 2) else 0.0
-            try:
-                raw_features[1:4] = self._shortest_path_action_hint(handle, pos, direction, transitions, distance_map)
-            except Exception as e:
-                print(f"[Warn] get: Fehler bei _shortest_path_action_hint: {e}")
-                raw_features[1:4] = 0.0
-            raw_features[4] = 1.0 if (decision_type & 4) else 0.0
-            try:
-                raw_features[5] = self._encode_detect_deadlock(self._detect_deadlock(handle, pos, direction))
-            except Exception as e:
-                print(f"[Warn] get: Fehler bei _detect_deadlock: {e}")
-                raw_features[5] = 0.0
-            all_distance = []
-            for idx, a in enumerate(self.env.agents):
-                apos = a.position if a.position is not None else a.initial_position
-                adir = a.direction if a.direction is not None else a.initial_direction
-                if apos is None or adir is None:
-                    adist = np.inf
-                else:
-                    try:
-                        adist = float(distance_map[a.handle, apos[0], apos[1], adir])
-                    except Exception as e:
-                        print(f"[Warn] get: Fehler bei distance_map für Agent {a.handle}: {e}")
-                        adist = np.inf
-                all_distance.append((a.handle, adist, idx))
-            all_distance.sort(key=lambda x: (x[1], x[2]))
-            value_to_rank = {}
-            next_rank = 1
-            handle_to_rank = {}
-            for h, dist, _ in all_distance:
-                if dist not in value_to_rank:
-                    value_to_rank[dist] = next_rank
-                    next_rank += 1
-                handle_to_rank[h] = value_to_rank[dist]
-            priority_rank = float(handle_to_rank.get(handle, next_rank)) / next_rank
-            
-            opp_agents = set()
-            opp_agents.update(local_search_seen_agents)
-            for other in self.env.agents:
-                if other.handle == handle:
-                    continue
-                other_pos = other.position if other.position is not None else other.initial_position
-                if other_pos == pos:
-                    opp_agents.add(other.handle)
-            
-            # State/Action Memory [6-28]
-            state_value = int(agent.state.value)
-            if 0 <= state_value <= 6:
-                raw_features[6 + state_value] = 1.0
-            
-            # Last-action one-hot with Flatland-compatible fallback.
-            sa = None
-            on_map = getattr(agent, "position", None) is not None
-            if on_map and getattr(agent, "action_saver", None) is not None and agent.action_saver.is_action_saved:
-                sa = int(agent.action_saver.saved_action)
-            elif on_map:
-                if agent.state == TrainState.MOVING:
-                    old_dir = getattr(agent, "old_direction", None)
-                    cur_dir = getattr(agent, "direction", None)
-                    if old_dir is None or cur_dir is None:
-                        sa = int(RailEnvActions.MOVE_FORWARD)
-                    else:
-                        delta = (int(cur_dir) - int(old_dir)) % 4
-                        if delta == 0:
-                            sa = int(RailEnvActions.MOVE_FORWARD)
-                        elif delta == 1:
-                            sa = int(RailEnvActions.MOVE_RIGHT)
-                        elif delta == 3:
-                            sa = int(RailEnvActions.MOVE_LEFT)
-                        else:
-                            sa = int(RailEnvActions.MOVE_FORWARD)
-                else:
-                    sa = int(RailEnvActions.STOP_MOVING)
-            elif agent.state in (TrainState.WAITING, TrainState.READY_TO_DEPART, TrainState.MALFUNCTION_OFF_MAP):
-                sa = int(RailEnvActions.DO_NOTHING)
-            if sa is not None and 0 <= sa <= 4:
-                raw_features[13 + sa] = 1.0
-            
-            raw_features[18] = priority_rank
-            curr_idx = self._cell_type_index_from_decision_type(decision_type)
-            raw_features[19 + curr_idx] = 1.0
-            
-            _TR_SLOTS = {(1, 1): 24, (1, 2): 25, (1, 3): 26, (3, 1): 27, (2, 1): 28}
-            next_decision_type = decision_type
-            try:
-                if decision_type & 8:
-                    next_decision_type = 8
-                elif decision_type == 1:
-                    next_decision_type = self._decision_type_at_position(pos, direction, target)
-                else:
-                    if fast_count_nonzero(transitions) > 0:
-                        forward_dir = fast_argmax(transitions)
-                        next_pos = get_new_position(pos, forward_dir)
-                        next_decision_type = self._decision_type_at_position(next_pos, forward_dir, target)
-            except Exception as e:
-                print(f"[Warn] get: Fehler bei next_decision_type: {e}")
-                next_decision_type = decision_type
-            next_idx = self._cell_type_index_from_decision_type(next_decision_type)
-            tr_slot = _TR_SLOTS.get((curr_idx, next_idx), None)
-            if tr_slot is not None:
-                raw_features[tr_slot] = 1.0
-            
-            try:
-                raw_features[30] = 1.0 if DecisionPointUtils.is_local_deadlock(self.env, agent, self.agent_map) else 0.0
-            except Exception as e:
-                print(f"[Warn] get: Fehler bei is_local_deadlock: {e}")
-                raw_features[30] = 0.0
-            
-            if not curr_reachable:
-                raw_features[5] = max(raw_features[5], 0.5)
-                raw_features[18] = min(raw_features[18], 0.25)
-            
-            try:
-                if not hasattr(self.env, 'dev_tree_dict'):
-                    self.env.dev_tree_dict = {}
-                self.env.dev_tree_dict[handle] = tree_payload
-            except Exception as e:
-                print(f"[Warn] get: Fehler bei dev_tree_dict.update: {e}")
+                raw_features[feat_idx] = 0.0
 
-            # Feature cleanup: keep a meaningful scalar instead of a duplicate channel.
-            raw_features[31] = float(curr_dist_norm)
-            
-            # Tree Statistics [29-34] + serialized nodes [35-154] for LocalTreeEncoder
-            if tree_data:
-                try:
-                    _dl = [n["deadlock_risk"] for n in tree_data]
-                    _cf = [min(1.0, len(n.get("agents_encountered", [])) / 2.0) for n in tree_data]
-                    _br = [min(1.0, n.get("num_transitions", 1) / 3.0) for n in tree_data]
-                    raw_features[29] = float(np.mean(_dl))
-                    # [30] already set above with confirmed_deadlock
-                    raw_features[32] = float(np.max(_dl))
-                    raw_features[33] = float(np.mean(_cf))
-                    raw_features[34] = float(np.mean(_br))
-                    # Serialize tree nodes into obs[35:155] for LocalTreeEncoder
-                    tree_flat = self._serialize_tree_nodes(
-                        tree_data,
-                        tree_payload.get("edges", []),
-                        depth_limit=self.search_depth,
-                        clip_to_unit=bool(getattr(self, "local_tree_clip_features", True)),
-                    )
-                    raw_features[35:35 + len(tree_flat)] = tree_flat
-                except Exception as e:
-                    print(f"[Warn] get: Fehler bei tree_data-Statistiken: {e}")
+        all_distance = []
+        for idx, a in enumerate(self.env.agents):
+            apos = a.position if a.position is not None else a.initial_position
+            adir = a.direction if a.direction is not None else a.initial_direction
+            if apos is None or adir is None:
+                adist = np.inf
+            else:
+                adist = float(distance_map[a.handle, apos[0], apos[1], adir])
+            all_distance.append((a.handle, adist, idx))
+        all_distance.sort(key=lambda x: (x[1], x[2]))
+        value_to_rank = {}
+        next_rank = 1
+        handle_to_rank = {}
+        for h, dist, _ in all_distance:
+            if dist not in value_to_rank:
+                value_to_rank[dist] = next_rank
+                next_rank += 1
+            handle_to_rank[h] = value_to_rank[dist]
+        priority_rank = float(handle_to_rank.get(handle, next_rank)) / next_rank
 
-            # Final handcrafted-feature cleanup (base only). The tree block stays unchanged.
-            self._cleanup_base_features(raw_features)
-            
-            agent.cur_opp_agent_handles = sorted(opp_agents)
-            return (raw_features, agent.cur_opp_agent_handles)
-        except Exception as e:
-            print(f"[Warn] get: Schwerwiegender Fehler für Agent {handle}: {e}")
-            return (raw_features, [])
+        opp_agents = set()
+        opp_agents.update(local_search_seen_agents)
+        for other in self.env.agents:
+            if other.handle == handle:
+                continue
+            other_pos = other.position if other.position is not None else other.initial_position
+            if other_pos == pos:
+                opp_agents.add(other.handle)
 
-    def get_many(self, handles: list = None):
+        state_value = int(agent.state.value)
+        is_started = agent.position is not None
+        # Only export alive TrainStates: st_3 (MALFUNCTION) and st_4 (DONE).
+        # Skip st_0,1,2,5 (dead states).
+        raw_features[6] = 1.0 if is_started and state_value == 3 else 0.0  # st_3 (MALFUNCTION)
+        raw_features[7] = 1.0 if is_started and state_value == 4 else 0.0  # st_4 (DONE)
+        raw_features[8] = 0.0 if is_started else 1.0                       # st_6 (not-started)
+        raw_features[9] = priority_rank
+
+        raw_features[10] = 1.0 if self._is_pre_merge_one_exit(pos, direction, transitions) else 0.0
+        raw_features[11] = 1.0 if self._is_switch_at_current_cell(pos, direction) else 0.0
+        # NOTE: Removed [12]is_started (inverse of [8]st_6) and [13]is_done (duplicate of [7]st_4)
+
+        sp_left, sp_fwd, sp_right = self._shortest_path_action_hint(
+            handle=handle,
+            pos=pos,
+            direction=direction,
+            transitions=transitions,
+            distance_map=distance_map,
+        )
+        raw_features[12] = float(sp_left)
+        raw_features[13] = float(sp_fwd)
+        raw_features[14] = float(sp_right)
+
+        # DEADLOCK FEATURES MOVED TO TREE PAYLOAD:
+        # The _local_search() now embeds deadlock_risk in node and edge features.
+        # Policy should analyze tree structure, not use instant binary flags.
+        # NOTE: Deadlock detection (ahead, hard_block, escapable) is now
+        # computed in _local_search() and embedded in tree node/edge features.
+        # See tree_payload['nodes'] and tree_payload['edges'] for deadlock_risk.
+
+        # No masking: all features are exported
+        base_features = raw_features.copy()
+
+        agent.cur_opp_agent_handles = sorted(opp_agents)
+        return (base_features, agent.cur_opp_agent_handles, tree_payload)
+
+    def get_many(self, handles: list = None, is_end_of_episode: bool = False, episode_count: int = None):
+        # Nur noch für Rückwärtskompatibilität: Counter bleibt, aber nicht mehr für Ausgabe genutzt
+        type(self)._get_many_call_count += 1
         if handles is None:
             handles = list(range(len(self.env.agents)))
 
@@ -1625,9 +1031,62 @@ class DecisionPointObservation(ObservationBuilder):
                 agent.cur_opp_agent_handles = []
 
         result = []
+        all_features = []
+        tree_stats = []
         for handle in handles:
-            obs_self, obs_others = self.get(handle)
-            result.append((obs_self, obs_others))
+            entry = self.get(handle)
+            result.append(entry)
+            all_features.append(entry[0])
+            tree = entry[2]
+            n_nodes = len(tree.get("nodes", []))
+            n_edges = len(tree.get("edges", []))
+            seen_agents = tree.get("seen_agents", [])
+            tree_stats.append((handle, n_nodes, n_edges, seen_agents))
+
+        # --- Statistik der letzten 100 Episoden sammeln ---
+        if len(all_features) > 0:
+            arr = np.stack(all_features, axis=0)
+            # Ringpuffer für Features
+            if not hasattr(type(self), '_last_100_features'):
+                type(self)._last_100_features = []
+            if not hasattr(type(self), '_last_100_tree_stats'):
+                type(self)._last_100_tree_stats = []
+            type(self)._last_100_features.append(arr)
+            type(self)._last_100_tree_stats.append(tree_stats)
+            if len(type(self)._last_100_features) > 100:
+                type(self)._last_100_features.pop(0)
+            if len(type(self)._last_100_tree_stats) > 100:
+                type(self)._last_100_tree_stats.pop(0)
+
+        # --- Ausgabe nur am Ende jeder 100. Episode ---
+        if is_end_of_episode and episode_count is not None and episode_count > 0 and episode_count % 100 == 0:
+            feature_names = [name for _, name, _ in type(self).BASE_FEATURE_SPECS]
+            feature_expl = [desc for _, _, desc in type(self).BASE_FEATURE_SPECS]
+            # Features der letzten 100 Episoden
+            last_feats = type(self)._last_100_features
+            last_trees = type(self)._last_100_tree_stats
+            all_feats = np.concatenate(last_feats, axis=0) if last_feats else arr
+            print(f"[DecisionPointObservation][Summary] Statistik der letzten 100 Episoden (Episode {episode_count})")
+            print(f"  Agents pro Episode: {arr.shape[0]}, Features: {arr.shape[1]}")
+            print("[DecisionPointObservation][Feature Erklärung]")
+            for idx, (name, expl) in enumerate(zip(feature_names, feature_expl)):
+                print(f"  {idx:2d} {name:>10}: {expl}")
+            print("[DecisionPointObservation][Feature-Statistik über 100 Episoden]")
+            for idx, name in enumerate(feature_names):
+                col = all_feats[:, idx]
+                print(f"  {name:>10}: min={np.min(col):.4f} max={np.max(col):.4f} mean={np.mean(col):.4f} std={np.std(col):.4f}")
+            # Tree-Statistik
+            print("[DecisionPointObservation][Tree-Statistik über 100 Episoden]")
+            all_nodes = []
+            all_edges = []
+            for ep_tree_stats in last_trees:
+                for _h, n_nodes, n_edges, _seen_agents in ep_tree_stats:
+                    all_nodes.append(n_nodes)
+                    all_edges.append(n_edges)
+            if all_nodes:
+                print(f"  Nodes: min={np.min(all_nodes)} max={np.max(all_nodes)} mean={np.mean(all_nodes):.2f} std={np.std(all_nodes):.2f}")
+            if all_edges:
+                print(f"  Edges: min={np.min(all_edges)} max={np.max(all_edges)} mean={np.mean(all_edges):.2f} std={np.std(all_edges):.2f}")
 
         for agent in self.env.agents:
             agent.opp_agent_handles = agent.cur_opp_agent_handles

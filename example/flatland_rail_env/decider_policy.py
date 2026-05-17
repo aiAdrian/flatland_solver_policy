@@ -16,6 +16,12 @@ Implements the architecture described in
 * Auxiliary BCE loss on a 1-step deadlock label gives Deadlock + Comm a
   direct learning signal beyond PPO.
 
+⚠️ NOTE: This module uses HierarchicalRoutesObservation (NOT DecisionPointObservation).
+         The feature indices here (5, 11, 17, 22, 26, 42, 46, 64) correspond to
+         HierarchicalRoutesObservation output, not DecisionPointObservation (which is 15D).
+         Only activate this policy with --policy_mode=decider if the observation builder
+         provides HierarchicalRoutesObservation.
+
 Compatible with the project's `Policy` API (see policy/policy.py):
     reset(env), start_episode(train), start_step(train),
     act(handle, state, eps), step(handle, state, action, reward, next_state, done),

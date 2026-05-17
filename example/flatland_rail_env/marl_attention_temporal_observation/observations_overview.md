@@ -174,21 +174,29 @@ Interpretation:
 Aktuelle Groesse: `OBS_SIZE = 155`
 
 Bloecke:
-- `[0:35]` Basiskontext und zusammengefasste Statistik
-  - decision/switch/merge Hinweise
-  - local deadlock
-  - state/action memory
-  - priority/cell/transition coding
-  - tree summary (mean/max deadlock, conflict density, branching)
-- `[35:155]` serialisierte Baumknoten
+- `[0:22]` Base-Block (minimal, stark maskiert)
+  - Aktiv bleiben nur agenteninterne Memory-Signale:
+    - `[6:12]` Train-State One-Hot
+    - `[13]` Priority-Rank
+  - Alle anderen Base-Kanaele in `[0:22]` werden auf `0` gesetzt.
+  - Ziel: keine Topologie-/Konflikt-/Deadlock-Information mehr im Base-Block,
+    wenn diese aus `tree_payload.nodes/edges` gelernt werden kann.
+- `[22:35]` aktuell ungenutzt / `0` (reserviert fuer Kompatibilitaet)
+- `[35:155]` serialisierte Baumknoten (trainierbarer Hauptkanal)
   - max. 15 Knoten
   - je Knoten 8 Features
 
 Formal:
+- `BASE_OBS_SIZE = 22`
 - `MAX_NODES = 15`
 - `NODE_DIM = 8`
 - `15 * 8 = 120`
 - `35 + 120 = 155`
+
+Interpretation:
+- Base ist absichtlich minimal und traegt nur interne Agenten-Zustandsinformation.
+- Struktur, Konflikte und Routing-Signale liegen im Tree-Kanal und sollen dort
+  end-to-end gelernt werden.
 
 ## 7. tree_payload Schema (fuer lernbare Tree-Encoder)
 

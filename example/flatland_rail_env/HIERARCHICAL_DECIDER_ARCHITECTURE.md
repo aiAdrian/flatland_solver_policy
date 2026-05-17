@@ -225,7 +225,7 @@ nur die **innere Architektur** (Specialists + Decider) ist neu.
   │  ┌────────────────────┐   ┌────────────────────┐  ┌─────────────────┐  │
   │  │ DecisionPointObs   │   │ Route-Enumerator   │  │ Sparse-Selector │  │
   │  │ (Switch-Logik)     │   │ (max 4 Routen)     │  │ K=4 Nachbarn    │  │
-    │  │ → 66D base         │   │ → 4×6D neighbors   │  │ + Klassen       │  │
+    │  │ → 24D base         │   │ → 4×6D neighbors   │  │ + Klassen       │  │
   │  └────────┬───────────┘   └─────────┬──────────┘  └────────┬────────┘  │
   └───────────┼─────────────────────────┼──────────────────────┼───────────┘
               │                         │                      │
@@ -445,7 +445,7 @@ Critic-Loss (V vs Returns)
 
 | Pfad | Quelle | Ziel | Inhalt |
 |---|---|---|---|
-| **Lokale Obs** | Flatland-Env | Specialists | 66D base + 4×6D neighbors |
+| **Lokale Obs** | Flatland-Env | Specialists | 24D base + 4×6D neighbors |
 | **Self-History** | Eigene letzte Obs | LSTM → Specialists | Bewegungs-Trends |
 | **Cross-Agent (t-1)** | Comm-Buffer | CommSpecialist | K=4 × 3 × 16D Nachrichten |
 | **Action** | Decider | Flatland-Env | 5-way action |
@@ -528,8 +528,8 @@ Die Netzwerk-Gewichte θ haben **keine Dimension, die von N abhängt**:
 
 | Komponente | Input-Shape | N drin? |
 |---|---|---|
-| Specialists (Routing/Merging/Deadlock) | `[batch, 66D]` + `[batch, 4×6D]` (Nachbarn) | ❌ |
-| LSTM | `[batch, T, 66D]` (eigene Historie) | ❌ |
+| Specialists (Routing/Merging/Deadlock) | `[batch, 24D]` + `[batch, 4×6D]` (Nachbarn) | ❌ |
+| LSTM | `[batch, T, 24D]` (eigene Historie) | ❌ |
 | CommSpecialist | `[batch, K=4, 16D]` | ❌ **K ist fix**, nicht N |
 | Decider (MLP) | `[batch, 162D]` | ❌ |
 
@@ -654,13 +654,21 @@ Update 07.05.2026
 # =============================================================================
 # 📊 OBSERVATION FEATURES DOCUMENTATION
 # =============================================================================
+#
+# HINWEIS (aktualisiert): Die darunter stehende lange 66D-Auflistung ist
+# historisch und gilt nicht mehr fuer die aktive MAPPO-Pipeline.
+# Der gueltige Live-Stand ist:
+# - DecisionPointObservation: 24D Basisvektor (Indices 0..23)
+# - HierarchicalRoutesObservation: 48D (24D Basis + 4x6D Neighbor-Block)
+# - Kanonische Feature-Definition: DecisionPointObservation.BASE_FEATURE_SPECS
+#
 # 
-# Das MARL-Modell erhält für jeden Agenten eine 90D Observation pro Zeitschritt,
+# Das MARL-Modell erhält für jeden Agenten eine 48D Observation pro Zeitschritt,
 # die in 3 zeitliche Frames gepuffert wird (TEMPORAL_WINDOW = 3).
 # Der Agent sieht somit die letzten 3 Timesteps, um Bewegungen & Intentions zu erkennen.
 #
 # ═══════════════════════════════════════════════════════════════════════════
-# 1. BASE OBSERVATION (66D) - DecisionPointObservation
+# 1. BASE OBSERVATION (24D) - DecisionPointObservation
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # [0] DECISION TYPE (1D) - normalized to [0, 1]
@@ -781,7 +789,7 @@ Update 07.05.2026
 #   Frame 2: aktueller Step
 #
 # VELOCITY FEATURES (EMERGENT, nicht explizit berechnet):
-#   Der LSTM-Encoder SIEHT NUR die 3 rohen 90D Observation-Vektoren (obs_t-2, obs_t-1, obs_t).
+#   Der LSTM-Encoder SIEHT NUR die 3 rohen 48D Observation-Vektoren (obs_t-2, obs_t-1, obs_t).
 #   Diese werden zuerst in 128D Embeddings projiziert [obs_encoder: Linear→LN→LeakyReLU].
 #   Der LSTM verarbeitet dann: emb_t-2 → emb_t-1 → emb_t (3×128D Sequenz)
 #   KEINE expliziten Deltas! Der LSTM muss selbst lernen, dass:
@@ -831,7 +839,7 @@ Update 07.05.2026
 #    • Impliziter Action-Konsistenz-Druck
 #
 # ✅ TREE PAYLOAD (Trainierbarer Strukturpfad):
-#    • Variabler lokaler Suchbaum bleibt zusaetzlich zu den 90D Features erhalten
+#    • Variabler lokaler Suchbaum bleibt zusaetzlich zu den 48D Features erhalten
 #    • Pro Edge stehen jetzt Ziel-/Distance-Map-Signale zur Verfuegung
 #    • Pro Edge ist die relative Aktion jetzt auch explizit encodiert: `action_left`, `action_forward`, `action_right`
 #    • Beispiele: `src_dist_to_target`, `dst_dist_to_target`, `delta_from_root`, `improves_over_current`, `target_on_edge`

@@ -1,4 +1,6 @@
 # =============================================================================
+# pyright: reportMissingImports=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportIncompatibleMethodOverride=false, reportCallIssue=false, reportAssignmentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownParameterType=false
+
 # References used in this file (directed-maze MARL on Flatland-RL,
 # deadlock avoidance, action masking, safety shielding).
 # -----------------------------------------------------------------------------
@@ -60,9 +62,10 @@
 #        python marl_attention_temporal.py --train --DEBUG
 # =============================================================================
 
-from typing import Callable, Optional, List, Union, Dict
+from typing import Callable, Optional, List, Union
 import os
 import sys
+import inspect
 import argparse
 import numpy as np
 import torch
@@ -75,25 +78,24 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from flatland.envs.rail_env import RailEnvActions
-from flatland.core.grid.grid4_utils import get_new_position
-from flatland.envs.agent_utils import EnvAgent
-from flatland.envs.step_utils.states import TrainState
-from flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser
-from flatland.envs.fast_methods import fast_count_nonzero, fast_argmax
-from environment.environment import Environment
-from example.flatland_rail_env.flatland_rail_env_persister import RailEnvironmentPersistable
-from policy.learning_policy.learning_policy import LearningPolicy
-from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer
-from solver.flatland.flatland_solver import FlatlandSolver
-from policy.policy import Policy
-from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import DeadLockAvoidancePolicy
-from utils.training_evaluation_pipeline import create_random_policy
-from marl_attention_temporal_mappo import MARL_ATTENTION_TEMPORAL_PPOPolicy, MARL_ATTENTION_TEMPORAL_MAPPO_Param
-from marl_attention_temporal_observation.temporal_multi_agent_observation import TemporalMultiAgentObservation
-from marl_attention_temporal_observation.hierarchical_routes_observation import HierarchicalRoutesObservation
-from marl_attention_temporal_observation.decision_point_utils import DecisionPointUtils
-from decider_policy import DeciderPPOPolicy
+from flatland.envs.rail_env import RailEnvActions  # noqa: E402
+from flatland.core.grid.grid4_utils import get_new_position  # noqa: E402
+from flatland.envs.agent_utils import EnvAgent  # noqa: E402
+from flatland.envs.step_utils.states import TrainState  # noqa: E402
+from flatland_railway_extension.RailroadSwitchAnalyser import RailroadSwitchAnalyser  # noqa: E402
+from flatland.envs.fast_methods import fast_count_nonzero, fast_argmax  # noqa: E402
+from environment.environment import Environment  # noqa: E402
+from example.flatland_rail_env.flatland_rail_env_persister import RailEnvironmentPersistable  # noqa: E402
+from policy.learning_policy.learning_policy import LearningPolicy  # noqa: E402
+from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer  # noqa: E402
+from solver.flatland.flatland_solver import FlatlandSolver  # noqa: E402
+from policy.policy import Policy  # noqa: E402
+from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_avoidance_policy import DeadLockAvoidancePolicy  # noqa: E402
+from utils.training_evaluation_pipeline import create_random_policy  # noqa: E402
+from marl_attention_temporal_mappo import MARL_ATTENTION_TEMPORAL_PPOPolicy, MARL_ATTENTION_TEMPORAL_MAPPO_Param  # noqa: E402
+from marl_attention_temporal_observation.temporal_multi_agent_observation import TemporalMultiAgentObservation  # noqa: E402
+from marl_attention_temporal_observation.hierarchical_routes_observation import HierarchicalRoutesObservation  # noqa: E402
+from decider_policy import DeciderPPOPolicy  # noqa: E402
 
 # Runtime/device config.
 # CPU-first default: this workload contains many small Python-side operations
@@ -109,20 +111,14 @@ def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None:
         return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
+    return int(value)
 
 
 def _env_float(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None:
         return default
-    try:
-        return float(value)
-    except ValueError:
-        return default
+    return float(value)
 
 
 class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
@@ -216,28 +212,27 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
             return 'SWITCH'
         
         # Check next cell (one forward)
-        try:
-            next_pos = get_new_position(agent.position, agent.direction)
-            next_dir = fast_argmax(transitions)
-            next_transitions = raw_env.rail.get_transitions(*next_pos, next_dir)
-            next_num_transitions = fast_count_nonzero(next_transitions)
-            opp_dir_options = 1
-            for nd in range(4):
-                if nd != next_dir:
-                    ntrans = raw_env.rail.get_transitions(*next_pos, nd)
-                    opp_dir_options = max(opp_dir_options, fast_count_nonzero(ntrans))
-            if next_num_transitions == 1:
-                if opp_dir_options > 1:
-                    # Next cell has choices (merge point ahead)
-                    return 'MERGING'
-                else:
-                    # Next cell is also forward-only
-                    return 'FORWARD_ONLY'
-            elif next_num_transitions > 1:
-                # Next cell is a switch/merge area with alternatives.
+        next_pos = get_new_position(agent.position, agent.direction)
+        if next_pos[0] < 0 or next_pos[0] >= raw_env.height or next_pos[1] < 0 or next_pos[1] >= raw_env.width:
+            return 'FORWARD_ONLY'
+        next_dir = fast_argmax(transitions)
+        next_transitions = raw_env.rail.get_transitions(*next_pos, next_dir)
+        next_num_transitions = fast_count_nonzero(next_transitions)
+        opp_dir_options = 1
+        for nd in range(4):
+            if nd != next_dir:
+                ntrans = raw_env.rail.get_transitions(*next_pos, nd)
+                opp_dir_options = max(opp_dir_options, fast_count_nonzero(ntrans))
+        if next_num_transitions == 1:
+            if opp_dir_options > 1:
+                # Next cell has choices (merge point ahead)
                 return 'MERGING'
-        except Exception:
-            pass
+            else:
+                # Next cell is also forward-only
+                return 'FORWARD_ONLY'
+        elif next_num_transitions > 1:
+            # Next cell is a switch/merge area with alternatives.
+            return 'MERGING'
         
         # Default fallback
         return 'FORWARD_ONLY'
@@ -319,33 +314,30 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
             if move_actions.size > 0:
                 return int(np.random.choice(move_actions))
             return int(np.random.choice(legal_actions))
-        try:
-            with torch.no_grad():
-                emb = self.encoder_actor.forward_agent(state, handle)
-                logits = self.actor_critic_model.actor(emb.unsqueeze(0)).squeeze(0)
-                mask_t = torch.from_numpy(mask).to(logits.device)
-                # Standard masking (Huang & Ontañón 2022): set illegal logits
-                # to a large negative number BEFORE softmax.
-                logits = logits.masked_fill(mask_t < 0.5, -1e9)
-                # At decision cells, damp idle actions if at least one movement
-                # action is legal. This keeps DO_NOTHING/STOP available but
-                # reduces their over-selection in sparse-switch layouts.
-                cell_type = self._classify_cell_type(agent, self._env.raw_env)
-                if cell_type in ('MERGING', 'SWITCH'):
-                    has_move = bool(
-                        mask[RailEnvActions.MOVE_LEFT] > 0.5
-                        or mask[RailEnvActions.MOVE_FORWARD] > 0.5
-                        or mask[RailEnvActions.MOVE_RIGHT] > 0.5
-                    )
-                    if has_move:
-                        idle_pen = float(getattr(self, 'idle_logit_penalty', 1.25))
-                        stop_pen = float(getattr(self, 'stop_logit_penalty', 0.80))
-                        logits[RailEnvActions.DO_NOTHING] -= idle_pen
-                        logits[RailEnvActions.STOP_MOVING] -= stop_pen
-                action = Categorical(logits=logits).sample().item()
-            return int(action)
-        except Exception:
-            return int(np.random.choice(legal_actions))
+        with torch.no_grad():
+            emb = self.encoder_actor.forward_agent(state, handle)
+            logits = self.actor_critic_model.actor(emb.unsqueeze(0)).squeeze(0)
+            mask_t = torch.from_numpy(mask).to(logits.device)
+            # Standard masking (Huang & Ontañón 2022): set illegal logits
+            # to a large negative number BEFORE softmax.
+            logits = logits.masked_fill(mask_t < 0.5, -1e9)
+            # At decision cells, damp idle actions if at least one movement
+            # action is legal. This keeps DO_NOTHING/STOP available but
+            # reduces their over-selection in sparse-switch layouts.
+            cell_type = self._classify_cell_type(agent, self._env.raw_env)
+            if cell_type in ('MERGING', 'SWITCH'):
+                has_move = bool(
+                    mask[RailEnvActions.MOVE_LEFT] > 0.5
+                    or mask[RailEnvActions.MOVE_FORWARD] > 0.5
+                    or mask[RailEnvActions.MOVE_RIGHT] > 0.5
+                )
+                if has_move:
+                    idle_pen = float(getattr(self, 'idle_logit_penalty', 1.25))
+                    stop_pen = float(getattr(self, 'stop_logit_penalty', 0.80))
+                    logits[RailEnvActions.DO_NOTHING] -= idle_pen
+                    logits[RailEnvActions.STOP_MOVING] -= stop_pen
+            action = Categorical(logits=logits).sample().item()
+        return int(action)
 
     def act(self, handle: int, state, eps=0.):
         agent: EnvAgent = self._env.raw_env.agents[handle]
@@ -366,10 +358,6 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         if cell_type == 'DONE':
             return RailEnvActions.DO_NOTHING
         
-        # OUTSIDE: deterministic spawn behavior (no policy decision).
-        if cell_type == 'OUTSIDE':
-            return RailEnvActions.MOVE_FORWARD
-
         # MERGING / SWITCH: apply policy (only true decision points).
         # These are the only meaningful decision points where the RL policy
         # should contribute to credit assignment and learning.
@@ -406,15 +394,15 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         done_rate = float(done_mean)
 
         base_floor = max(float(min_eps), float(self._base_decision_eps_floor))
-        severe_stall = (done_rate < 0.10 and deadlock_rate > 0.65)
-        mild_stall = (done_rate < 0.16 and deadlock_rate > 0.50)
+        severe_stall = (done_rate < 0.14 and deadlock_rate > 0.60)
+        mild_stall = (done_rate < 0.22 and deadlock_rate > 0.45)
 
         if severe_stall:
-            target_floor = max(base_floor, 0.18)
-            target_max_eps_random = max(float(self._base_max_eps_random), 0.24)
+            target_floor = max(base_floor, 0.24)
+            target_max_eps_random = max(float(self._base_max_eps_random), 0.32)
         elif mild_stall:
-            target_floor = max(base_floor, 0.14)
-            target_max_eps_random = max(float(self._base_max_eps_random), 0.20)
+            target_floor = max(base_floor, 0.18)
+            target_max_eps_random = max(float(self._base_max_eps_random), 0.26)
         else:
             target_floor = base_floor
             target_max_eps_random = float(self._base_max_eps_random)
@@ -498,10 +486,11 @@ if INCLUDE_5_AGENTS_IN_FINAL:
     CURRICULUM_PHASES[-1]['episodes'] = 10000
 
 # Toggle: when True, the temporal wrapper uses HierarchicalRoutesObservation
-# (90D = 66 base + 24 sparse-neighbor block) as base. The decider policy expects
-# this. The legacy 66D DecisionPointObservation works too, but the decider
+# (48D = 24 base + 24 sparse-neighbor block) as base. The decider policy expects
+# this. The legacy larger DecisionPointObservation versions are no longer active;
+# current base contract is 24D.
 # performs best with the extended layout.
-USE_HIERARCHICAL_OBS = True
+USE_HIERARCHICAL_OBS = False
 
 def create_temporal_obs_builder_object(
     debug: bool = False,
@@ -524,7 +513,19 @@ def create_temporal_obs_builder_object(
     deadlock_max_states: int = LOCAL_TREE_DEADLOCK_MAX_STATES,
     clip_tree_features: str = LOCAL_TREE_CLIP_FEATURES,
 ):
-    """Factory for TemporalMultiAgentObservation"""
+    """Build TemporalMultiAgentObservation with strict 24D-base + raw-tree contract.
+
+    Contract used by the MAPPO encoder pipeline:
+    - Base observation vector: fixed 24D from DecisionPointObservation.
+    - Tree context: provided only via raw payload (nodes/edges/seen_agents),
+      not serialized into the base vector.
+    - Opponents: supplied through seen_agents-based temporal wrapper selection.
+
+    The function applies CLI tree-search parameters directly to the underlying
+    base observation builder and returns a temporal wrapper with window size
+    TEMPORAL_WINDOW.
+    """
+
     def _apply_tree_search_cfg(base_obs):
         if hasattr(base_obs, 'search_depth'):
             base_obs.search_depth = max(1, int(search_depth))
@@ -563,38 +564,33 @@ def create_temporal_obs_builder_object(
         if hasattr(base_obs, 'local_tree_clip_features'):
             base_obs.local_tree_clip_features = str(clip_tree_features).lower() == 'on'
 
+    def _ctor_accepts_kwarg(cls, kwarg: str) -> bool:
+        return kwarg in inspect.signature(cls.__init__).parameters
+
+    def _build_temporal_obs(base_obs=None):
+        kwargs = {'temporal_window': TEMPORAL_WINDOW}
+        if base_obs is not None:
+            kwargs['base_obs'] = base_obs
+        if _ctor_accepts_kwarg(TemporalMultiAgentObservation, 'debug'):
+            kwargs['debug'] = debug
+        return TemporalMultiAgentObservation(**kwargs)
+
     if USE_HIERARCHICAL_OBS:
-        try:
-            base = HierarchicalRoutesObservation(debug=debug, search_depth=search_depth)
-        except TypeError:
-            base = HierarchicalRoutesObservation()
-            if hasattr(base, 'search_depth'):
-                base.search_depth = max(1, int(search_depth))
+        hr_kwargs = {}
+        if _ctor_accepts_kwarg(HierarchicalRoutesObservation, 'debug'):
+            hr_kwargs['debug'] = debug
+        if _ctor_accepts_kwarg(HierarchicalRoutesObservation, 'search_depth'):
+            hr_kwargs['search_depth'] = search_depth
+        base = HierarchicalRoutesObservation(**hr_kwargs)
+        if not hr_kwargs and hasattr(base, 'search_depth'):
+            base.search_depth = max(1, int(search_depth))
         _apply_tree_search_cfg(base)
-        try:
-            return TemporalMultiAgentObservation(
-                temporal_window=TEMPORAL_WINDOW,
-                base_obs=base,
-                debug=debug,
-            )
-        except TypeError:
-            return TemporalMultiAgentObservation(
-                temporal_window=TEMPORAL_WINDOW,
-                base_obs=base,
-            )
-    try:
-        obs = TemporalMultiAgentObservation(
-            temporal_window=TEMPORAL_WINDOW,
-            debug=debug,
-        )
-        if hasattr(obs, 'base_obs'):
-            _apply_tree_search_cfg(obs.base_obs)
-        return obs
-    except TypeError:
-        obs = TemporalMultiAgentObservation(temporal_window=TEMPORAL_WINDOW)
-        if hasattr(obs, 'base_obs'):
-            _apply_tree_search_cfg(obs.base_obs)
-        return obs
+        return _build_temporal_obs(base_obs=base)
+
+    obs = _build_temporal_obs(base_obs=None)
+    if hasattr(obs, 'base_obs'):
+        _apply_tree_search_cfg(obs.base_obs)
+    return obs
 
 
 def create_decider_agent(observation_space: int, action_space: int, eps: float = 0.0) -> LearningPolicy:
@@ -615,9 +611,8 @@ def create_decider_agent(observation_space: int, action_space: int, eps: float =
         k_epochs=1,
         batch_size=512,
         max_episodes_in_memory=20,
-        # Conservative entropy pressure to keep exploration while reducing
-        # destructive policy oscillations after BC warm-start.
-        weight_entropy=0.04,
+        # Increased entropy pressure for better exploration (done-rate too low at 0.095)
+        weight_entropy=0.06,
         weight_value=0.5,
         # Keep auxiliary signal active but avoid overpowering PPO objective.
         weight_aux_dl=0.035,
@@ -626,7 +621,7 @@ def create_decider_agent(observation_space: int, action_space: int, eps: float =
         reward_scale=0.12,
         aux_pos_weight=4.0,
         target_kl=0.04,
-        max_eps_random=0.0,
+        max_eps_random=0.02,
         clear_buffer_after_update=True,
     )
     policy.eps_smoothing = eps  # Set epsilon floor
@@ -664,7 +659,7 @@ def create_ma_ppo_agent(observation_space: int, action_space: int, eps: float = 
     """
     Creates PPO Policy with Temporal Transformer Encoder
     
-    observation_space: temporal observation size (66D DecisionPoint or 90D HierarchicalRoutes)
+    observation_space: temporal observation size (24D DecisionPoint or 48D HierarchicalRoutes)
     eps: Epsilon floor (0.0-1.0)
     optimizer_mode: 'single' = consolidated optimizer, 'multiple' = 4 optimizers with sync decay
     """
@@ -706,7 +701,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     """
     Creates  PPO Policy with Temporal Transformer Encoder
     
-    observation_space: temporal observation size (66D DecisionPoint or 90D HierarchicalRoutes)
+    observation_space: temporal observation size (24D DecisionPoint or 48D HierarchicalRoutes)
     eps: Epsilon floor (0.0-1.0)
     optimizer_mode: 'single' = consolidated optimizer, 'multiple' = 4 optimizers with sync decay
     """
@@ -727,12 +722,12 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         train_frequency=10,
         optimizer_mode=optimizer_mode
     )
-    # Deadlock-focused tuning (v3):
-    # - keep the critic under stronger pressure
-    # - widen decision-point exploration when done-rate stalls
-    # - discourage forward overuse without suppressing wait/stop entirely
+    # Offensive baseline (default):
+    # - prioritize progress/forward flow
+    # - keep stronger decision-point exploration to avoid deadlock plateaus
+    # - reduce forward-only collapse while preserving throughput bias
     policy.surrogate_eps_clip = 0.18
-    policy.weight_entropy = 0.090
+    policy.weight_entropy = 0.060
     policy.reward_scale = 0.09
     policy.weight_loss = 1.60
     policy.stability_guard_start_episode = 1200
@@ -749,18 +744,24 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.hard_spike_streak_limit = 4
     policy.actor_lr_min_factor = 0.70
     policy.actor_lr_decay_on_instability = 0.88
-    policy.max_eps_random = 0.20
-    policy.decision_eps_floor = 0.14
+    policy.max_eps_random = 0.14
+    policy.decision_eps_floor = 0.08
     policy.use_decision_eps_floor = True
-    # Encourage non-forward alternatives at conflict points.
-    policy.weight_action_diversity = 0.28
-    policy.action_diversity_gate_threshold = 0.35
-    policy.forward_prob_soft_max = 0.54
-    policy.lr_prob_soft_min = 0.16
-    policy.idle_prob_soft_max = 0.28
-    policy.idle_logit_penalty = 1.05
-    policy.stop_logit_penalty = 0.35
+    # Optional runtime overrides for controlled A/B experiments.
+    if os.getenv('FLATLAND_DECISION_EPS_FLOOR') is not None:
+        policy.decision_eps_floor = float(np.clip(float(os.getenv('FLATLAND_DECISION_EPS_FLOOR', '0.08')), 0.0, 1.0))
+    if os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR') is not None:
+        policy.use_decision_eps_floor = str(os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+    # Keep some turning signal and activate diversity shaping earlier at decision points.
+    policy.weight_action_diversity = 0.18
+    policy.action_diversity_gate_threshold = 0.30
+    policy.forward_prob_soft_max = 0.76
+    policy.lr_prob_soft_min = 0.08
+    policy.idle_prob_soft_max = 0.10
+    policy.idle_logit_penalty = 1.60
+    policy.stop_logit_penalty = 1.10
     policy.eps_smoothing = eps  # Set epsilon floor
+    print('   - profile: OFFENSIVE_BASELINE_V2 (anti-deadlock tuned)')
     return policy
 
 
@@ -843,6 +844,14 @@ LEGACY EXAMPLES (still supported):
   python marl_attention_temporal.py --train --fresh-start
   python marl_attention_temporal.py --train --continue --eps 0.1
   python marl_attention_temporal.py --eval
+    # Default (robust, balanced speed)
+    python marl_attention_temporal.py final --eps 0.0
+
+    # CPU-optimized (~50% faster) 
+    python marl_attention_temporal.py final --eps 0.0 --encoder-shared
+
+    # Maximum speed (~70% faster, temporal-only)
+    python marl_attention_temporal.py final --eps 0.0 --encoder-shared --no-spatial-attention
 """
     )
     parser.add_argument(
@@ -888,10 +897,10 @@ LEGACY EXAMPLES (still supported):
     parser.add_argument(
         '--min_eps',
         type=float,
-        default=0.01,
+        default=None,
         metavar='MIN_EPS_VALUE',
         dest='min_eps',
-        help='Minimum exploration floor for epsilon-greedy in [0.0, 1.0] (default: 0.01)'
+        help='Minimum exploration floor for epsilon-greedy in [0.0, 1.0] (default: 0.01; with --eps 0.0 and no --min_eps, floor is disabled)'
     )
 
     parser.add_argument(
@@ -1117,7 +1126,8 @@ LEGACY EXAMPLES (still supported):
     elif args.legacy_train and mode == 'eval':
         mode = 'new'
     eps = args.eps
-    min_eps = args.min_eps
+    min_eps_user_set = args.min_eps is not None
+    min_eps = float(args.min_eps) if min_eps_user_set else 0.01
     optimizer_mode = args.optimizer_mode.upper()
     rendering = bool(args.rendering)
     policy_mode = args.policy_mode.strip().lower()
@@ -1188,8 +1198,14 @@ LEGACY EXAMPLES (still supported):
     if not (0.0 <= min_eps <= 1.0):
         print(f"ERROR: --min_eps must be between 0.0 and 1.0, got {min_eps}")
         sys.exit(1)
-    if do_training and eps <= 0.0:
-        print("[Warn] eps=0.0 in training: exploration is disabled by user setting.")
+    if do_training and eps <= 0.0 and not min_eps_user_set:
+        min_eps = 0.03
+        print("[Info] eps=0.0 in training and --min_eps not set: using rescue epsilon floor (min_eps=0.03).")
+    elif do_training and eps <= 0.0:
+        if min_eps <= 0.0:
+            print("[Warn] eps=0.0 and min_eps=0.0 in training: global epsilon exploration is disabled.")
+        else:
+            print(f"[Info] eps=0.0 in training: using min_eps floor={min_eps:.4f} for global exploration.")
     if not (1 <= search_depth <= 12):
         print(f"ERROR: --search_depth must be between 1 and 12, got {search_depth}")
         sys.exit(1)
@@ -1238,8 +1254,8 @@ LEGACY EXAMPLES (still supported):
     if not (0 <= tree_adaptive_depth_bonus <= 16):
         print(f"ERROR: --tree_adaptive_depth_bonus must be between 0 and 16, got {tree_adaptive_depth_bonus}")
         sys.exit(1)
-    if not (1 <= tree_deadlock_probe_depth <= 12):
-        print(f"ERROR: --tree_deadlock_probe_depth must be between 1 and 12, got {tree_deadlock_probe_depth}")
+    if not (1 <= tree_deadlock_probe_depth <= 32):
+        print(f"ERROR: --tree_deadlock_probe_depth must be between 1 and 32, got {tree_deadlock_probe_depth}")
         sys.exit(1)
     if not (8 <= tree_deadlock_max_states <= 512):
         print(f"ERROR: --tree_deadlock_max_states must be between 8 and 512, got {tree_deadlock_max_states}")
@@ -1247,7 +1263,9 @@ LEGACY EXAMPLES (still supported):
     if tree_clip_features not in ('on', 'off'):
         print(f"ERROR: --tree_clip_features must be one of ['on', 'off'], got {tree_clip_features}")
         sys.exit(1)
-    min_eps = min(eps, min_eps)  # Use the lower of the two for safety
+    # Honor the configured minimum exploration floor even when --eps is 0.0.
+    if do_training and min_eps > eps:
+        eps = float(min_eps)
 
     print(
         f"\n[Config] mode={mode}, eps={eps:.4f}, optimizer_mode={optimizer_mode}, "
@@ -1438,3 +1456,4 @@ LEGACY EXAMPLES (still supported):
                 print("⚠️ No last_checkpoint found; falling back to default policy path.")
                 solver.load_policy()
             solver.perform_evaluation(max_episodes=1000)
+            

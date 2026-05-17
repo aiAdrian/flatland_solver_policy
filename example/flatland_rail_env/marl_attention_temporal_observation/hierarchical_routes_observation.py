@@ -8,24 +8,21 @@ Designed to feed the Decider policy with `Specialist` sub-modules
 (see HIERARCHICAL_DECIDER_ARCHITECTURE.md, sections 4-5).
 
 Output per `get(handle)`:
-    (feature_vector_90D, opp_handles_list)
+    (feature_vector_48D, opp_handles_list)
 
-Layout of the 90D vector:
+Layout of the 48D vector:
 
-    [ 0 - 65]  Base 66D from DecisionPointObservation (unchanged):
-               - decision_type, shortest-path-hint, 3 branch blocks (route info!),
-                 2 merge blocks, state/action one-hots, local deadlock,
-                 coordination soft-signals.
-    [66 - 89]  Sparse neighbor block: K=4 classified neighbors x 6D each.
+    [ 0 - 23]  Base 24D from DecisionPointObservation.
+    [24 - 47]  Sparse neighbor block: K=4 classified neighbors x 6D each.
 
 Per-neighbor 6D layout:
     [exists, class_oncoming, class_merging, class_local, distance_norm, ttc_norm]
 
 Notes
 -----
-* Routes are already represented in base[6-29] (3 branches x 8D). We do NOT
-    duplicate them here - Flatland has at most 3 outgoing transitions at a
-    decision point. Specialists read base[6-29] directly.
+* Core routing/deadlock context is represented in the 24D base observation
+    (path/delta/state/priority/switch/SP/deadlock features). The neighbor block
+    adds sparse cross-agent context without ids/positions.
 * The list `opp_handles_list` is the SAME K=4 ordering (after relevance sort).
   The Decider policy uses it to look up the K=4 most relevant agents'
   `global_metric` vectors from its CommBuffer.
@@ -86,8 +83,14 @@ class HierarchicalRoutesObservation(DecisionPointObservation):
     # Main hook
     # ------------------------------------------------------------------
     def get(self, handle: int = 0) -> Tuple[np.ndarray, List[int]]:
-        # 1) Base features vom Parent holen (vollständiges 66D-Layout)
-        base_features, opp_handles = super().get(handle)
+        # 1) Base features vom Parent holen (vollständiges 24D-Layout)
+        parent_out = super().get(handle)
+        if isinstance(parent_out, (list, tuple)) and len(parent_out) >= 2:
+            base_features = parent_out[0]
+            opp_handles = parent_out[1]
+        else:
+            base_features = parent_out
+            opp_handles = []
         feat = np.zeros(self.OBS_SIZE, dtype=np.float32)
         cap = min(len(base_features), self.OBS_SIZE - NEIGHBOR_TOTAL)
         feat[:cap] = base_features[:cap]
