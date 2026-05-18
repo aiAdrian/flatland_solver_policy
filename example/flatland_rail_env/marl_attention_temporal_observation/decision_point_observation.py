@@ -427,6 +427,8 @@ class DecisionPointObservation(ObservationBuilder):
         nodes = []
         edges = []
         seen_agents = set()
+        # Mapping: node_idx -> (pos, dir)
+        node_pos_dir_map = {}
 
         def node_type(pos, direction, is_root=False):
             transitions = self.env.rail.get_transitions(*pos, direction)
@@ -474,6 +476,7 @@ class DecisionPointObservation(ObservationBuilder):
         })
         node_idx = 0
         node_map = {(tuple(pos), int(direction)): 0}
+        node_pos_dir_map[0] = (tuple(pos), int(direction))
         n_nodes = 1
 
         # DFS-Stack: (pos, dir, from_node_idx, depth)
@@ -496,6 +499,7 @@ class DecisionPointObservation(ObservationBuilder):
                             "type": ntype,
                         })
                         node_map[(tuple(cpos), int(cdir))] = n_nodes
+                        node_pos_dir_map[n_nodes] = (tuple(cpos), int(cdir))
                         dst_idx = n_nodes
                         n_nodes += 1
                     else:
@@ -508,7 +512,7 @@ class DecisionPointObservation(ObservationBuilder):
                     edge_len = 0
                     min_dist = float('inf')
                     target_on_edge = False
-                    p, d = nodes[src_idx]["pos"], nodes[src_idx]["dir"]
+                    p, d = node_pos_dir_map.get(src_idx, (None, None))
                     while (p, d) != (cpos, cdir):
                         transitions = self.env.rail.get_transitions(*p, d)
                         ndir = int(np.argmax(transitions))
@@ -536,10 +540,8 @@ class DecisionPointObservation(ObservationBuilder):
                         p, d = np_pos, ndir
                     # Aktionsfeature bestimmen: -1=left, 0=forward, 1=right, None=unklar
                     action_feature = None
-                    src_node = list(node_map.keys())[src_idx] if src_idx < len(node_map) else None
-                    dst_node = (tuple(cpos), int(cdir))
-                    if src_node is not None:
-                        src_pos, src_dir = src_node
+                    src_pos, src_dir = node_pos_dir_map.get(src_idx, (None, None))
+                    if src_pos is not None and src_dir is not None:
                         # Richtung von src zu erstem Schritt auf Edge
                         if edge_path:
                             first_pos, first_dir = edge_path[0]
