@@ -95,6 +95,7 @@ from utils.training_evaluation_pipeline import create_random_policy  # noqa: E40
 from marl_attention_temporal_mappo import MARL_ATTENTION_TEMPORAL_PPOPolicy, MARL_ATTENTION_TEMPORAL_MAPPO_Param  # noqa: E402
 from marl_attention_temporal_observation.temporal_multi_agent_observation import TemporalMultiAgentObservation  # noqa: E402
 from marl_attention_temporal_observation.hierarchical_routes_observation import HierarchicalRoutesObservation  # noqa: E402
+from marl_attention_temporal_observation.decision_point_utils import DecisionPointUtils  # noqa: E402
 from decider_policy import DeciderPPOPolicy  # noqa: E402
 
 # Runtime/device config.
@@ -121,7 +122,96 @@ def _env_float(name: str, default: float) -> float:
     return float(value)
 
 
+REWARD_STEP_PENALTY = _env_float('FLATLAND_REWARD_STEP_PENALTY', 0.01)
+REWARD_DONE_BONUS = _env_float('FLATLAND_REWARD_DONE_BONUS', 3.0)  # Boosted for stronger positive signal
+REWARD_ALL_DONE_BONUS = _env_float('FLATLAND_REWARD_ALL_DONE_BONUS', 6.0)
+REWARD_DEADLOCK_PENALTY = _env_float('FLATLAND_REWARD_DEADLOCK_PENALTY', 1.0)  # Lowered for less negative bias
+
+
+class FlatlandSparseRewardShaper:
+    """Reward shaping for sparse/deadlock-heavy Flatland training.
+
+    Per step per agent:
+    - step penalty: -step_penalty
+    - done bonus: +done_bonus (once per agent)
+    - all-done bonus: +all_done_bonus (once for each agent when all are done)
+    - deadlock penalty: -deadlock_penalty (for on-map non-done deadlocked agents)
+    """
+
+    def __init__(
+        self,
+        step_penalty: float,
+        done_bonus: float,
+        all_done_bonus: float,
+        deadlock_penalty: float,
+    ):
+        self.step_penalty = float(step_penalty)
+        self.done_bonus = float(done_bonus)
+        self.all_done_bonus = float(all_done_bonus)
+        self.deadlock_penalty = float(deadlock_penalty)
+        self._rewarded_done = {}
+        self._all_done_bonus_given = False
+
+    def _reset_episode_state(self, env: Environment):
+        n_agents = int(len(env.raw_env.agents))
+        self._rewarded_done = {int(a.handle): False for a in env.raw_env.agents}
+        self._all_done_bonus_given = False
+        if len(self._rewarded_done) != n_agents:
+            self._rewarded_done = {idx: False for idx in range(n_agents)}
+
+    @staticmethod
+    def _build_agent_map(env: Environment) -> np.ndarray:
+        raw_env = env.raw_env
+        agent_map = np.zeros((raw_env.height, raw_env.width), dtype=np.int32) - 1
+        for agent in raw_env.agents:
+            if agent.position is not None:
+                agent_map[agent.position] = int(agent.handle)
+        return agent_map
+
+    def __call__(self, reward, terminal, info, env: Environment, actions=None):
+        raw_env = env.raw_env
+        if raw_env._elapsed_steps <= 1 or not self._rewarded_done:
+            self._reset_episode_state(env)
+
+        shaped = dict(reward)
+        agent_map = self._build_agent_map(env)
+        all_agents_done = all(agent.state == TrainState.DONE for agent in raw_env.agents)
+        if raw_env._elapsed_steps < (raw_env._max_episode_steps -5):
+            all_agents_done = False  # Don't give all-done bonus if episode ended due to step limit.    
+
+        for handle in env.get_agent_handles():
+            agent = raw_env.agents[handle]
+            
+            r = 0 
+
+            # +BONUS once when an agent reaches target.
+            if agent.state == TrainState.DONE and not bool(self._rewarded_done.get(handle, False)):
+                r += self.done_bonus
+                self._rewarded_done[handle] = True
+
+            # -PENALTY each step for active deadlocked agents.
+            if agent.state != TrainState.DONE:
+                if agent.position is not None and agent.direction is not None:
+                    if DecisionPointUtils.is_local_deadlock(raw_env, agent, agent_map):
+                        r -= self.deadlock_penalty
+                else:
+                    if agent.state > TrainState.WAITING:
+                        r = -self.step_penalty
+
+            # If all agents are done, grant one-time team bonus to each agent.
+            if all_agents_done and not self._all_done_bonus_given:
+                r += self.all_done_bonus
+
+            shaped[handle] = float(r)
+
+        if all_agents_done and not self._all_done_bonus_given:
+            self._all_done_bonus_given = True
+
+        return shaped
+
+
 class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
+
     def __init__(self,
                  state_size: int,
                  action_size: int,
@@ -130,10 +220,12 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
                  show_progress_bar=True,
                  train_frequency=10,
                  optimizer_mode: str = 'single',
-                 use_deadlock_avoidance_policy: bool = False):
+                 use_deadlock_avoidance_policy: bool = False,
+                 use_action_masking: bool = True):
         # Base Policy.__init__ calls get_name(), so DLA-related attributes must
         # exist before the parent constructor runs.
         self.use_deadlock_avoidance_policy = use_deadlock_avoidance_policy
+        self.use_action_masking = use_action_masking  # A/B: compare masked vs unmasked action selection
         self.deadlock_avoidance_policy: Optional[DeadLockAvoidancePolicy] = None
         super(MARL_ATT_DecisionPointPolicy, self).__init__(
                 state_size,
@@ -162,6 +254,33 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         super(MARL_ATT_DecisionPointPolicy, self).start_step(train)
         if self.use_deadlock_avoidance_policy and self.deadlock_avoidance_policy is not None:
             self.deadlock_avoidance_policy.start_step(train)
+
+    def end_episode(self, train):
+        # Call parent logic
+        super().end_episode(train)
+        # Avoid per-episode I/O overhead; print every N episodes.
+        log_interval = max(1, int(_env_int('FLATLAND_LOG_INTERVAL', 20)))
+        self._episode_log_counter = int(getattr(self, '_episode_log_counter', 0)) + 1
+        if self._episode_log_counter % log_interval != 0:
+            return
+        # --- LOGGING: Action distribution and reward per episode ---
+        import collections
+        action_hist = collections.Counter()
+        reward_hist = []
+        if hasattr(self, 'current_episode_memory'):
+            for handle in range(len(self.current_episode_memory)):
+                transitions = self.current_episode_memory.get_transitions(handle)
+                for t in transitions:
+                    if len(t) > 1:
+                        action_hist[t[1]] += 1
+                    if len(t) > 2:
+                        reward_hist.append(t[2])
+        total = sum(action_hist.values())
+        if total > 0:
+            print("[ActionDist]", {a: f"{c/total:.2%}" for a, c in sorted(action_hist.items())})
+        if reward_hist:
+            import numpy as np
+            print(f"[Reward] mean={np.mean(reward_hist):.3f} min={np.min(reward_hist):.3f} max={np.max(reward_hist):.3f}")
 
     def reset(self, env: Environment):
         self._env = env
@@ -252,15 +371,22 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
     def _legal_action_mask(self, agent: EnvAgent) -> np.ndarray:
         """Return a 0/1 mask of length action_size; 1 = legal."""
         mask = np.zeros(self.action_size, dtype=np.float32)
-        # STOP_MOVING and DO_NOTHING are always legal -- they never derail.
-        mask[RailEnvActions.DO_NOTHING] = 1.0
+
+        if agent.state == TrainState.DONE:
+            mask[RailEnvActions.DO_NOTHING] = 1.0
+            return mask
+
         mask[RailEnvActions.STOP_MOVING] = 1.0
 
         # If agent is not yet on the map, only DO_NOTHING / MOVE_FORWARD make
         # sense (MOVE_FORWARD triggers spawn). LEFT/RIGHT are not legal off-map.
         if not agent.state.is_on_map_state():
+            # STOP_MOVING and DO_NOTHING are always legal -- they never derail.
+            mask[RailEnvActions.DO_NOTHING] = 1.0
             mask[RailEnvActions.MOVE_FORWARD] = 1.0
             return mask
+        else:
+             mask[RailEnvActions.DO_NOTHING] = 0.0
 
         position, direction = self._get_agent_position_and_direction(agent)
         if position is None:
@@ -271,20 +397,17 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         # Map (new_direction relative to current direction) -> RailEnvActions.
         # Flatland convention: forward = same direction;
         # left = (direction - 1) % 4; right = (direction + 1) % 4;
-        # back = (direction + 2) % 4 (only legal at dead-ends).
-        rel_to_action = {
-            direction: RailEnvActions.MOVE_FORWARD,
-            (direction - 1) % 4: RailEnvActions.MOVE_LEFT,
-            (direction + 1) % 4: RailEnvActions.MOVE_RIGHT,
-        }
-        for new_dir in range(4):
-            if transitions[new_dir] and new_dir in rel_to_action:
-                mask[rel_to_action[new_dir]] = 1.0
-
-        # Dead-end (only "back" allowed) -> Flatland encodes this as MOVE_FORWARD.
-        if fast_count_nonzero(transitions) == 1 and \
-                transitions[(direction + 2) % 4] == 1:
+        # back = (direction + 2) % 4 (only legal at dead-ends).      
+        if fast_count_nonzero(transitions) == 1:
             mask[RailEnvActions.MOVE_FORWARD] = 1.0
+        else:
+            if transitions[ (direction - 1) % 4]:
+                mask[RailEnvActions.MOVE_LEFT] = 1.0
+            if transitions[ (direction) % 4]:
+                mask[RailEnvActions.MOVE_FORWARD] = 1.0
+            if transitions[ (direction + 1) % 4]:
+                mask[RailEnvActions.MOVE_RIGHT] = 1.0
+ 
         return mask
 
     def _masked_act(self, handle: int, state, eps: float) -> int:
@@ -305,14 +428,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         if bool(getattr(self, 'use_decision_eps_floor', False)):
             eps_val = max(eps_val, eps_floor)
         if eps_val > 0.0 and np.random.rand() < eps_val:
-            # Prefer movement actions during random exploration to avoid
-            # collapsing into DO_NOTHING/STOP-heavy local minima.
-            move_actions = legal_actions[
-                (legal_actions != RailEnvActions.DO_NOTHING)
-                & (legal_actions != RailEnvActions.STOP_MOVING)
-            ]
-            if move_actions.size > 0:
-                return int(np.random.choice(move_actions))
+            # Pure masked exploration: sample uniformly from legal actions.
             return int(np.random.choice(legal_actions))
         with torch.no_grad():
             emb = self.encoder_actor.forward_agent(state, handle)
@@ -324,18 +440,19 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
             # At decision cells, damp idle actions if at least one movement
             # action is legal. This keeps DO_NOTHING/STOP available but
             # reduces their over-selection in sparse-switch layouts.
-            cell_type = self._classify_cell_type(agent, self._env.raw_env)
-            if cell_type in ('MERGING', 'SWITCH'):
-                has_move = bool(
-                    mask[RailEnvActions.MOVE_LEFT] > 0.5
-                    or mask[RailEnvActions.MOVE_FORWARD] > 0.5
-                    or mask[RailEnvActions.MOVE_RIGHT] > 0.5
-                )
-                if has_move:
-                    idle_pen = float(getattr(self, 'idle_logit_penalty', 1.25))
-                    stop_pen = float(getattr(self, 'stop_logit_penalty', 0.80))
-                    logits[RailEnvActions.DO_NOTHING] -= idle_pen
-                    logits[RailEnvActions.STOP_MOVING] -= stop_pen
+            if False:
+                cell_type = self._classify_cell_type(agent, self._env.raw_env)
+                if cell_type in ('MERGING', 'SWITCH'):
+                    has_move = bool(
+                        mask[RailEnvActions.MOVE_LEFT] > 0.5
+                        or mask[RailEnvActions.MOVE_FORWARD] > 0.5
+                        or mask[RailEnvActions.MOVE_RIGHT] > 0.5
+                    )
+                    if has_move:
+                        idle_pen = float(getattr(self, 'idle_logit_penalty', 1.25))
+                        stop_pen = float(getattr(self, 'stop_logit_penalty', 0.80))
+                        logits[RailEnvActions.DO_NOTHING] -= idle_pen
+                        logits[RailEnvActions.STOP_MOVING] -= stop_pen
             action = Categorical(logits=logits).sample().item()
         return int(action)
 
@@ -361,7 +478,12 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         # MERGING / SWITCH: apply policy (only true decision points).
         # These are the only meaningful decision points where the RL policy
         # should contribute to credit assignment and learning.
-        action = self._masked_act(handle, state, eps)
+        # A/B comparison: use_action_masking toggles between masked (safe rail actions)
+        # and unmasked (full policy freedom). Set FLATLAND_USE_ACTION_MASKING=0 to disable.
+        if self.use_action_masking:
+            action = self._masked_act(handle, state, eps)  # with masking
+        else:
+            action = super(MARL_ATT_DecisionPointPolicy, self).act(handle, state, eps)  # without masking
 
         if self.use_deadlock_avoidance_policy and self.deadlock_avoidance_policy is not None:
             if agent.state.is_on_map_state() and action == RailEnvActions.MOVE_FORWARD:
@@ -720,14 +842,15 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         show_pre_train_debug_msg=False,
         show_progress_bar=True,
         train_frequency=10,
-        optimizer_mode=optimizer_mode
+        optimizer_mode=optimizer_mode,
+        use_action_masking=str(os.getenv('FLATLAND_USE_ACTION_MASKING', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
     )
     # Offensive baseline (default):
     # - prioritize progress/forward flow
     # - keep stronger decision-point exploration to avoid deadlock plateaus
     # - reduce forward-only collapse while preserving throughput bias
     policy.surrogate_eps_clip = 0.18
-    policy.weight_entropy = 0.060
+    policy.weight_entropy = 0.080
     policy.reward_scale = 0.09
     policy.weight_loss = 1.60
     policy.stability_guard_start_episode = 1200
@@ -744,23 +867,24 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.hard_spike_streak_limit = 4
     policy.actor_lr_min_factor = 0.70
     policy.actor_lr_decay_on_instability = 0.88
-    policy.max_eps_random = 0.14
-    policy.decision_eps_floor = 0.08
-    policy.use_decision_eps_floor = True
-    # Optional runtime overrides for controlled A/B experiments.
-    if os.getenv('FLATLAND_DECISION_EPS_FLOOR') is not None:
-        policy.decision_eps_floor = float(np.clip(float(os.getenv('FLATLAND_DECISION_EPS_FLOOR', '0.08')), 0.0, 1.0))
-    if os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR') is not None:
-        policy.use_decision_eps_floor = str(os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+    # Stronger default exploration for deadlock-heavy decision-point regimes.
+    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.18), 0.0, 1.0))
+    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.18), 0.0, 1.0))
+    policy.use_decision_eps_floor = str(os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
     # Keep some turning signal and activate diversity shaping earlier at decision points.
-    policy.weight_action_diversity = 0.18
+    policy.weight_action_diversity = 0.24
     policy.action_diversity_gate_threshold = 0.30
-    policy.forward_prob_soft_max = 0.76
+    policy.forward_prob_soft_max = 0.70
     policy.lr_prob_soft_min = 0.08
     policy.idle_prob_soft_max = 0.10
     policy.idle_logit_penalty = 1.60
     policy.stop_logit_penalty = 1.10
     policy.eps_smoothing = eps  # Set epsilon floor
+    print(
+        f"   - exploration: decision_eps_floor={policy.decision_eps_floor:.3f}, "
+        f"max_eps_random={policy.max_eps_random:.3f}, "
+        f"use_decision_eps_floor={bool(policy.use_decision_eps_floor)}"
+    )
     print('   - profile: OFFENSIVE_BASELINE_V2 (anti-deadlock tuned)')
     return policy
 
@@ -1398,6 +1522,14 @@ LEGACY EXAMPLES (still supported):
             environment,
             policy,
             FlatlandSimpleRenderer(environment) if do_rendering else None
+        )
+        solver.set_reward_shaper(
+            FlatlandSparseRewardShaper(
+                step_penalty=REWARD_STEP_PENALTY,
+                done_bonus=REWARD_DONE_BONUS,
+                all_done_bonus=REWARD_ALL_DONE_BONUS,
+                deadlock_penalty=REWARD_DEADLOCK_PENALTY,
+            )
         )
         latest_ckpt = f"training_output/last_checkpoint/{solver.get_name()}_{solver.policy.get_name()}"
         

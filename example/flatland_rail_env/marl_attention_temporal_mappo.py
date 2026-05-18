@@ -52,14 +52,28 @@ class EpisodeBuffers:
     def push_transition(self, handle, transition):
         transitions = self.get_transitions(handle)
 
-        # 🎯 CRITICAL: Wenn letzter Eintrag bereits done==True, keine neue Transition!
-        # Pro Agent: maximal EINE done==True transition (die letzte)
+        # Keep exactly one terminal transition per agent.
+        # If another done-transition arrives later (e.g., global all-done bonus),
+        # merge its reward into the existing terminal transition instead of dropping it.
         if len(transitions) > 0:
             last_transition = transitions[-1]
             # Struktur: (state, action, reward, next_state, done, aux_deadlock)
             done_flag = last_transition[4]
-            if done_flag:
-                # Agent ist fertig - ignoriere neue Steps
+            if done_flag: 
+                merged_reward = \
+                    float(last_transition[2]) \
+                    + float(transition[2])
+                merged_aux_deadlock = \
+                    float(max(float(last_transition[5]), float(transition[5])))
+                transitions[-1] = (
+                    last_transition[0],
+                    last_transition[1],
+                    merged_reward,
+                    transition[3],
+                    True,
+                    merged_aux_deadlock,
+                )
+                self.memory.update({handle: transitions})
                 return
 
         transitions.append(transition)

@@ -28,7 +28,7 @@ from flatland.envs.fast_methods import fast_argmax, fast_count_nonzero
 
 from marl_attention_temporal_observation.decision_point_utils import DecisionPointUtils
 
-_UNREACHABLE = float("inf")
+_UNREACHABLE = float("inf") 
 
 
 class NodeType(IntEnum):
@@ -869,9 +869,6 @@ class DecisionPointObservation(ObservationBuilder):
         ndir = int(fast_argmax(transitions))
         if not transitions[ndir]:
             return False
-        # "Nur forward" am aktuellen Knoten: kein Links/Rechts-Entscheid mehr möglich.
-        if ndir != direction:
-            return False
         next_pos = get_new_position(pos, ndir)
         if next_pos[0] < 0 or next_pos[0] >= self.env.height or next_pos[1] < 0 or next_pos[1] >= self.env.width:
             return False
@@ -932,9 +929,9 @@ class DecisionPointObservation(ObservationBuilder):
             if transitions[ndir]:
                 npos = get_new_position(pos, ndir)
                 ndist = self._safe_distance(handle, npos, ndir, distance_map)
-                if np.isfinite(current_dist) and np.isfinite(ndist):
+                if not np.isfinite(current_dist) and not np.isfinite(ndist):
                     # Keep progress deltas bounded for stable PPO value scaling.
-                    raw_features[feat_idx] = float(np.clip(float(current_dist - ndist), -1.0, 1.0))
+                    raw_features[feat_idx] = float(current_dist - ndist)
                 else:
                     raw_features[feat_idx] = 0.0
             else:
@@ -980,8 +977,7 @@ class DecisionPointObservation(ObservationBuilder):
 
         raw_features[10] = 1.0 if self._is_pre_merge_one_exit(pos, direction, transitions) else 0.0
         raw_features[11] = 1.0 if self._is_switch_at_current_cell(pos, direction) else 0.0
-        # NOTE: Removed [12]is_started (inverse of [8]st_6) and [13]is_done (duplicate of [7]st_4)
-
+ 
         sp_left, sp_fwd, sp_right = self._shortest_path_action_hint(
             handle=handle,
             pos=pos,
