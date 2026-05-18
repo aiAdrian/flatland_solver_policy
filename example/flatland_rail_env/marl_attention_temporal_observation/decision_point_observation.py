@@ -475,7 +475,6 @@ class DecisionPointObservation(ObservationBuilder):
         nodes.append({
             "type": 0,  # START
         })
-        node_idx = 0
         node_map = {(tuple(pos), int(direction)): 0}
         node_pos_dir_map[0] = (tuple(pos), int(direction))
         n_nodes = 1
@@ -494,7 +493,6 @@ class DecisionPointObservation(ObservationBuilder):
             if depth > max_depth:
                 continue
             transitions = self.env.rail.get_transitions(*cpos, cdir)
-            n_trans = fast_count_nonzero(transitions)
 
             # Branching: Switch oder Pre-Merge?
             # (Startknoten ist schon angelegt)
@@ -520,17 +518,36 @@ class DecisionPointObservation(ObservationBuilder):
                     min_dist = float('inf')
                     target_on_edge = False
                     p, d = node_pos_dir_map.get(src_idx, (None, None))
-                    
-                    # Sicherheitsmechanismus: Max-Schritte für Korridor-Traversierung (128 Schritte)
-                    corridor_steps = 0
-                    max_corridor_steps = 128
-                    
-                    while (p, d) != (cpos, cdir) and corridor_steps < max_corridor_steps:
-                        corridor_steps += 1
+                    max_corridor_steps = max(256, 2 * (self.env.height + self.env.width))
+                    visited_states = set()
+                    corridor_complete = False
+
+                    # Korridor-Regel: nur auf eindeutigen (nicht-branching) Segmenten laufen.
+                    # Sobald Weiche/Pre-Merge/Knoten erreicht wird, wird der Korridor beendet.
+                    while edge_len < max_corridor_steps:
+                        if (p, d) == (cpos, cdir):
+                            corridor_complete = True
+                            break
+
+                        state = (tuple(p), int(d))
+                        if state in visited_states:
+                            break
+                        visited_states.add(state)
+
                         transitions = self.env.rail.get_transitions(*p, d)
-                        ndir = int(np.argmax(transitions))
+                        next_dirs = [ndir for ndir in range(4) if transitions[ndir]]
+
+                        # Sackgasse oder Branching -> kein reiner Korridor.
+                        if len(next_dirs) != 1:
+                            break
+
+                        ndir = int(next_dirs[0])
                         np_pos = get_new_position(p, ndir)
+                        if not (0 <= np_pos[0] < self.env.height and 0 <= np_pos[1] < self.env.width):
+                            break
+
                         edge_path.append((np_pos, ndir))
+
                         # Agenten auf Korridor sammeln
                         if agent_map is not None:
                             aidx = int(agent_map[np_pos[0], np_pos[1]])
@@ -541,49 +558,56 @@ class DecisionPointObservation(ObservationBuilder):
                                     edge_has_same_dir = True
                                 else:
                                     edge_has_other_dir = True
+
                         # Target auf Korridor?
                         if agent_target is not None and tuple(np_pos) == tuple(agent_target):
                             target_on_edge = True
+
                         # Min dist
                         if distance_map is not None:
                             dist = distance_map[handle, np_pos[0], np_pos[1], ndir]
                             if np.isfinite(dist):
                                 min_dist = min(min_dist, dist)
+
                         edge_len += 1
                         p, d = np_pos, ndir
-                    
-                    if corridor_steps >= max_corridor_steps:
-                        print(f"[WARN] _local_search: Corridor traversal exceeded {max_corridor_steps} steps, stopping edge build")
-                    # Aktionsfeature bestimmen: -1=left, 0=forward, 1=right, None=unklar
-                    action_feature = None
-                    src_pos, src_dir = node_pos_dir_map.get(src_idx, (None, None))
-                    if src_pos is not None and src_dir is not None:
-                        # Richtung von src zu erstem Schritt auf Edge
-                        if edge_path:
-                            first_pos, first_dir = edge_path[0]
-                            rel_dir = (first_dir - src_dir) % 4
-                            if rel_dir == 1:
-                                action_feature = 1  # right
-                            elif rel_dir == 0:
-                                action_feature = 0  # forward
-                            elif rel_dir == 3:
-                                action_feature = -1 # left
-                            else:
-                                action_feature = None
-                    edges.append({
-                        "src": src_idx,
-                        "dst": dst_idx,
-                        "len": edge_len,
-                        "agents": sorted(edge_agents),
-                        "has_same_dir_agent": edge_has_same_dir,
-                        "has_other_dir_agent": edge_has_other_dir,
-                        "min_dist_to_target": min_dist if min_dist != float('inf') else None,
-                        "target_on_edge": target_on_edge,
-                        "action": action_feature,
-                    })
-                    seen_agents.update(edge_agents)
-                    # Nächste Suche ab dst_idx
-                    src_idx = dst_idx
+
+                        # Unerwartet vorzeitig an einem Decision-Node angekommen -> abbrechen.
+                        if (p, d) != (cpos, cdir) and node_type(p, d) is not None:
+                            break
+
+                    if corridor_complete:
+                        # Nur komplette Corridore hinzufügen (endet beim korrekten Node)
+                        # Aktionsfeature bestimmen: -1=left, 0=forward, 1=right, None=unklar
+                        action_feature = None
+                        src_pos, src_dir = node_pos_dir_map.get(src_idx, (None, None))
+                        if src_pos is not None and src_dir is not None:
+                            # Richtung von src zu erstem Schritt auf Edge
+                            if edge_path:
+                                first_pos, first_dir = edge_path[0]
+                                rel_dir = (first_dir - src_dir) % 4
+                                if rel_dir == 1:
+                                    action_feature = 1  # right
+                                elif rel_dir == 0:
+                                    action_feature = 0  # forward
+                                elif rel_dir == 3:
+                                    action_feature = -1 # left
+                                else:
+                                    action_feature = None
+                        edges.append({
+                            "src": src_idx,
+                            "dst": dst_idx,
+                            "len": edge_len,
+                            "agents": sorted(edge_agents),
+                            "has_same_dir_agent": edge_has_same_dir,
+                            "has_other_dir_agent": edge_has_other_dir,
+                            "min_dist_to_target": min_dist if min_dist != float('inf') else None,
+                            "target_on_edge": target_on_edge,
+                            "action": action_feature,
+                        })
+                        seen_agents.update(edge_agents)
+                        # Nächste Suche ab dst_idx
+                        src_idx = dst_idx
 
             # Branches expandieren
             for ndir in range(4):
@@ -595,9 +619,8 @@ class DecisionPointObservation(ObservationBuilder):
                     stack.append((np_pos, ndir, src_idx, depth + 1))
 
         if self._obs_profile_active:
-            elapsed_ms = (time.perf_counter() - t_start) * 1000.0
-            # Timing-Info in tree-payload aufnehmen für periodische Ausgabe
-            # (wird nicht sofort gedruckt, sondern in get_many() ausgegeben)
+            # Timing-Ausgabe erfolgt über das bestehende periodische Profiling.
+            _ = (time.perf_counter() - t_start) * 1000.0
         return {"nodes": nodes, "edges": edges, "seen_agents": sorted(seen_agents)}
 
     @staticmethod
