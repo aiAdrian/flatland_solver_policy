@@ -483,7 +483,6 @@ class DecisionPointObservation(ObservationBuilder):
         # DFS-Stack: (pos, dir, from_node_idx, depth)
         stack = [(pos, direction, 0, 0)]
 
-        import time
         loop_count = 0
         t_loop_start = time.perf_counter()
         while stack and n_nodes < max_nodes:
@@ -521,7 +520,13 @@ class DecisionPointObservation(ObservationBuilder):
                     min_dist = float('inf')
                     target_on_edge = False
                     p, d = node_pos_dir_map.get(src_idx, (None, None))
-                    while (p, d) != (cpos, cdir):
+                    
+                    # Sicherheitsmechanismus: Max-Schritte für Korridor-Traversierung (128 Schritte)
+                    corridor_steps = 0
+                    max_corridor_steps = 128
+                    
+                    while (p, d) != (cpos, cdir) and corridor_steps < max_corridor_steps:
+                        corridor_steps += 1
                         transitions = self.env.rail.get_transitions(*p, d)
                         ndir = int(np.argmax(transitions))
                         np_pos = get_new_position(p, ndir)
@@ -546,6 +551,9 @@ class DecisionPointObservation(ObservationBuilder):
                                 min_dist = min(min_dist, dist)
                         edge_len += 1
                         p, d = np_pos, ndir
+                    
+                    if corridor_steps >= max_corridor_steps:
+                        print(f"[WARN] _local_search: Corridor traversal exceeded {max_corridor_steps} steps, stopping edge build")
                     # Aktionsfeature bestimmen: -1=left, 0=forward, 1=right, None=unklar
                     action_feature = None
                     src_pos, src_dir = node_pos_dir_map.get(src_idx, (None, None))
@@ -586,8 +594,10 @@ class DecisionPointObservation(ObservationBuilder):
                         continue
                     stack.append((np_pos, ndir, src_idx, depth + 1))
 
-        t_end = time.perf_counter()
-        print(f"[PERF] _local_search: {(t_end-t_start)*1000:.2f} ms (nodes={len(nodes)}, edges={len(edges)})")
+        if self._obs_profile_active:
+            elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+            # Timing-Info in tree-payload aufnehmen für periodische Ausgabe
+            # (wird nicht sofort gedruckt, sondern in get_many() ausgegeben)
         return {"nodes": nodes, "edges": edges, "seen_agents": sorted(seen_agents)}
 
     @staticmethod
@@ -842,7 +852,6 @@ class DecisionPointObservation(ObservationBuilder):
         return decision_type
 
     def get(self, handle: int = 0):
-        t_start = time.perf_counter()
         """Return (base_features, seen_agents, raw_tree_payload) for one agent.
         Export 15 base features (dead TrainStates removed, deadlock moved to tree).
         Deadlock information is embedded in tree payload nodes/edges.
@@ -985,12 +994,9 @@ class DecisionPointObservation(ObservationBuilder):
         agent.cur_opp_agent_handles = sorted(opp_agents)
         if prof_active:
             self._obs_prof_add('get', time.perf_counter() - t0)
-        t_end = time.perf_counter()
-        print(f"[PERF] get(handle={handle}): {(t_end-t_start)*1000:.2f} ms")
         return (base_features, agent.cur_opp_agent_handles, tree_payload)
 
     def get_many(self, handles: list = None, is_end_of_episode: bool = False, episode_count: int = None):
-        t_start = time.perf_counter()
         t0_many = time.perf_counter() if self.obs_func_profile_enabled else 0.0
         # Nur noch für Rückwärtskompatibilität: Counter bleibt, aber nicht mehr für Ausgabe genutzt
         type(self)._get_many_call_count += 1
@@ -1185,11 +1191,6 @@ class DecisionPointObservation(ObservationBuilder):
 
         for agent in self.env.agents:
             agent.opp_agent_handles = agent.cur_opp_agent_handles
-        
-        t_end = time.perf_counter()
-        print(f"[PERF] get_many(agents={len(handles) if handles else len(self.env.agents)}): {(t_end-t_start)*1000:.2f} ms")
-        if hasattr(self, '_get_profile_enabled') and self._get_profile_enabled:
-            print(f"[PERF] get(handle={handle}): {(t_end-t_start)*1000:.2f} ms")
         return result
 
     @staticmethod
