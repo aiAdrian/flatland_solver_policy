@@ -411,6 +411,7 @@ class DecisionPointObservation(ObservationBuilder):
         return cur_pos, cur_dir, edge_len, target_on_edge
 
     def _local_search(self, handle, start_pos, start_dir, depth_limit):
+        t_start = time.perf_counter()
         """
         Neue Local-Tree-Search: Nur Start-, Switch- und Pre-Merge-Knoten. Korridore als Edges mit Features.
         """
@@ -482,7 +483,14 @@ class DecisionPointObservation(ObservationBuilder):
         # DFS-Stack: (pos, dir, from_node_idx, depth)
         stack = [(pos, direction, 0, 0)]
 
+        import time
+        loop_count = 0
+        t_loop_start = time.perf_counter()
         while stack and n_nodes < max_nodes:
+            loop_count += 1
+            if loop_count % 1000 == 0:
+                t_now = time.perf_counter()
+                print(f"[PERF] _local_search loop {loop_count}: elapsed {(t_now-t_loop_start)*1000:.2f} ms, stack={len(stack)}, nodes={n_nodes}")
             cpos, cdir, src_idx, depth = stack.pop()
             if depth > max_depth:
                 continue
@@ -578,6 +586,8 @@ class DecisionPointObservation(ObservationBuilder):
                         continue
                     stack.append((np_pos, ndir, src_idx, depth + 1))
 
+        t_end = time.perf_counter()
+        print(f"[PERF] _local_search: {(t_end-t_start)*1000:.2f} ms (nodes={len(nodes)}, edges={len(edges)})")
         return {"nodes": nodes, "edges": edges, "seen_agents": sorted(seen_agents)}
 
     @staticmethod
@@ -832,6 +842,7 @@ class DecisionPointObservation(ObservationBuilder):
         return decision_type
 
     def get(self, handle: int = 0):
+        t_start = time.perf_counter()
         """Return (base_features, seen_agents, raw_tree_payload) for one agent.
         Export 15 base features (dead TrainStates removed, deadlock moved to tree).
         Deadlock information is embedded in tree payload nodes/edges.
@@ -974,9 +985,12 @@ class DecisionPointObservation(ObservationBuilder):
         agent.cur_opp_agent_handles = sorted(opp_agents)
         if prof_active:
             self._obs_prof_add('get', time.perf_counter() - t0)
+        t_end = time.perf_counter()
+        print(f"[PERF] get(handle={handle}): {(t_end-t_start)*1000:.2f} ms")
         return (base_features, agent.cur_opp_agent_handles, tree_payload)
 
     def get_many(self, handles: list = None, is_end_of_episode: bool = False, episode_count: int = None):
+        t_start = time.perf_counter()
         t0_many = time.perf_counter() if self.obs_func_profile_enabled else 0.0
         # Nur noch für Rückwärtskompatibilität: Counter bleibt, aber nicht mehr für Ausgabe genutzt
         type(self)._get_many_call_count += 1
@@ -1171,7 +1185,11 @@ class DecisionPointObservation(ObservationBuilder):
 
         for agent in self.env.agents:
             agent.opp_agent_handles = agent.cur_opp_agent_handles
-
+        
+        t_end = time.perf_counter()
+        print(f"[PERF] get_many(agents={len(handles) if handles else len(self.env.agents)}): {(t_end-t_start)*1000:.2f} ms")
+        if hasattr(self, '_get_profile_enabled') and self._get_profile_enabled:
+            print(f"[PERF] get(handle={handle}): {(t_end-t_start)*1000:.2f} ms")
         return result
 
     @staticmethod
