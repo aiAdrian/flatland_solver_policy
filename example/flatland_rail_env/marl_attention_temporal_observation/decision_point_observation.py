@@ -411,297 +411,172 @@ class DecisionPointObservation(ObservationBuilder):
         return cur_pos, cur_dir, edge_len, target_on_edge
 
     def _local_search(self, handle, start_pos, start_dir, depth_limit):
-        """Build decision-point graph: only INIT, SWITCH, PRE_M nodes.
-        
-        Corridors are compressed into edges. Merges are NOT nodes but edge context.
-        Depth counts decision-point transitions, not cell hops.
-        
-        Returns {nodes, edges, seen_agents, visited_states}
-        where each node has type, features, and deadlock signals.
         """
-        prof_active = bool(self.obs_func_profile_enabled and self._obs_profile_active)
-        t0 = time.perf_counter() if prof_active else 0.0
-
+        Neue Local-Tree-Search: Nur Start-, Switch- und Pre-Merge-Knoten. Korridore als Edges mit Features.
+        """
         if start_pos is None or start_dir is None or self.env is None or self.env.rail is None:
-            raise ValueError(f"_local_search received invalid start data for agent {handle}")
+            return {"nodes": [], "edges": [], "seen_agents": []}
 
+        agent = self.env.agents[handle]
+        agent_target = getattr(agent, 'target', None)
         distance_map = self.env.distance_map.get()
-        agent_target = getattr(self.env.agents[handle], 'target', None)
-        max_dist = max(1.0, float(getattr(self, '_max_dist', 1.0)))
-        root_dist = self._safe_distance(handle, start_pos, start_dir, distance_map)
-
-        # Caches and state tracking
-        frontier = [(start_pos, start_dir, 0)]  # (pos, dir, decision_depth)
-        visited = {}  # (pos, dir) -> best_depth
-        state_to_node_idx = {}  # (pos, dir) -> node_id
-        tree_nodes = []
-        pending_edges = []
-        seen_agents = set()
-        visited_states = []
-
-        transition_cache = {}
-        deadlock_cache = {}
-
-        def _get_transitions_cached(pos, direction):
-            key = (int(pos[0]), int(pos[1]), int(direction))
-            if key in transition_cache:
-                return transition_cache[key]
-            trans = self._rail_get_transitions(pos, direction)
-            transition_cache[key] = trans
-            return trans
-
+        agent_map = self.agent_map
         max_nodes = int(getattr(self, "local_search_max_nodes", 72))
+        max_depth = int(depth_limit)
 
-        while frontier:
-            current_pos, current_dir, decision_depth = frontier.pop()
-            if int(decision_depth) > int(depth_limit):
+        nodes = []
+        edges = []
+        seen_agents = set()
+
+        def node_type(pos, direction, is_root=False):
+            transitions = self.env.rail.get_transitions(*pos, direction)
+            n_trans = fast_count_nonzero(transitions)
+            if is_root:
+                return 0  # START
+            if n_trans > 1:
+                return 1  # SWITCH
+            # Pre-Merge: nur wenn aktuelle Zelle kein Switch ist
+            if n_trans == 1:
+                ndir = int(np.argmax(transitions))
+                next_pos = get_new_position(pos, ndir)
+                if not (0 <= next_pos[0] < self.env.height and 0 <= next_pos[1] < self.env.width):
+                    return None
+                # Für Ankunftsrichtung auf next_pos
+                next_trans = self.env.rail.get_transitions(*next_pos, ndir)
+                n_next_trans = fast_count_nonzero(next_trans)
+                # Pre-Merge: Agent hat auf next_pos nur eine Option, aber für andere Richtungen gibt es einen Switch
+                if n_next_trans == 1:
+                    # Prüfe, ob irgendeine andere Richtung auf next_pos ein Switch ist
+                    for d_other in range(4):
+                        if d_other == ndir:
+                            continue
+                        if fast_count_nonzero(self.env.rail.get_transitions(*next_pos, d_other)) > 1:
+                            return 2  # PRE_MERGE
+            return None
+
+        # Initiale Position und Richtung bestimmen
+        if agent.position is not None:
+            pos = agent.position
+            direction = agent.direction
+        elif agent.state == TrainState.READY_TO_DEPART:
+            pos = agent.initial_position
+            direction = agent.initial_direction
+        else:
+            return {"nodes": [], "edges": [], "seen_agents": []}
+
+        # Early exit für Waiting/Done
+        if agent.state in [TrainState.WAITING, TrainState.DONE]:
+            return {"nodes": [], "edges": [], "seen_agents": []}
+
+        # Startknoten anlegen (nur Typ für Training, keine Metadaten)
+        nodes.append({
+            "type": 0,  # START
+        })
+        node_idx = 0
+        node_map = {(tuple(pos), int(direction)): 0}
+        n_nodes = 1
+
+        # DFS-Stack: (pos, dir, from_node_idx, depth)
+        stack = [(pos, direction, 0, 0)]
+
+        while stack and n_nodes < max_nodes:
+            cpos, cdir, src_idx, depth = stack.pop()
+            if depth > max_depth:
                 continue
-            state_key = (int(current_pos[0]), int(current_pos[1]), int(current_dir))
+            transitions = self.env.rail.get_transitions(*cpos, cdir)
+            n_trans = fast_count_nonzero(transitions)
 
-            # Pruning: already visited at better depth
-            if state_key in visited and visited[state_key] <= decision_depth:
-                continue
-            visited[state_key] = decision_depth
+            # Branching: Switch oder Pre-Merge?
+            # (Startknoten ist schon angelegt)
+            if depth > 0:
+                ntype = node_type(cpos, cdir)
+                if ntype is not None:
+                    if (tuple(cpos), int(cdir)) not in node_map:
+                        nodes.append({
+                            "type": ntype,
+                        })
+                        node_map[(tuple(cpos), int(cdir))] = n_nodes
+                        dst_idx = n_nodes
+                        n_nodes += 1
+                    else:
+                        dst_idx = node_map[(tuple(cpos), int(cdir))]
+                    # Korridor-Edge von src_idx zu dst_idx erzeugen
+                    edge_path = []
+                    edge_agents = set()
+                    edge_has_same_dir = False
+                    edge_has_other_dir = False
+                    edge_len = 0
+                    min_dist = float('inf')
+                    target_on_edge = False
+                    p, d = nodes[src_idx]["pos"], nodes[src_idx]["dir"]
+                    while (p, d) != (cpos, cdir):
+                        transitions = self.env.rail.get_transitions(*p, d)
+                        ndir = int(np.argmax(transitions))
+                        np_pos = get_new_position(p, ndir)
+                        edge_path.append((np_pos, ndir))
+                        # Agenten auf Korridor sammeln
+                        if agent_map is not None:
+                            aidx = int(agent_map[np_pos[0], np_pos[1]])
+                            if aidx != -1 and aidx != handle:
+                                edge_agents.add(aidx)
+                                other_agent = self.env.agents[aidx]
+                                if other_agent.direction == ndir:
+                                    edge_has_same_dir = True
+                                else:
+                                    edge_has_other_dir = True
+                        # Target auf Korridor?
+                        if agent_target is not None and tuple(np_pos) == tuple(agent_target):
+                            target_on_edge = True
+                        # Min dist
+                        if distance_map is not None:
+                            dist = distance_map[handle, np_pos[0], np_pos[1], ndir]
+                            if np.isfinite(dist):
+                                min_dist = min(min_dist, dist)
+                        edge_len += 1
+                        p, d = np_pos, ndir
+                    # Aktionsfeature bestimmen: -1=left, 0=forward, 1=right, None=unklar
+                    action_feature = None
+                    src_node = list(node_map.keys())[src_idx] if src_idx < len(node_map) else None
+                    dst_node = (tuple(cpos), int(cdir))
+                    if src_node is not None:
+                        src_pos, src_dir = src_node
+                        # Richtung von src zu erstem Schritt auf Edge
+                        if edge_path:
+                            first_pos, first_dir = edge_path[0]
+                            rel_dir = (first_dir - src_dir) % 4
+                            if rel_dir == 1:
+                                action_feature = 1  # right
+                            elif rel_dir == 0:
+                                action_feature = 0  # forward
+                            elif rel_dir == 3:
+                                action_feature = -1 # left
+                            else:
+                                action_feature = None
+                    edges.append({
+                        "src": src_idx,
+                        "dst": dst_idx,
+                        "len": edge_len,
+                        "agents": sorted(edge_agents),
+                        "has_same_dir_agent": edge_has_same_dir,
+                        "has_other_dir_agent": edge_has_other_dir,
+                        "min_dist_to_target": min_dist if min_dist != float('inf') else None,
+                        "target_on_edge": target_on_edge,
+                        "action": action_feature,
+                    })
+                    seen_agents.update(edge_agents)
+                    # Nächste Suche ab dst_idx
+                    src_idx = dst_idx
 
-            # Budget: max nodes
-            if len(tree_nodes) >= max_nodes:
-                break
+            # Branches expandieren
+            for ndir in range(4):
+                if transitions[ndir]:
+                    np_pos = get_new_position(cpos, ndir)
+                    # Prüfe, ob Ziel im Grid
+                    if not (0 <= np_pos[0] < self.env.height and 0 <= np_pos[1] < self.env.width):
+                        continue
+                    stack.append((np_pos, ndir, src_idx, depth + 1))
 
-            # Check what node type this is
-            transitions = _get_transitions_cached(current_pos, current_dir)
-            num_transitions = fast_count_nonzero(transitions)
-
-            # Determine node type
-            is_init = decision_depth == 0
-            is_switch = num_transitions > 1
-            is_pre_merge = self._is_pre_merge_one_exit(current_pos, current_dir, transitions) if not is_switch else False
-
-            # Only create nodes for INIT, SWITCH, PRE_M
-            if not (is_init or is_switch or is_pre_merge):
-                # Skip: corridor/merge cell—jump to next decision point via corridor contraction
-                final_pos, final_dir, edge_len, target_on_edge = self._contract_corridor_segment(
-                    handle=handle,
-                    pos=current_pos,
-                    direction=current_dir,
-                    depth=decision_depth,
-                    depth_limit=depth_limit,
-                    target=agent_target,
-                )
-                # Frontier: add end-of-corridor as new search state.
-                # If contraction produced no movement, expand one-step
-                # successors to avoid local-search plateaus.
-                moved = not (
-                    int(final_pos[0]) == int(current_pos[0])
-                    and int(final_pos[1]) == int(current_pos[1])
-                    and int(final_dir) == int(current_dir)
-                )
-                if moved:
-                    if int(decision_depth) + 1 <= int(depth_limit):
-                        frontier.append((final_pos, final_dir, decision_depth + 1))
-                else:
-                    for nd in range(4):
-                        if transitions[nd]:
-                            npos = get_new_position(current_pos, nd)
-                            if int(decision_depth) + 1 <= int(depth_limit):
-                                frontier.append((npos, nd, decision_depth + 1))
-                continue
-
-            # === Create Decision-Point Node ===
-            node_idx = len(tree_nodes)
-            state_to_node_idx[state_key] = node_idx
-            visited_states.append((int(decision_depth), int(current_dir)))
-
-            # Determine node type enum value
-            if is_init:
-                node_type_value = NodeType.INIT
-            elif is_switch:
-                node_type_value = NodeType.SWITCH
-            else:  # is_pre_merge
-                node_type_value = NodeType.PRE_M
-
-            # Compute deadlock profile for this decision point
-            if state_key in deadlock_cache:
-                deadlock_profile = deadlock_cache[state_key]
-            else:
-                deadlock_profile = self._calculate_deadlock_profile(
-                    handle,
-                    current_pos,
-                    current_dir,
-                    max_depth=int(getattr(self, "local_search_deadlock_probe_depth", 14)),
-                    max_states=int(getattr(self, "local_search_deadlock_max_states", 256)),
-                    transition_cache=transition_cache,
-                )
-                deadlock_cache[state_key] = deadlock_profile
-
-            # Detect agents at/near this position
-            agents_at_pos = []
-            has_oncoming = False
-            if self.agent_map is not None:
-                agent_idx = self._agent_at_pos(current_pos)
-                if agent_idx != -1 and agent_idx != handle:
-                    agents_at_pos.append(agent_idx)
-                    seen_agents.add(int(agent_idx))
-                    other_dir = self.env.agents[agent_idx].direction
-                    if other_dir is not None and DecisionPointUtils.is_opposite_direction(current_dir, other_dir):
-                        has_oncoming = True
-
-            # Node info for decision point
-            deadlock_min_depth = int(deadlock_profile.get("min_deadlock_depth", -1))
-            deadlock_hard_min_depth = int(deadlock_profile.get("min_hard_block_depth", -1))
-            inflow_bonus = 0.08 * min(2, len(agents_at_pos))
-            base_risk = float(deadlock_profile.get("risk", 0.0))
-            adjusted_risk = min(1.0, base_risk + (0.20 if has_oncoming else 0.0) + inflow_bonus)
-
-            node_info = {
-                "id": int(node_idx),
-                "type": int(node_type_value),  # NodeType enum value
-                "type_name": ["INIT", "SWITCH", "PRE_M"][int(node_type_value)],
-                "decision_depth": int(decision_depth),
-                "num_transitions": int(num_transitions),
-                "deadlock_risk": float(adjusted_risk),
-                "deadlock_ahead": 1.0 if deadlock_min_depth >= 0 else 0.0,
-                "deadlock_hard_block": 1.0 if deadlock_hard_min_depth >= 0 else 0.0,
-                "deadlock_min_depth": int(deadlock_min_depth),
-                "deadlock_hard_min_depth": int(deadlock_hard_min_depth),
-                "deadlock_distance_norm": float(deadlock_profile.get("deadlock_distance_norm", 0.0)),
-                "deadlock_hard_distance_norm": float(deadlock_profile.get("hard_block_distance_norm", 0.0)),
-                "has_agents": bool(len(agents_at_pos) > 0),
-                "has_oncoming": bool(has_oncoming),
-            }
-            tree_nodes.append(node_info)
-
-            # === Expand to next decision points ===
-            # Select branches (shortest-path + sampled alternatives)
-            selected = self._select_local_search_branches(
-                handle=handle,
-                depth=decision_depth,
-                current_pos=current_pos,
-                current_dir=current_dir,
-                transitions=transitions,
-                distance_map=distance_map,
-            )
-
-            for next_dir, next_pos, _dist in selected:
-                # Contract corridor to next decision point
-                final_pos, final_dir, edge_len, target_on_edge = self._contract_corridor_segment(
-                    handle=handle,
-                    pos=next_pos,
-                    direction=next_dir,
-                    depth=decision_depth + 1,
-                    depth_limit=depth_limit,
-                    target=agent_target,
-                )
-
-                # Build edge info (may be incomplete if final_pos is not yet a node)
-                src_dist = self._safe_distance(handle, current_pos, current_dir, distance_map)
-                dst_dist = self._safe_distance(handle, final_pos, final_dir, distance_map)
-                src_dist_norm = self._distance_to_unit(src_dist, max_dist)
-                dst_dist_norm = self._distance_to_unit(dst_dist, max_dist)
-                delta_from_root_norm = self._progress_delta_to_unit(root_dist, dst_dist, max_dist)
-                improves_over_current = 1.0 if (not np.isfinite(root_dist) and np.isfinite(dst_dist)) or (
-                    np.isfinite(root_dist) and np.isfinite(dst_dist) and float(dst_dist) < float(root_dist)
-                ) else 0.0
-
-                # Action encoding (relative direction)
-                action_left, action_forward, action_right = self._rel_dir_one_hot(current_dir, next_dir)
-
-                # Detect agents on corridor
-                edge_agents = []
-                if self.agent_map is not None:
-                    nidx = self._agent_at_pos(final_pos)
-                    if nidx != -1 and nidx != handle:
-                        edge_agents.append(int(nidx))
-                        seen_agents.add(int(nidx))
-
-                # Check for merge context on this edge
-                merge_incoming_degree = self._incoming_degree(final_pos, transition_cache=transition_cache)
-                has_merge_conflict = merge_incoming_degree > 2
-
-                next_state_key = (int(final_pos[0]), int(final_pos[1]), int(final_dir))
-                pending_edges.append({
-                    "src_state_key": state_key,
-                    "dst_state_key": next_state_key,
-                    "src_decision_depth": int(decision_depth),
-                    "dst_decision_depth": int(decision_depth + 1),
-                    "rel_dir_bin": self._dir_to_rel_bin(current_dir, next_dir),
-                    "action_left": float(action_left),
-                    "action_forward": float(action_forward),
-                    "action_right": float(action_right),
-                    "edge_len_cells": int(edge_len),
-                    "src_dist_to_target": float(src_dist_norm),
-                    "dst_dist_to_target": float(dst_dist_norm),
-                    "delta_from_root": float(delta_from_root_norm),
-                    "improves_over_current": float(improves_over_current),
-                    "target_on_edge": bool(target_on_edge or (agent_target is not None and final_pos == agent_target)),
-                    "agents_on_edge_count": int(len(edge_agents)),
-                    "has_oncoming_edge": bool(len(edge_agents) > 0),
-                    "merge_conflict": bool(has_merge_conflict),
-                    "merge_incoming_degree": int(merge_incoming_degree),
-                })
-
-                # Add to frontier for next decision-point search
-                if int(decision_depth) + 1 <= int(depth_limit):
-                    frontier.append((final_pos, final_dir, decision_depth + 1))
-
-        # === Link edges to node indices ===
-        tree_edges = []
-        for edge_spec in pending_edges:
-            src_state = edge_spec["src_state_key"]
-            dst_state = edge_spec["dst_state_key"]
-            src_idx = state_to_node_idx.get(src_state)
-            dst_idx = state_to_node_idx.get(dst_state)
-
-            # Both endpoints must be decision nodes
-            if src_idx is None or dst_idx is None:
-                continue
-
-            edge = {
-                "src": int(src_idx),
-                "dst": int(dst_idx),
-                "src_decision_depth": int(edge_spec["src_decision_depth"]),
-                "dst_decision_depth": int(edge_spec["dst_decision_depth"]),
-                "rel_dir_bin": int(edge_spec["rel_dir_bin"]),
-                "action_left": float(edge_spec["action_left"]),
-                "action_forward": float(edge_spec["action_forward"]),
-                "action_right": float(edge_spec["action_right"]),
-                "edge_len_cells": int(edge_spec["edge_len_cells"]),
-                "src_dist_to_target": float(edge_spec["src_dist_to_target"]),
-                "dst_dist_to_target": float(edge_spec["dst_dist_to_target"]),
-                "delta_from_root": float(edge_spec["delta_from_root"]),
-                "improves_over_current": float(edge_spec["improves_over_current"]),
-                "target_on_edge": bool(edge_spec["target_on_edge"]),
-                "agents_on_edge_count": int(edge_spec["agents_on_edge_count"]),
-                "has_oncoming_edge": bool(edge_spec["has_oncoming_edge"]),
-                "merge_conflict": bool(edge_spec["merge_conflict"]),
-                "merge_incoming_degree": int(edge_spec["merge_incoming_degree"]),
-            }
-
-            # Add deadlock context from source and destination nodes
-            if src_idx < len(tree_nodes) and dst_idx < len(tree_nodes):
-                src_node = tree_nodes[src_idx]
-                dst_node = tree_nodes[dst_idx]
-                edge["src_deadlock_risk"] = float(src_node.get("deadlock_risk", 0.0))
-                edge["src_deadlock_distance_norm"] = float(src_node.get("deadlock_distance_norm", 0.0))
-                edge["dst_deadlock_risk"] = float(dst_node.get("deadlock_risk", 0.0))
-                edge["dst_deadlock_hard_block"] = float(dst_node.get("deadlock_hard_block", 0.0))
-                edge["dst_deadlock_distance_norm"] = float(dst_node.get("deadlock_distance_norm", 0.0))
-                edge["dst_deadlock_hard_distance_norm"] = float(dst_node.get("deadlock_hard_distance_norm", 0.0))
-                edge["deadlock_distance_delta"] = float(np.clip(
-                    edge["dst_deadlock_distance_norm"] - edge["src_deadlock_distance_norm"],
-                    -1.0, 1.0
-                ))
-
-            tree_edges.append(edge)
-
-        result = {
-            "nodes": tree_nodes,
-            "edges": tree_edges,
-            "seen_agents": sorted(seen_agents),
-            "visited_states": visited_states,
-        }
-        if prof_active:
-            self._obs_prof_add('local_search', time.perf_counter() - t0)
-        return result
+        return {"nodes": nodes, "edges": edges, "seen_agents": sorted(seen_agents)}
 
     @staticmethod
     def _depth_to_proximity(depth_value: int, max_depth: int) -> float:
