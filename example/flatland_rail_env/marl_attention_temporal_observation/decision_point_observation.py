@@ -53,6 +53,7 @@ class DecisionPointObservation(ObservationBuilder):
     _get_many_call_count = 0
     _last_100_features = []  # List of np.arrays (n_agents, n_features)
     _last_100_tree_stats = []  # List of tree_stats pro Episode
+    _last_obs_fn_perf_report = None
 
     # Export 15 base features.
     # Legacy lifecycle duplicates were removed; deadlock signals live in tree payload.
@@ -795,7 +796,7 @@ class DecisionPointObservation(ObservationBuilder):
         effective_hard_depth = min_hard_block_depth
         if effective_hard_depth is None:
             effective_hard_depth = min_soft_block_depth
-        return {
+        result = {
             "risk": float(min(deadlock_risk / risk_norm, 1.0)),
             "min_deadlock_depth": int(min_deadlock_depth) if min_deadlock_depth is not None else -1,
             "min_hard_block_depth": int(effective_hard_depth) if effective_hard_depth is not None else -1,
@@ -806,6 +807,9 @@ class DecisionPointObservation(ObservationBuilder):
             "soft_block_distance_norm": float(self._depth_to_proximity(min_soft_block_depth, probe_depth)),
             "merge_conflict_distance_norm": float(self._depth_to_proximity(min_merge_conflict_depth, probe_depth)),
         }
+        if prof_active:
+            self._obs_prof_add('deadlock_profile', time.perf_counter() - t0)
+        return result
 
     @staticmethod
     def getObservationSize() -> int:
@@ -832,7 +836,7 @@ class DecisionPointObservation(ObservationBuilder):
     @staticmethod
     def _encode_deadlock_signal(deadlock_distance: float) -> float:
         if deadlock_distance is None or deadlock_distance <= 0:
-            result = {
+            return 0.0
         # Steeper decay: nearby deadlocks become more prominent, which helps
         # the policy separate "slightly risky" from "immediate danger".
         return min(1.0, 1.0 / (1.0 + deadlock_distance / 2.5))
@@ -841,9 +845,6 @@ class DecisionPointObservation(ObservationBuilder):
     def _cell_type_index_from_decision_type(decision_type: int) -> int:
         if decision_type & 8:
             return 4
-            if prof_active:
-                self._obs_prof_add('deadlock_profile', time.perf_counter() - t0)
-            return result
         if decision_type == 1:
             return 0
         if decision_type & 2:
@@ -1277,6 +1278,16 @@ class DecisionPointObservation(ObservationBuilder):
                     f"local_search={ls_mean_ms:.3f}ms deadlock_profile={dl_mean_ms:.3f}ms "
                     f"deadlock_calls_per_local_search={dl_per_ls:.2f}"
                 )
+                type(self)._last_obs_fn_perf_report = {
+                    'episode': int(episode_count + 1),
+                    'interval': int(self.obs_func_profile_interval),
+                    'sample_every': int(self.obs_func_profile_sample_every),
+                    'get_mean_ms': float(get_mean_ms),
+                    'get_many_mean_ms': float(gm_mean_ms),
+                    'local_search_mean_ms': float(ls_mean_ms),
+                    'deadlock_profile_mean_ms': float(dl_mean_ms),
+                    'deadlock_calls_per_local_search': float(dl_per_ls),
+                }
                 for bucket in g.values():
                     bucket['sum'] = 0.0
                     bucket['count'] = 0

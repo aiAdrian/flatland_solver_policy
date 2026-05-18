@@ -1684,10 +1684,20 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             # Ensures symmetric learning rates and synchronized training pace.
             print("[Optimizer] Mode SINGLE: Consolidated single optimizer for actor + critic")
             
-            all_params = list(self.encoder_actor.parameters()) + \
-                        list(self.actor_critic_model.actor.parameters()) + \
-                        list(self.encoder_critic.parameters()) + \
-                        list(self.actor_critic_model.critic.parameters())
+            all_params_raw = list(self.encoder_actor.parameters()) + \
+                             list(self.actor_critic_model.actor.parameters()) + \
+                             list(self.encoder_critic.parameters()) + \
+                             list(self.actor_critic_model.critic.parameters())
+            # Shared encoder mode can otherwise add identical tensors twice.
+            # Deduplicate by tensor id to keep optimizer state compact and stable.
+            seen_param_ids = set()
+            all_params = []
+            for p in all_params_raw:
+                pid = id(p)
+                if pid in seen_param_ids:
+                    continue
+                seen_param_ids.add(pid)
+                all_params.append(p)
             
             self.optimizer = optim.AdamW(all_params, lr=base_lr)
             

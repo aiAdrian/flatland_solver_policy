@@ -18,6 +18,8 @@ class TemporalMultiAgentObservation(ObservationBuilder):
        (No explicit delta computation - LSTM infers motion from frame-to-frame changes)
     3. Sequential Format: Returns [(obs_t-2, opp_t-2, tree_t-2), ...]
     """
+    _last_obs_perf_report = None
+
     def __init__(self, temporal_window: int = 3, base_obs=None, max_opponents: int = 3):
         super().__init__()
         self.temporal_window = temporal_window
@@ -227,6 +229,14 @@ class TemporalMultiAgentObservation(ObservationBuilder):
                     f"calls={self._obs_time_calls} get_many_mean={mean_total_ms:.3f}ms "
                     f"base_obs_mean={mean_base_ms:.3f}ms base_share={share_base:.1f}%"
                 )
+                type(self)._last_obs_perf_report = {
+                    'episode': int(episode_count + 1),
+                    'interval': int(self.obs_time_profile_interval),
+                    'calls': int(self._obs_time_calls),
+                    'get_many_mean_ms': float(mean_total_ms),
+                    'base_obs_mean_ms': float(mean_base_ms),
+                    'base_share_pct': float(share_base),
+                }
                 self._obs_last_report_episode = int(episode_count)
                 self._obs_time_total = 0.0
                 self._obs_time_base = 0.0
