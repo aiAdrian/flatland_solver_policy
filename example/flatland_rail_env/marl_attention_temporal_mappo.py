@@ -1591,6 +1591,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             )
         ))
         self.elite_min_score_delta = float(os.getenv('FLATLAND_ELITE_MIN_SCORE_DELTA', '0.0'))
+        self.elite_sample_boost = float(np.clip(float(os.getenv('FLATLAND_ELITE_SAMPLE_BOOST', '1.25')), 0.0, 5.0))
+        self.replay_sample_percent = float(np.clip(float(os.getenv('FLATLAND_REPLAY_SAMPLE_PERCENT', '0.10')), 0.02, 1.0))
         # (score, serial_id, episode_memory)
         self.elite_episodes: List[Tuple[float, int, EpisodeBuffers]] = []
         self._episode_serial = 0
@@ -1757,7 +1759,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         # Observation sanity statistics (gesammelt über 100 Episoden)
         self._obs_stat_buffer: list = []   # rohe Feature-Vektoren der letzten 100 Ep.
-        self._obs_stat_interval = max(10, int(os.getenv('FLATLAND_DIAG_INTERVAL_EPISODES', '100')))
+        self._obs_stat_interval = max(10, int(os.getenv('FLATLAND_DIAG_INTERVAL_EPISODES', '20')))
         # Tree-payload sanity statistics (nodes/edges validity over same window)
         self._tree_stat_buffer: list = []
 
@@ -1794,6 +1796,19 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             'forward_loss': [],
             'backward_clip': [],
             'optimizer_step': [],
+        }
+        self._perf_log_interval = max(1, int(os.getenv('FLATLAND_PERF_LOG_INTERVAL_EPISODES', str(self._obs_stat_interval))))
+        self._episode_wall_t0 = time.perf_counter()
+        self._episode_act_time = 0.0
+        self._episode_step_time = 0.0
+        self._episode_act_calls = 0
+        self._episode_step_calls = 0
+        self._episode_perf_buf: dict = {
+            'episode_wall': deque(maxlen=self._rollout_diag_window),
+            'act_time': deque(maxlen=self._rollout_diag_window),
+            'step_time': deque(maxlen=self._rollout_diag_window),
+            'act_calls': deque(maxlen=self._rollout_diag_window),
+            'step_calls': deque(maxlen=self._rollout_diag_window),
         }
 
     def _comm_progress(self) -> float:
@@ -1966,16 +1981,22 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         Args:
             temporal_state: [(obs_t-2, opp_t-2), (obs_t-1, opp_t-1), (obs_t, opp_t)]
         """
+        t0 = time.perf_counter() if self.time_profile_enabled else 0.0
         with torch.no_grad():
             emb = self.encoder_actor.forward_agent(temporal_state, handle)
             emb_batch = emb.unsqueeze(0)  # (1, hidden_dim)
             dist = self.actor_critic_model.get_actor_dist(emb_batch)
             action = dist.sample()
 
+        if self.time_profile_enabled:
+            self._episode_act_time += (time.perf_counter() - t0)
+            self._episode_act_calls += 1
+
         return action.item()
 
     def step(self, handle, state, action, reward, next_state, done):
         """Store transition - state is now temporal sequence!"""
+        t0 = time.perf_counter() if self.time_profile_enabled else 0.0
         aux_deadlock = self._extract_deadlock_label_from_temporal_state(next_state)
         transition = (state, action, reward, next_state, done, aux_deadlock)
         self.current_episode_memory.push_transition(handle, transition)
@@ -2090,6 +2111,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             'edge_feat_sq_sum': edge_feat_sq_sum,
             'edge_feat_count': int(edge_feat_count),
         })
+        if self.time_profile_enabled:
+            self._episode_step_time += (time.perf_counter() - t0)
+            self._episode_step_calls += 1
 
     @staticmethod
     def _extract_deadlock_label_from_temporal_state(temporal_state) -> float:
@@ -2331,61 +2355,80 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 f"elite_pool={len(self.elite_episodes)}, mix_ratio={self.elite_mix_ratio:.2f}"
             )
         
-        # ⚡ OPTIMIZATION: Process ALL episodes with batched encoding
+        # Replay sampling first, then GAE on selected trajectories only.
         t0 = _tic() if profile_enabled else 0.0
+        trajectory_pool = []
+        recent_ids = {id(ep) for ep in self.accumulated_episodes}
+        elite_score_by_id = {id(ep): float(score) for score, _, ep in self.elite_episodes}
+        total_samples_pool = 0
         for episode_memory in training_episodes:
-            episode_state_tuples = []
-            episode_actions = []
-            episode_advantages = []
-            episode_returns = []
-            episode_aux_deadlock = []
-            
-            # Collect all trajectories first (avoid repeated handle iteration)
-            all_trajectories = []
+            is_elite_only = id(episode_memory) in elite_score_by_id and id(episode_memory) not in recent_ids
+            ep_weight = 1.0 + (self.elite_sample_boost if is_elite_only else 0.0)
             for handle in range(len(episode_memory)):
                 agent_episode_history = episode_memory.get_transitions(handle)
-                if len(agent_episode_history) > 0:
-                    all_trajectories.append(agent_episode_history)
-            
-            if len(all_trajectories) == 0:
-                continue
-                
-            trajectory_count += len(all_trajectories)
-            
-            # Process all trajectories in parallel batches
-            for agent_episode_history in all_trajectories:
-                state_tuples, actions, rewards, state_next_tuples, dones, aux_deadlock = \
-                    self._convert_transitions_to_torch_tensors(agent_episode_history)
-                
-                # Compute GAE (encoder calls are batched internally)
-                with torch.no_grad():
-                    states_critic = self.encoder_critic.forward_batch(state_tuples)
-                    values = torch.squeeze(self.actor_critic_model.critic(states_critic), dim=-1)
-                    # FIXED: Removed torch.clamp(values, -5, 5) — was truncating returns [-19.85, +2.97].
-                    # Let critic learn to predict true return values without artificial bounds.
-                    
-                    next_states_critic = self.encoder_critic.forward_batch(state_next_tuples)
-                    next_values = torch.squeeze(self.actor_critic_model.critic(next_states_critic), dim=-1)
-                    # Critic now free to fit the full range of returns for better GAE advantage signals.
-                    
-                    traj_gae_advantages, traj_gae_returns = self._compute_gae(
-                        rewards, values, dones, next_values
-                    )
-                
-                episode_state_tuples.extend(state_tuples)
-                episode_actions.append(actions)
-                episode_advantages.append(traj_gae_advantages)
-                episode_returns.append(traj_gae_returns)
-                episode_aux_deadlock.append(aux_deadlock)
-            
-            if len(episode_state_tuples) > 0:
-                episode_data.append((
-                    episode_state_tuples,
-                    torch.cat(episode_actions, dim=0),
-                    torch.cat(episode_advantages, dim=0),
-                    torch.cat(episode_returns, dim=0),
-                    torch.cat(episode_aux_deadlock, dim=0)
-                ))
+                traj_len = len(agent_episode_history)
+                if traj_len <= 0:
+                    continue
+                trajectory_pool.append((agent_episode_history, traj_len, ep_weight))
+                total_samples_pool += traj_len
+
+        if len(trajectory_pool) == 0 or total_samples_pool == 0:
+            print("⚠️ No transitions to train on!")
+            return
+
+        trajectory_count = len(trajectory_pool)
+        total_possible_batches = (total_samples_pool + self.batch_size - 1) // self.batch_size
+        if self.max_batches_per_training is not None:
+            num_batches = min(self.max_batches_per_training, total_possible_batches)
+            base_samples_to_use = min(total_samples_pool, num_batches * self.batch_size)
+        else:
+            num_batches = max(1, int(total_possible_batches * self.batch_fraction))
+            base_samples_to_use = min(total_samples_pool, num_batches * self.batch_size)
+
+        replay_samples_to_use = int(max(self.batch_size, round(base_samples_to_use * self.replay_sample_percent)))
+        samples_to_use = int(min(total_samples_pool, replay_samples_to_use))
+
+        traj_weights = torch.tensor([max(1e-6, float(w)) for _, _, w in trajectory_pool], dtype=torch.float32)
+        if samples_to_use >= total_samples_pool:
+            sampled_order = list(range(len(trajectory_pool)))
+        else:
+            sampled_order = torch.multinomial(traj_weights, num_samples=len(trajectory_pool), replacement=False).tolist()
+
+        selected_trajectories = []
+        selected_samples = 0
+        for idx in sampled_order:
+            traj, traj_len, _ = trajectory_pool[idx]
+            selected_trajectories.append(traj)
+            selected_samples += int(traj_len)
+            if selected_samples >= samples_to_use:
+                break
+
+        for agent_episode_history in selected_trajectories:
+            state_tuples, actions, rewards, state_next_tuples, dones, aux_deadlock = \
+                self._convert_transitions_to_torch_tensors(agent_episode_history)
+
+            # Compute GAE (encoder calls are batched internally)
+            with torch.no_grad():
+                states_critic = self.encoder_critic.forward_batch(state_tuples)
+                values = torch.squeeze(self.actor_critic_model.critic(states_critic), dim=-1)
+                # FIXED: Removed torch.clamp(values, -5, 5) — was truncating returns [-19.85, +2.97].
+                # Let critic learn to predict true return values without artificial bounds.
+
+                next_states_critic = self.encoder_critic.forward_batch(state_next_tuples)
+                next_values = torch.squeeze(self.actor_critic_model.critic(next_states_critic), dim=-1)
+                # Critic now free to fit the full range of returns for better GAE advantage signals.
+
+                traj_gae_advantages, traj_gae_returns = self._compute_gae(
+                    rewards, values, dones, next_values
+                )
+
+            episode_data.append((
+                state_tuples,
+                actions,
+                traj_gae_advantages,
+                traj_gae_returns,
+                aux_deadlock,
+            ))
         if profile_enabled:
             _add_t('gae_prep', _tic() - t0)
         
@@ -2400,65 +2443,39 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         all_gae_advantages = []
         all_gae_returns = []
         all_aux_deadlock = []
-        
-        # ⚡ NEW: Track episode indices for recency-based sampling
-        episode_sample_weights = []
-        
+
         for ep_idx, (ep_states, ep_actions, ep_advantages, ep_returns, ep_aux_deadlock) in enumerate(episode_data):
             all_state_tuples.extend(ep_states)
             all_actions.append(ep_actions)
             all_gae_advantages.append(ep_advantages)
             all_gae_returns.append(ep_returns)
             all_aux_deadlock.append(ep_aux_deadlock)
-            
-            # Uniform sampling across the sliding window avoids forgetting older
-            # but still relevant traffic patterns and stabilizes long runs.
-            combined_weight = 1.0
-            
-            episode_sample_weights.extend([combined_weight] * len(ep_states))
         
         all_actions = torch.cat(all_actions, dim=0)
         all_gae_advantages = torch.cat(all_gae_advantages, dim=0)
         all_gae_returns = torch.cat(all_gae_returns, dim=0)
         all_aux_deadlock = torch.cat(all_aux_deadlock, dim=0)
-        episode_sample_weights = torch.tensor(episode_sample_weights, dtype=torch.float32)
-        
+
         total_samples = len(all_state_tuples)
-        
+
         # Determine batch configuration
         total_possible_batches = (total_samples + self.batch_size - 1) // self.batch_size
-        
+
         if self.max_batches_per_training is not None:
             num_batches = min(self.max_batches_per_training, total_possible_batches)
-            samples_to_use = min(total_samples, num_batches * self.batch_size)
         else:
             num_batches = max(1, int(total_possible_batches * self.batch_fraction))
-            samples_to_use = min(total_samples, num_batches * self.batch_size)
-        
-        # ⚡ Weighted sampling: newer episodes have higher probability
-        # Use multinomial sampling WITHOUT replacement to avoid overfitting
-        if samples_to_use >= total_samples:
-            # Use all samples
-            sampled_indices = torch.arange(total_samples)
-        else:
-            # Sample without replacement (each sample max 1×)
-            sampled_indices = torch.multinomial(
-                episode_sample_weights, 
-                num_samples=samples_to_use, 
-                replacement=False  # ⚡ Prevents overfitting on new episodes
-            )
-        all_state_tuples = [all_state_tuples[i] for i in sampled_indices]
-        all_actions = all_actions[sampled_indices]
-        all_gae_advantages = all_gae_advantages[sampled_indices]
-        all_gae_returns = all_gae_returns[sampled_indices]
-        all_aux_deadlock = all_aux_deadlock[sampled_indices]
+        samples_to_use = total_samples
         if profile_enabled:
             _add_t('concat_sample', _tic() - t0)
         
         if self.show_pre_train_debug_msg:
             print(f"📦 Using {samples_to_use}/{total_samples} samples ({samples_to_use/total_samples*100:.1f}%)")
             k_epochs_eff = self._effective_k_epochs()
-            print(f"📦 Batch Config: {num_batches} batches (batch_size={self.batch_size}) over {k_epochs_eff} epochs")
+            print(
+                f"📦 Batch Config: {num_batches} batches (batch_size={self.batch_size}) over {k_epochs_eff} epochs "
+                f"| replay_sample_percent={self.replay_sample_percent:.2f} | trajectories={trajectory_count}"
+            )
         
         # 🎯 KRITISCH: Berechne old_logprobs VOR dem Training
         # Dies ist die EINZIGE korrekte Methode für PPO!
@@ -3833,7 +3850,34 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             self._rollout_diag_buf['final_aux'].append(float(np.mean(ep_final_aux_list)) if ep_final_aux_list else 0.0)
             self._rollout_diag_buf['done_frac'].append(float(done_frac))
 
-            if self.show_pre_train_debug_msg and (self.episode_count + 1) % 10 == 0:
+            if self.time_profile_enabled:
+                now_t = time.perf_counter()
+                episode_wall = max(0.0, now_t - self._episode_wall_t0)
+                self._episode_wall_t0 = now_t
+                self._episode_perf_buf['episode_wall'].append(float(episode_wall))
+                self._episode_perf_buf['act_time'].append(float(self._episode_act_time))
+                self._episode_perf_buf['step_time'].append(float(self._episode_step_time))
+                self._episode_perf_buf['act_calls'].append(int(self._episode_act_calls))
+                self._episode_perf_buf['step_calls'].append(int(self._episode_step_calls))
+                self._episode_act_time = 0.0
+                self._episode_step_time = 0.0
+                self._episode_act_calls = 0
+                self._episode_step_calls = 0
+
+                if (self.episode_count + 1) % self._perf_log_interval == 0 and self._episode_perf_buf['episode_wall']:
+                    wall_mean = float(np.mean(self._episode_perf_buf['episode_wall']))
+                    act_mean = float(np.mean(self._episode_perf_buf['act_time']))
+                    step_mean = float(np.mean(self._episode_perf_buf['step_time']))
+                    non_policy_mean = max(0.0, wall_mean - act_mean - step_mean)
+                    act_calls_mean = float(np.mean(self._episode_perf_buf['act_calls']))
+                    step_calls_mean = float(np.mean(self._episode_perf_buf['step_calls']))
+                    print(
+                        f"[PerfDiag] ep={self.episode_count + 1} interval={self._perf_log_interval} "
+                        f"episode_wall={wall_mean:.3f}s act={act_mean:.3f}s step={step_mean:.3f}s "
+                        f"non_policy={non_policy_mean:.3f}s act_calls={act_calls_mean:.1f} step_calls={step_calls_mean:.1f}"
+                    )
+
+            if self.show_pre_train_debug_msg and (self.episode_count + 1) % self._perf_log_interval == 0:
                 win_sp_total = int(sum(self._rollout_diag_buf['sp_total']))
                 win_sp_match = int(sum(self._rollout_diag_buf['sp_match']))
                 win_sp_acc = (win_sp_match / win_sp_total) if win_sp_total > 0 else 0.0

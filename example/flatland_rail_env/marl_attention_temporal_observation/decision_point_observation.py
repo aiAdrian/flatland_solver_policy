@@ -19,6 +19,7 @@ Layout:
 # pyright: reportMissingImports=false
 
 import os
+import time
 from enum import IntEnum
 
 import numpy as np
@@ -129,9 +130,30 @@ class DecisionPointObservation(ObservationBuilder):
         self.local_search_deadlock_probe_depth = 14
         self.local_search_deadlock_max_states = 256
         self.local_tree_clip_features = True
+        # Lightweight function profiler for observation hot paths.
+        self.obs_func_profile_enabled = str(os.getenv('FLATLAND_OBS_FUNC_PROFILE', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+        self.obs_func_profile_sample_every = max(1, int(os.getenv('FLATLAND_OBS_FUNC_PROFILE_SAMPLE_EVERY', '8')))
+        self.obs_func_profile_interval = max(1, int(os.getenv('FLATLAND_OBS_FUNC_PROFILE_INTERVAL_EPISODES', '20')))
+        self._obs_func_profile_call_idx = 0
+        self._obs_profile_active = False
+        self._obs_func_prof = {
+            'get': {'sum': 0.0, 'count': 0},
+            'get_many': {'sum': 0.0, 'count': 0},
+            'local_search': {'sum': 0.0, 'count': 0},
+            'deadlock_profile': {'sum': 0.0, 'count': 0},
+        }
         self.env = None
         self.agent_map = None
         self._print_feature_layout_doc()
+
+    def _obs_prof_add(self, key: str, dt: float):
+        if not self.obs_func_profile_enabled:
+            return
+        bucket = self._obs_func_prof.get(key)
+        if bucket is None:
+            return
+        bucket['sum'] += float(dt)
+        bucket['count'] += 1
  
     def set_env(self, env):
         super().set_env(env)
@@ -396,6 +418,9 @@ class DecisionPointObservation(ObservationBuilder):
         Returns {nodes, edges, seen_agents, visited_states}
         where each node has type, features, and deadlock signals.
         """
+        prof_active = bool(self.obs_func_profile_enabled and self._obs_profile_active)
+        t0 = time.perf_counter() if prof_active else 0.0
+
         if start_pos is None or start_dir is None or self.env is None or self.env.rail is None:
             raise ValueError(f"_local_search received invalid start data for agent {handle}")
 
@@ -667,12 +692,15 @@ class DecisionPointObservation(ObservationBuilder):
 
             tree_edges.append(edge)
 
-        return {
+        result = {
             "nodes": tree_nodes,
             "edges": tree_edges,
             "seen_agents": sorted(seen_agents),
             "visited_states": visited_states,
         }
+        if prof_active:
+            self._obs_prof_add('local_search', time.perf_counter() - t0)
+        return result
 
     @staticmethod
     def _depth_to_proximity(depth_value: int, max_depth: int) -> float:
@@ -684,6 +712,8 @@ class DecisionPointObservation(ObservationBuilder):
 
     def _calculate_deadlock_profile(self, handle, pos, direction, max_depth=14, max_states=256, transition_cache=None):
         """Compute local deadlock profile with risk and explicit distance-to-deadlock signals."""
+        prof_active = bool(self.obs_func_profile_enabled and self._obs_profile_active)
+        t0 = time.perf_counter() if prof_active else 0.0
         if pos is None or direction is None or self.env is None or self.env.rail is None:
             raise ValueError(f"_calculate_deadlock_profile received invalid inputs for agent {handle}")
 
@@ -802,7 +832,7 @@ class DecisionPointObservation(ObservationBuilder):
     @staticmethod
     def _encode_deadlock_signal(deadlock_distance: float) -> float:
         if deadlock_distance is None or deadlock_distance <= 0:
-            return 0.0
+            result = {
         # Steeper decay: nearby deadlocks become more prominent, which helps
         # the policy separate "slightly risky" from "immediate danger".
         return min(1.0, 1.0 / (1.0 + deadlock_distance / 2.5))
@@ -811,6 +841,9 @@ class DecisionPointObservation(ObservationBuilder):
     def _cell_type_index_from_decision_type(decision_type: int) -> int:
         if decision_type & 8:
             return 4
+            if prof_active:
+                self._obs_prof_add('deadlock_profile', time.perf_counter() - t0)
+            return result
         if decision_type == 1:
             return 0
         if decision_type & 2:
@@ -925,6 +958,14 @@ class DecisionPointObservation(ObservationBuilder):
         Export 15 base features (dead TrainStates removed, deadlock moved to tree).
         Deadlock information is embedded in tree payload nodes/edges.
         """
+        prof_active = False
+        t0 = 0.0
+        if self.obs_func_profile_enabled:
+            prof_active = (self._obs_func_profile_call_idx % self.obs_func_profile_sample_every) == 0
+            self._obs_func_profile_call_idx += 1
+            if prof_active:
+                t0 = time.perf_counter()
+
         raw_features = np.zeros(self.BASE_OBS_SIZE, dtype=np.float32)
 
         agent = self.env.agents[handle]
@@ -937,7 +978,10 @@ class DecisionPointObservation(ObservationBuilder):
 
         # Lokale Suche → Baum-Payload für trainierbare Encoder-Integration
         search_depth = max(int(self.search_depth), int(getattr(self, "local_search_min_search_depth", 8)))
+        prev_active = self._obs_profile_active
+        self._obs_profile_active = bool(prof_active)
         tree_payload = self._local_search(handle, pos, direction, search_depth)
+        self._obs_profile_active = prev_active
         local_search_seen_agents = set(tree_payload.get("seen_agents", []))
 
         # Keep structured tree context available for downstream temporal wrappers.
@@ -1050,9 +1094,12 @@ class DecisionPointObservation(ObservationBuilder):
         base_features = raw_features.copy() 
 
         agent.cur_opp_agent_handles = sorted(opp_agents)
+        if prof_active:
+            self._obs_prof_add('get', time.perf_counter() - t0)
         return (base_features, agent.cur_opp_agent_handles, tree_payload)
 
     def get_many(self, handles: list = None, is_end_of_episode: bool = False, episode_count: int = None):
+        t0_many = time.perf_counter() if self.obs_func_profile_enabled else 0.0
         # Nur noch für Rückwärtskompatibilität: Counter bleibt, aber nicht mehr für Ausgabe genutzt
         type(self)._get_many_call_count += 1
         if handles is None:
@@ -1213,6 +1260,26 @@ class DecisionPointObservation(ObservationBuilder):
                       f"edges={np.mean(all_edges):.1f}±{np.std(all_edges):.1f} "
                       f"[{np.min(all_edges)},{np.max(all_edges)}]")
             print(W)
+
+        if self.obs_func_profile_enabled:
+            self._obs_prof_add('get_many', time.perf_counter() - t0_many)
+            if is_end_of_episode and episode_count is not None and (episode_count + 1) % self.obs_func_profile_interval == 0:
+                g = self._obs_func_prof
+                get_mean_ms = (1000.0 * g['get']['sum'] / g['get']['count']) if g['get']['count'] > 0 else 0.0
+                gm_mean_ms = (1000.0 * g['get_many']['sum'] / g['get_many']['count']) if g['get_many']['count'] > 0 else 0.0
+                ls_mean_ms = (1000.0 * g['local_search']['sum'] / g['local_search']['count']) if g['local_search']['count'] > 0 else 0.0
+                dl_mean_ms = (1000.0 * g['deadlock_profile']['sum'] / g['deadlock_profile']['count']) if g['deadlock_profile']['count'] > 0 else 0.0
+                dl_per_ls = (float(g['deadlock_profile']['count']) / float(max(1, g['local_search']['count']))) if g['local_search']['count'] > 0 else 0.0
+                print(
+                    f"[ObsFnPerf] ep={episode_count + 1} interval={self.obs_func_profile_interval} "
+                    f"sample_every={self.obs_func_profile_sample_every} "
+                    f"get={get_mean_ms:.3f}ms get_many={gm_mean_ms:.3f}ms "
+                    f"local_search={ls_mean_ms:.3f}ms deadlock_profile={dl_mean_ms:.3f}ms "
+                    f"deadlock_calls_per_local_search={dl_per_ls:.2f}"
+                )
+                for bucket in g.values():
+                    bucket['sum'] = 0.0
+                    bucket['count'] = 0
 
         for agent in self.env.agents:
             agent.opp_agent_handles = agent.cur_opp_agent_handles

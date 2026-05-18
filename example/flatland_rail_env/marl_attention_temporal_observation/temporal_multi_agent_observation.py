@@ -3,6 +3,8 @@ import numpy as np
 import copy
 from collections import deque
 from typing import Optional, List, Dict
+import os
+import time
 from marl_attention_temporal_observation.experimental_observation import ExperimentalObservation
 from marl_attention_temporal_observation.decision_point_observation import DecisionPointObservation
 from marl_attention_temporal_observation.simplified_path_three_tier_observation import SimplifiedPathThreeTierObservation
@@ -49,6 +51,12 @@ class TemporalMultiAgentObservation(ObservationBuilder):
             raise ValueError(f"Invalid base_obs: {base_obs}")
         self.env = None
         self.temporal_history: Dict[int, deque] = {}
+        self.obs_time_profile_enabled = str(os.getenv('FLATLAND_OBS_TIME_PROFILE', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+        self.obs_time_profile_interval = max(1, int(os.getenv('FLATLAND_OBS_TIME_PROFILE_INTERVAL_EPISODES', '20')))
+        self._obs_time_total = 0.0
+        self._obs_time_base = 0.0
+        self._obs_time_calls = 0
+        self._obs_last_report_episode = -1
         if not getattr(type(self), "_banner_printed", False):
             print(">> TemporalMultiAgentObservation loaded.")
             type(self)._banner_printed = True
@@ -121,19 +129,26 @@ class TemporalMultiAgentObservation(ObservationBuilder):
                  handles: Optional[List[int]] = None,
                  is_end_of_episode: bool = False,
                  episode_count: Optional[int] = None):
+        t_total = time.perf_counter() if self.obs_time_profile_enabled else 0.0
         if handles is None:
             handles = list(range(len(self.env.agents)))
 
         # Forward optional episode-end flags to base builders that support them
         # (e.g. DecisionPointObservation summary/statistics every 100 episodes).
         try:
+            t_base = time.perf_counter() if self.obs_time_profile_enabled else 0.0
             current_obs = self.base_obs.get_many(
                 handles,
                 is_end_of_episode=is_end_of_episode,
                 episode_count=episode_count,
             )
+            if self.obs_time_profile_enabled:
+                self._obs_time_base += (time.perf_counter() - t_base)
         except TypeError:
+            t_base = time.perf_counter() if self.obs_time_profile_enabled else 0.0
             current_obs = self.base_obs.get_many(handles)
+            if self.obs_time_profile_enabled:
+                self._obs_time_base += (time.perf_counter() - t_base)
         handle_to_obs = {h: obs_entry for h, obs_entry in zip(handles, current_obs)}
 
         def _unpack_base_obs(entry, handle):
@@ -193,4 +208,27 @@ class TemporalMultiAgentObservation(ObservationBuilder):
                 zero_obs = np.zeros(obs_size, dtype=np.float32)
                 seq.insert(0, (zero_obs, [], {}))
             temporal_sequences.append(seq)
+
+        if self.obs_time_profile_enabled:
+            self._obs_time_total += (time.perf_counter() - t_total)
+            self._obs_time_calls += 1
+            should_report = (
+                is_end_of_episode
+                and episode_count is not None
+                and (episode_count + 1) % self.obs_time_profile_interval == 0
+                and int(episode_count) != self._obs_last_report_episode
+            )
+            if should_report and self._obs_time_calls > 0:
+                mean_total_ms = 1000.0 * self._obs_time_total / float(self._obs_time_calls)
+                mean_base_ms = 1000.0 * self._obs_time_base / float(self._obs_time_calls)
+                share_base = (100.0 * self._obs_time_base / self._obs_time_total) if self._obs_time_total > 1e-9 else 0.0
+                print(
+                    f"[ObsPerf] ep={episode_count + 1} interval={self.obs_time_profile_interval} "
+                    f"calls={self._obs_time_calls} get_many_mean={mean_total_ms:.3f}ms "
+                    f"base_obs_mean={mean_base_ms:.3f}ms base_share={share_base:.1f}%"
+                )
+                self._obs_last_report_episode = int(episode_count)
+                self._obs_time_total = 0.0
+                self._obs_time_base = 0.0
+                self._obs_time_calls = 0
         return temporal_sequences

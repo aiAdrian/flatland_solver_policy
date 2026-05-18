@@ -889,17 +889,17 @@ def create_decider_agent(observation_space: int, action_space: int, eps: float =
 FAST_MODE = str(os.getenv('FLATLAND_FAST_MODE', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
 
 default_batch_size = 128 if FAST_MODE else 256
-default_k_epochs = 2 if FAST_MODE else 3
+default_k_epochs = 1 if FAST_MODE else 2
 default_batch_fraction = 0.65 if FAST_MODE else 0.8
-default_max_batches = 6 if FAST_MODE else 10
-default_memory_episodes = 10 if FAST_MODE else 12
+default_max_batches = 4 if FAST_MODE else 8
+default_memory_episodes = 8 if FAST_MODE else 10
 
 # NOTE: ppo_param will be REBUILT after CLI args parsing (in main section)
 # This version is only for non-main use (imports, testing)
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     hidden_size=_env_int('FLATLAND_HIDDEN_SIZE', 64),
     batch_size=max(32, _env_int('FLATLAND_BATCH_SIZE', default_batch_size)),
-    learning_rate=_env_float('FLATLAND_LR', 5.0e-5),   # ↑ 2.5e-5→5e-5: KL was 0.002 (policy not updating)
+    learning_rate=_env_float('FLATLAND_LR', 1.8e-5),
     discount=_env_float('FLATLAND_DISCOUNT', 0.99),
     gae_lambda=_env_float('FLATLAND_GAE_LAMBDA', 0.92),  # ↓ 0.95→0.92: sharper advantage signal
     use_gpu=USE_GPU_EFFECTIVE,
@@ -1204,11 +1204,11 @@ LEGACY EXAMPLES (still supported):
     parser.add_argument(
         '--optimizer_mode',
         type=str,
-        default='multiple',
+        default='single',
         choices=['single', 'multiple'],
         metavar='MODE',
         dest='optimizer_mode',
-        help='Optimizer mode: single = consolidated single optimizer, multiple = 4 optimizers with synchronized decay and stronger critic defaults (default)'
+        help='Optimizer mode: single = consolidated single optimizer, multiple = 4 optimizers with synchronized decay and stronger critic defaults (default: single)'
     )
     
     parser.add_argument(
@@ -1426,7 +1426,7 @@ LEGACY EXAMPLES (still supported):
         mode = 'new'
     eps = args.eps
     min_eps_user_set = args.min_eps is not None
-    min_eps = float(args.min_eps) if min_eps_user_set else 0.01
+    min_eps = float(args.min_eps) if min_eps_user_set else 0.02
     optimizer_mode = args.optimizer_mode.upper()
     rendering = bool(args.rendering)
     policy_mode = args.policy_mode.strip().lower()
@@ -1468,7 +1468,7 @@ LEGACY EXAMPLES (still supported):
     ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
         hidden_size=_env_int('FLATLAND_HIDDEN_SIZE', 48),  # Default: 48 (schneller, ausreichend für Flatland)
         batch_size=max(32, _env_int('FLATLAND_BATCH_SIZE', 32)),  # Default: 32 (kleiner, schneller)
-        learning_rate=_env_float('FLATLAND_LR', 2.5e-5),
+        learning_rate=_env_float('FLATLAND_LR', 1.8e-5),
         discount=_env_float('FLATLAND_DISCOUNT', 0.99),
         gae_lambda=_env_float('FLATLAND_GAE_LAMBDA', 0.95),
         use_gpu=USE_GPU_EFFECTIVE,
