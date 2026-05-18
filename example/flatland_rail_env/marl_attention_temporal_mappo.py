@@ -1,6 +1,7 @@
 import copy
 import math
 import os
+import time
 from collections import namedtuple, deque
 from typing import Union, List, Any, Dict, Tuple, Optional
 
@@ -578,6 +579,7 @@ class TemporalTransformerEncoder(nn.Module):
         # Tree signal comes exclusively from raw local-search payload.
         self.tree_payload_encoder = TreePayloadEncoder(hidden_dim)
         self.tree_norm = nn.LayerNorm(hidden_dim)
+        self.use_tree_payload_encoder = True
 
         # Explicit communication: sender message + receiver addressing.
         self.comm_msg_proj = nn.Linear(hidden_dim, hidden_dim)
@@ -652,10 +654,15 @@ class TemporalTransformerEncoder(nn.Module):
 
     def _encode_tree_signal(self, obs_1d: torch.Tensor, tree_payload: Dict[str, Any]) -> torch.Tensor:
         del obs_1d
+        if not bool(getattr(self, 'use_tree_payload_encoder', True)):
+            return torch.zeros(self.hidden_dim, device=self.device)
         return self._encode_tree_payload(tree_payload if isinstance(tree_payload, dict) else {})
 
     def _encode_tree_signal_batch(self, last_obs_b: torch.Tensor, tree_payloads: List[Dict[str, Any]]) -> torch.Tensor:
         del last_obs_b
+        if not bool(getattr(self, 'use_tree_payload_encoder', True)):
+            bsz = len(tree_payloads)
+            return torch.zeros((bsz, self.hidden_dim), device=self.device)
         return self.tree_payload_encoder.forward_batch(tree_payloads)
 
     def _apply_communication(self, self_context: torch.Tensor, opp_embeddings: List[torch.Tensor]):
@@ -768,23 +775,14 @@ class TemporalTransformerEncoder(nn.Module):
         # Combine self + opponents (only if spatial attention is enabled AND opponents exist)
         if use_spatial and len(opp_embeddings) > 0:
             all_agents = [self_temporal_context] + opp_embeddings
-            all_agents_tensor = torch.stack(all_agents, dim=0)  # (N_agents, 128)
-            all_agents_batched = all_agents_tensor.unsqueeze(0)  # (1, N_agents, 128)
-            
-            # Query = self (only own representation)
-            query = self_temporal_context.unsqueeze(0).unsqueeze(0)  # (1, 1, 128)
-            
-            # Spatial Attention: Self attends to all (self + opponents)
+            all_agents_tensor = torch.stack(all_agents, dim=0).unsqueeze(0)
+            query = self_temporal_context.unsqueeze(0).unsqueeze(0)
             spatial_output, _ = self.spatial_attention(
                 query=query,
-                key=all_agents_batched,
-                value=all_agents_batched
+                key=all_agents_tensor,
+                value=all_agents_tensor
             )
-            
-            context = spatial_output.squeeze(0).squeeze(0)  # (128,)
-            
-            # Residual connection
-            context = context + self_temporal_context
+            context = spatial_output.squeeze(0).squeeze(0) + self_temporal_context
             context, comm_reg, gate_mean, intent_mean = self._apply_communication(context, opp_embeddings)
             self.last_comm_reg = comm_reg
             self.last_comm_gate_mean = float(gate_mean.detach().cpu().item())
@@ -870,6 +868,7 @@ class TemporalTransformerEncoder(nn.Module):
         self_temporal_contexts = self.tree_norm(self_temporal_contexts + tree_emb_b)
         
         # Spatial attention (process per agent due to varying opponent counts)
+        use_spatial = bool(getattr(self, 'use_spatial_attention', True))
         final_embeddings = []
         comm_regs = []
         comm_gate_means = []
@@ -878,13 +877,13 @@ class TemporalTransformerEncoder(nn.Module):
             self_ctx = self_temporal_contexts[i]
             opps = all_opponents[i]
             
-            if len(opps) > 0:
+            if use_spatial and len(opps) > 0:
                 opp_embs = []
                 for opp_obs in opps:
                     opp_t = self._to_1d_tensor(opp_obs)
                     opp_base = opp_t[:self.base_obs_dim]
                     opp_embs.append(self.obs_encoder(opp_base))
-                
+
                 all_agents = [self_ctx] + opp_embs
                 all_agents_tensor = torch.stack(all_agents, dim=0).unsqueeze(0)
                 query = self_ctx.unsqueeze(0).unsqueeze(0)
@@ -903,9 +902,9 @@ class TemporalTransformerEncoder(nn.Module):
                 comm_regs.append(torch.tensor(0.0, device=self.device))
                 comm_gate_means.append(torch.tensor(0.0, device=self.device))
                 comm_intents.append(torch.zeros(3, device=self.device))
-            
+
             final_embeddings.append(self.output_proj(context))
-        
+
         self.last_comm_reg = torch.stack(comm_regs).mean()
         self.last_comm_gate_mean = float(torch.stack(comm_gate_means).mean().detach().cpu().item())
         valid_intents = [it for it, opps in zip(comm_intents, all_opponents) if len(opps) > 0]
@@ -992,6 +991,7 @@ class TemporalLSTMEncoder(nn.Module):
         self._tree_slots = None  # Backward-compatibility stub for old checkpoints.
         self.tree_payload_encoder = TreePayloadEncoder(hidden_dim)
         self.tree_norm = nn.LayerNorm(hidden_dim)
+        self.use_tree_payload_encoder = True
 
         self.last_comm_reg = torch.tensor(0.0, device=self.device)
         self.last_comm_gate_mean = 0.0
@@ -1049,10 +1049,15 @@ class TemporalLSTMEncoder(nn.Module):
 
     def _encode_tree_signal(self, obs_1d: torch.Tensor, tree_payload: Dict[str, Any]) -> torch.Tensor:
         del obs_1d
+        if not bool(getattr(self, 'use_tree_payload_encoder', True)):
+            return torch.zeros(self.hidden_dim, device=self.device)
         return self._encode_tree_payload(tree_payload if isinstance(tree_payload, dict) else {})
 
     def _encode_tree_signal_batch(self, last_obs_b: torch.Tensor, tree_payloads: List[Dict[str, Any]]) -> torch.Tensor:
         del last_obs_b
+        if not bool(getattr(self, 'use_tree_payload_encoder', True)):
+            bsz = len(tree_payloads)
+            return torch.zeros((bsz, self.hidden_dim), device=self.device)
         return self.tree_payload_encoder.forward_batch(tree_payloads)
 
     def _apply_communication(self, self_context: torch.Tensor, opp_embeddings: List[torch.Tensor]):
@@ -1173,6 +1178,7 @@ class TemporalLSTMEncoder(nn.Module):
         tree_emb_b = self._encode_tree_signal_batch(last_obs_b, all_tree_payloads)
         self_temporal_contexts = self.tree_norm(self_temporal_contexts + tree_emb_b)
 
+        use_spatial = bool(getattr(self, 'use_spatial_attention', True))
         final_embeddings = []
         comm_regs = []
         comm_gate_means = []
@@ -1181,7 +1187,7 @@ class TemporalLSTMEncoder(nn.Module):
             self_ctx = self_temporal_contexts[i]
             opps = all_opponents[i]
 
-            if len(opps) > 0:
+            if use_spatial and len(opps) > 0:
                 opp_embs = []
                 for opp_obs in opps:
                     opp_t = self._to_1d_tensor(opp_obs)
@@ -1368,7 +1374,7 @@ OPTIMIZATION FLAGS (NEW - v2.0):
       • Agent attends to self + all opponents
       • Learns coordination, collision-avoidance patterns
       • ~20% slower but essential for interaction-rich scenarios
-      • From: Iqbal & Sha (2019) \"Actor-Attention-Critic\"
+      • From: Iqbal & Sha (2019) "Actor-Attention-Critic\"
       
     - False: Skip spatial attention
       • ~20% faster training
@@ -1440,7 +1446,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.show_progress_bar = show_progress_bar
         self.train_frequency = train_frequency
         self.episode_count = 0
-        self.optimizer_mode = optimizer_mode.lower()  # 'single' or 'multiple'
+        # Default: 'single' (empfohlen, stabiler, Standard in Flatland)
+        self.optimizer_mode = (optimizer_mode or 'single').lower()  # 'single' or 'multiple'
 
         self.state_size = state_size  # temporal obs size per timestep
         self.action_size = action_size
@@ -1482,23 +1489,51 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             self.K_epoch = 3  # Back to baseline
             
         self.surrogate_eps_clip = 0.12  # tighter trust region to reduce KL spikes
-        self.weight_loss = 1.6  # Reduce critic dominance so actor gets stronger update signal
+        self.weight_loss = 0.9  # Lower critic pressure to prevent value-overfit from killing actor gradients
         self.weight_entropy = 0.11  # +0.02 to boost exploration for low done-rate regime
         # Exploration boost: increase decision_eps_floor and max_eps_random
         self.decision_eps_floor = 0.12  # +0.02 keep exploration active in sparse-decision regimes
         self.max_eps_random = 0.18      # +0.02 raise global random exploration ceiling
-        self.weight_policy = 1.25
-        self.weight_aux_deadlock = 0.12
-        # Sparse-switch maps: keep forward dominant and avoid forcing turn frequency.
-        self.weight_action_diversity = 0.12
-        self.forward_prob_soft_max = 0.52
+        self.weight_policy = 1.60
+        
+        # ========================================================================
+        # SIMPLIFIED MODE: Core PPO only, with optional agent count override
+        # Set FLATLAND_SIMPLIFIED_MAPPO=N where:
+        #   0 = Full Mode (Elite, Aux, Diversity, Comm enabled)
+        #   1,5,10,100 = Core PPO only with N agents
+        # ========================================================================
+        simplified_val = str(os.getenv('FLATLAND_SIMPLIFIED_MAPPO', '0')).strip()
+        try:
+            self.simplified_mode = int(simplified_val)
+        except ValueError:
+            self.simplified_mode = 1 if simplified_val.lower() in ('1', 'true', 'yes', 'on') else 0
+        
+        if self.simplified_mode > 0:
+            print(f"\n🧠 CORE PPO MODE: {self.simplified_mode} agents, no Elite/Aux/Diversity/Comm")
+        else:
+            print("\n🚀 FULL MODE: Elite buffer, Aux deadlock, Diversity, Communication enabled")
+
+        # In CORE mode default to a scalable architecture baseline:
+        # no spatial/communication coupling unless explicitly requested.
+        if self.simplified_mode > 0:
+            disable_spatial_in_core = str(os.getenv('FLATLAND_SIMPLE_DISABLE_SPATIAL', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+            if disable_spatial_in_core:
+                self.use_spatial_attention = False
+                print("   - CORE override: use_spatial_attention=False")
+        
+        # Optional auxiliary losses (disabled when simplified_mode > 0)
+        self.weight_aux_deadlock = 0.0 if self.simplified_mode > 0 else 0.04
+        self.weight_action_diversity = 0.0 if self.simplified_mode > 0 else 0.05
+        self.weight_comm = 0.0 if self.simplified_mode > 0 else 3.0e-4
+        
+        # Action diversity parameters (used only if weight_action_diversity > 0)
+        self.forward_prob_soft_max = 0.70
         self.lr_prob_soft_min = 0.11
         self.idle_prob_soft_max = 0.22
         # Apply action-diversity shaping only at meaningful conflict/decision contexts.
         self.action_diversity_gate_enabled = True
         self.action_diversity_gate_threshold = 0.65
         self.aux_deadlock_pos_weight = 4.0
-        self.weight_comm = 3.0e-4  # weak communication sparsity regularizer
         self.comm_reg_start_episode = 300
         self.comm_reg_full_episode = 600
         self.comm_dropout_early = 0.00
@@ -1542,6 +1577,23 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             self.max_batches_per_training = None
         
         self.accumulated_episodes: deque = deque(maxlen=self.max_episodes_in_training_memory)
+
+        # Optional elite replay pool for sparse-reward regimes.
+        # Keeps top-scoring episodes longer and mixes only a small share
+        # into each update to reduce forgetting without drifting too far off-policy.
+        self.use_elite_buffer = (self.simplified_mode == 0) and str(os.getenv('FLATLAND_USE_ELITE_BUFFER', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+        self.elite_mix_ratio = float(np.clip(float(os.getenv('FLATLAND_ELITE_MIX_RATIO', '0.15')), 0.0, 0.5))
+        self.elite_max_episodes = int(max(
+            0,
+            min(
+                self.max_episodes_in_training_memory * 4,
+                int(os.getenv('FLATLAND_ELITE_BUFFER_SIZE', str(self.max_episodes_in_training_memory)))
+            )
+        ))
+        self.elite_min_score_delta = float(os.getenv('FLATLAND_ELITE_MIN_SCORE_DELTA', '0.0'))
+        # (score, serial_id, episode_memory)
+        self.elite_episodes: List[Tuple[float, int, EpisodeBuffers]] = []
+        self._episode_serial = 0
         
         self.loss = 0
 
@@ -1598,6 +1650,15 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # Set spatial attention flag on encoders (used in forward_agent())
         self.encoder_actor.use_spatial_attention = bool(self.use_spatial_attention)
         self.encoder_critic.use_spatial_attention = bool(self.use_spatial_attention)
+
+        # Optional performance switch: disable tree-payload encoding in core/simple runs.
+        # Default is ON in CORE mode to keep runtime stable from 1 -> 5 -> 10 -> 100 agents
+        # without extra manual environment flags.
+        disable_tree_payload = str(os.getenv('FLATLAND_DISABLE_TREE_PAYLOAD_ENCODER', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+        if self.simplified_mode > 0 and disable_tree_payload:
+            self.encoder_actor.use_tree_payload_encoder = False
+            self.encoder_critic.use_tree_payload_encoder = False
+            print("   - CORE override: tree_payload_encoder=OFF")
 
         # Actor-Critic Model (heads only, encoders are separate!)
         critic_hidden = max(192, int(self.hidden_size))
@@ -1696,7 +1757,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         # Observation sanity statistics (gesammelt über 100 Episoden)
         self._obs_stat_buffer: list = []   # rohe Feature-Vektoren der letzten 100 Ep.
-        self._obs_stat_interval = 100
+        self._obs_stat_interval = max(10, int(os.getenv('FLATLAND_DIAG_INTERVAL_EPISODES', '100')))
         # Tree-payload sanity statistics (nodes/edges validity over same window)
         self._tree_stat_buffer: list = []
 
@@ -1713,6 +1774,27 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         }
         # Episode-Kennzahlen (Reward + Done-Rate)
         self._ep_stat_buf: dict = {'reward': [], 'done_frac': []}
+        self._rollout_diag_window = 100
+        self._rollout_diag_buf: dict = {
+            'sp_match': deque(maxlen=self._rollout_diag_window),
+            'sp_total': deque(maxlen=self._rollout_diag_window),
+            'timeout_frac': deque(maxlen=self._rollout_diag_window),
+            'ep_len': deque(maxlen=self._rollout_diag_window),
+            'final_aux': deque(maxlen=self._rollout_diag_window),
+            'done_frac': deque(maxlen=self._rollout_diag_window),
+        }
+        self.time_profile_enabled = str(os.getenv('FLATLAND_TIME_PROFILE', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+        self._time_profile_buf: dict = {
+            'total': [],
+            'pool_collect': [],
+            'gae_prep': [],
+            'concat_sample': [],
+            'old_logprobs': [],
+            'encode_batch': [],
+            'forward_loss': [],
+            'backward_clip': [],
+            'optimizer_step': [],
+        }
 
     def _comm_progress(self) -> float:
         start_ep = int(self.comm_reg_start_episode)
@@ -1824,7 +1906,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # Narrow PPO trust region in late training to avoid destructive policy jumps.
         if self.episode_count < 200:
             # Early phase needs stronger actor movement to escape deadlock basins.
-            return min(0.15, float(self.surrogate_eps_clip))
+            return min(0.18, float(self.surrogate_eps_clip))
         if self.episode_count < self.stability_guard_start_episode:
             return float(self.surrogate_eps_clip)
         if self.episode_count >= self.stability_guard_hard_episode:
@@ -2043,6 +2125,52 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         )
         return float(np.clip(risk, 0.0, 1.0))
 
+    @staticmethod
+    def _extract_local_shortest_action_from_temporal_state(temporal_state) -> Optional[int]:
+        """Infer shortest-path action from payload edges (1=L, 2=F, 3=R)."""
+        if not isinstance(temporal_state, (list, tuple)) or len(temporal_state) == 0:
+            return None
+        last_step = temporal_state[-1]
+        if not isinstance(last_step, (list, tuple)) or len(last_step) < 3:
+            return None
+        payload = last_step[2]
+        if not isinstance(payload, dict):
+            return None
+        edges = payload.get("edges", [])
+        if not isinstance(edges, list) or len(edges) == 0:
+            return None
+
+        best_action = None
+        best_score = float("inf")
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+
+            a_l = float(edge.get("action_left", 0.0))
+            a_f = float(edge.get("action_forward", 0.0))
+            a_r = float(edge.get("action_right", 0.0))
+            if a_l >= a_f and a_l >= a_r:
+                action = 1
+                confidence = a_l
+            elif a_f >= a_l and a_f >= a_r:
+                action = 2
+                confidence = a_f
+            else:
+                action = 3
+                confidence = a_r
+
+            if confidence <= 0.0:
+                continue
+
+            dst = float(edge.get("dst_dist_to_target", 1.0))
+            deadlock_pen = 0.10 * float(edge.get("dst_deadlock_risk", 0.0))
+            score = dst + deadlock_pen
+            if score < best_score:
+                best_score = score
+                best_action = action
+
+        return best_action
+
     def _extract_action_diversity_gate_from_temporal_state(self, temporal_state) -> float:
         """Return gate in [0,1] where diversity shaping should be active.
 
@@ -2119,23 +2247,93 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         
         return advantages, returns
 
+    def _episode_priority_score(self, ep_total_reward: float, ep_done_count: int, ep_n_agents: int) -> float:
+        """Score used for elite-buffer admission.
+
+        Done-rate gets a small bonus so successful episodes are retained
+        even when raw rewards are close in sparse regimes.
+        """
+        done_frac = float(ep_done_count) / float(ep_n_agents) if ep_n_agents > 0 else 0.0
+        return float(ep_total_reward) + 0.25 * done_frac
+
+    def _maybe_add_elite_episode(self, episode_memory: EpisodeBuffers, score: float):
+        if not self.use_elite_buffer or self.elite_max_episodes <= 0:
+            return
+
+        self._episode_serial += 1
+        candidate = (float(score), int(self._episode_serial), episode_memory)
+
+        if len(self.elite_episodes) < self.elite_max_episodes:
+            self.elite_episodes.append(candidate)
+            return
+
+        scores = [item[0] for item in self.elite_episodes]
+        min_idx = int(np.argmin(scores))
+        min_score = float(scores[min_idx])
+        if float(score) > (min_score + self.elite_min_score_delta):
+            self.elite_episodes[min_idx] = candidate
+
+    def _collect_training_episode_pool(self) -> List[EpisodeBuffers]:
+        recent_episodes = list(self.accumulated_episodes)
+        if (not self.use_elite_buffer) or self.elite_mix_ratio <= 0.0 or len(self.elite_episodes) == 0:
+            return recent_episodes
+
+        # Avoid double-counting episodes that are still in the recent window.
+        recent_ids = {id(ep) for ep in recent_episodes}
+        elite_candidates = [ep for _, _, ep in self.elite_episodes if id(ep) not in recent_ids]
+        if len(elite_candidates) == 0:
+            return recent_episodes
+
+        # Mix only a small elite share (default 15%) to limit off-policy drift.
+        target_elite = int(round(self.elite_mix_ratio * max(1, len(recent_episodes))))
+        target_elite = max(0, target_elite)
+        if target_elite == 0:
+            return recent_episodes
+
+        elite_count = min(target_elite, len(elite_candidates))
+        chosen_idx = np.random.choice(len(elite_candidates), size=elite_count, replace=False)
+        chosen_elite = [elite_candidates[int(i)] for i in chosen_idx]
+        return recent_episodes + chosen_elite
+
     def train_net_accumulated(self):
         """Training loop - ORIGINAL VERSION (no early sampling, no cached logprobs)"""
         self.encoder_actor.train()
         self.encoder_critic.train()
         self.actor_critic_model.train()
 
+        profile_enabled = bool(getattr(self, 'time_profile_enabled', True))
+        update_t0 = time.perf_counter() if profile_enabled else 0.0
+        timing = {}
+
+        def _tic() -> float:
+            return time.perf_counter()
+
+        def _add_t(name: str, dt: float):
+            timing[name] = timing.get(name, 0.0) + float(dt)
+
         episode_data = []
         trajectory_count = 0
-        num_episodes = len(self.accumulated_episodes)
+        num_recent_episodes = len(self.accumulated_episodes)
         
-        if num_episodes < self.max_episodes_in_training_memory:
+        if num_recent_episodes < self.max_episodes_in_training_memory:
             if self.show_pre_train_debug_msg:
-                print(f"\n🔍 Collect episodes {num_episodes}/{self.max_episodes_in_training_memory}")
+                print(f"\n🔍 Collect episodes {num_recent_episodes}/{self.max_episodes_in_training_memory}")
             return
+
+        t0 = _tic() if profile_enabled else 0.0
+        training_episodes = self._collect_training_episode_pool()
+        if profile_enabled:
+            _add_t('pool_collect', _tic() - t0)
+        num_elite_used = max(0, len(training_episodes) - num_recent_episodes)
+        if self.show_pre_train_debug_msg and self.use_elite_buffer and num_elite_used > 0:
+            print(
+                f"🧠 Elite mix: recent={num_recent_episodes}, elite_used={num_elite_used}, "
+                f"elite_pool={len(self.elite_episodes)}, mix_ratio={self.elite_mix_ratio:.2f}"
+            )
         
         # ⚡ OPTIMIZATION: Process ALL episodes with batched encoding
-        for episode_memory in self.accumulated_episodes:
+        t0 = _tic() if profile_enabled else 0.0
+        for episode_memory in training_episodes:
             episode_state_tuples = []
             episode_actions = []
             episode_advantages = []
@@ -2188,12 +2386,15 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     torch.cat(episode_returns, dim=0),
                     torch.cat(episode_aux_deadlock, dim=0)
                 ))
+        if profile_enabled:
+            _add_t('gae_prep', _tic() - t0)
         
         if len(episode_data) == 0:
             print("⚠️ No transitions to train on!")
             return
         
         # Concatenate all episode data
+        t0 = _tic() if profile_enabled else 0.0
         all_state_tuples = []
         all_actions = []
         all_gae_advantages = []
@@ -2251,6 +2452,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         all_gae_advantages = all_gae_advantages[sampled_indices]
         all_gae_returns = all_gae_returns[sampled_indices]
         all_aux_deadlock = all_aux_deadlock[sampled_indices]
+        if profile_enabled:
+            _add_t('concat_sample', _tic() - t0)
         
         if self.show_pre_train_debug_msg:
             print(f"📦 Using {samples_to_use}/{total_samples} samples ({samples_to_use/total_samples*100:.1f}%)")
@@ -2264,6 +2467,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         if self.show_pre_train_debug_msg:
             print(f"\n🔍 Computing initial old_logprobs for {len(all_state_tuples)} samples...")
         
+        t0 = _tic() if profile_enabled else 0.0
         with torch.no_grad():
             # Encode states in batches to avoid OOM
             all_old_logprobs = []
@@ -2278,6 +2482,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 all_old_logprobs.append(old_lp)
             
             all_old_logprobs = torch.cat(all_old_logprobs, dim=0)
+        if profile_enabled:
+            _add_t('old_logprobs', _tic() - t0)
         
         if self.show_pre_train_debug_msg:
             print(f"✅ Initial old_logprobs computed (mean={all_old_logprobs.mean().item():.4f})")
@@ -2327,8 +2533,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 comm_progress = self._apply_comm_schedule()
 
                 # Encode states
+                t0 = _tic() if profile_enabled else 0.0
                 states_actor = self.encoder_actor.forward_batch(batch_state_tuples)
                 states_critic = self.encoder_critic.forward_batch(batch_state_tuples)
+                if profile_enabled:
+                    _add_t('encode_batch', _tic() - t0)
 
                 # ⚠️ NaN Check: Detect gradient explosion early
                 if torch.isnan(states_actor).any():
@@ -2341,6 +2550,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     continue
 
                 # Evaluate actions (NEW policy - WITH gradients!)
+                t0 = _tic() if profile_enabled else 0.0
                 logits = self.actor_critic_model.actor(states_actor)
                 dist = Categorical(logits=logits)
                 logprobs = dist.log_prob(batch_actions)
@@ -2451,62 +2661,73 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 ratio_mean = ratios.mean().item()
                 approx_kl = torch.abs((batch_old_logprobs - logprobs).mean()).item()
 
-                gate_mean = (self.encoder_actor.last_comm_gate_mean + self.encoder_critic.last_comm_gate_mean) / 2.0
-                comm_boost = max(0.0, (gate_mean - self.comm_gate_target) / max(self.comm_gate_target, 1e-6))
-                comm_weight_eff = self.weight_comm * comm_progress * (1.0 + min(comm_boost, 2.0))
-
-                policy_weight_eff = self.weight_policy
-                entropy_weight_eff = self.weight_entropy
-                if self.episode_count >= self.entropy_rescue_start_episode and entropy_mean < self.entropy_floor:
-                    entropy_weight_eff = max(entropy_weight_eff, self.weight_entropy * self.entropy_recovery_scale)
-                    policy_weight_eff *= 0.90
-
-                ratio_soft_viol = (ratio_mean > self.ratio_guard_soft) or (ratio_mean < self.ratio_guard_soft_low)
-                ratio_hard_viol = (ratio_mean > self.ratio_guard_hard) or (ratio_mean < self.ratio_guard_hard_low)
-
-                if approx_kl > self.ppo_target_kl or ratio_soft_viol:
-                    policy_weight_eff *= 0.75
-                    entropy_weight_eff *= 0.7
-
-                if approx_kl > self.ppo_max_kl or ratio_hard_viol:
-                    # Keep small actor updates alive during hard spikes to avoid
-                    # long Pw=0 plateaus where policy stops improving.
-                    policy_weight_eff = max(policy_weight_eff * 0.55, 0.35)
-                    entropy_weight_eff *= 0.4
-                    comm_weight_eff *= 1.35
-                    hard_spike_batches_total += 1
-                    hard_spike_streak += 1
-                elif approx_kl > self.ppo_emergency_kl or ratio_soft_viol:
-                    hard_spike_streak = max(hard_spike_streak, 1)
+                # ========================================================================
+                # WEIGHT SCHEDULING: In SIMPLIFIED_MODE, use fixed weights only
+                # ========================================================================
+                if self.simplified_mode:
+                    # CORE PPO: Fixed weights, no dynamic scheduling
+                    policy_weight_eff = self.weight_policy
+                    value_weight_eff = self.weight_loss
+                    entropy_weight_eff = self.weight_entropy
+                    comm_weight_eff = 0.0
                 else:
-                    hard_spike_streak = 0
+                    # COMPLEX MODE: Dynamic weights based on KL, ratio, entropy
+                    gate_mean = (self.encoder_actor.last_comm_gate_mean + self.encoder_critic.last_comm_gate_mean) / 2.0
+                    comm_boost = max(0.0, (gate_mean - self.comm_gate_target) / max(self.comm_gate_target, 1e-6))
+                    comm_weight_eff = self.weight_comm * comm_progress * (1.0 + min(comm_boost, 2.0))
 
-                if approx_kl > self.ppo_emergency_kl_hard:
-                    policy_weight_eff = max(policy_weight_eff * 0.45, 0.30)
-                    entropy_weight_eff *= 0.25
-                    comm_weight_eff *= 1.45
-                    hard_spike_batches_total += 1
-                    hard_spike_streak += 1
-                
-                # Keep policy and critic progress coupled: when critic error is high,
-                # increase critic pressure and slightly damp policy updates.
-                value_weight_eff = self.weight_loss
-                value_loss_scalar = float(value_loss_component.detach().item())
-                if value_loss_scalar > 0.90:
-                    value_weight_eff *= 1.35
-                    policy_weight_eff *= 0.97
-                elif value_loss_scalar < 0.45:
-                    value_weight_eff *= 0.90
-                    policy_weight_eff *= 1.05
+                    policy_weight_eff = self.weight_policy
+                    entropy_weight_eff = self.weight_entropy
+                    if self.episode_count >= self.entropy_rescue_start_episode and entropy_mean < self.entropy_floor:
+                        entropy_weight_eff = max(entropy_weight_eff, self.weight_entropy * self.entropy_recovery_scale)
+                        policy_weight_eff *= 0.90
 
-                # When PPO is overly conservative (very low KL, ratio near 1,
-                # near-zero policy loss), softly boost actor weight.
-                if (
-                    abs(float(policy_loss_component.detach().item())) < 0.003
-                    and approx_kl < 0.010
-                    and abs(ratio_mean - 1.0) < 0.03
-                ):
-                    policy_weight_eff *= 1.15
+                    ratio_soft_viol = (ratio_mean > self.ratio_guard_soft) or (ratio_mean < self.ratio_guard_soft_low)
+                    ratio_hard_viol = (ratio_mean > self.ratio_guard_hard) or (ratio_mean < self.ratio_guard_hard_low)
+
+                    if approx_kl > self.ppo_target_kl or ratio_soft_viol:
+                        policy_weight_eff *= 0.75
+                        entropy_weight_eff *= 0.7
+
+                    if approx_kl > self.ppo_max_kl or ratio_hard_viol:
+                        # Keep small actor updates alive during hard spikes to avoid
+                        # long Pw=0 plateaus where policy stops improving.
+                        policy_weight_eff = max(policy_weight_eff * 0.55, 0.35)
+                        entropy_weight_eff *= 0.4
+                        comm_weight_eff *= 1.35
+                        hard_spike_batches_total += 1
+                        hard_spike_streak += 1
+                    elif approx_kl > self.ppo_emergency_kl or ratio_soft_viol:
+                        hard_spike_streak = max(hard_spike_streak, 1)
+                    else:
+                        hard_spike_streak = 0
+
+                    if approx_kl > self.ppo_emergency_kl_hard:
+                        policy_weight_eff = max(policy_weight_eff * 0.45, 0.30)
+                        entropy_weight_eff *= 0.25
+                        comm_weight_eff *= 1.45
+                        hard_spike_batches_total += 1
+                        hard_spike_streak += 1
+                    
+                    # Keep policy and critic progress coupled: when critic error is high,
+                    # increase critic pressure and slightly damp policy updates.
+                    value_weight_eff = self.weight_loss
+                    value_loss_scalar = float(value_loss_component.detach().item())
+                    if value_loss_scalar > 0.90:
+                        value_weight_eff *= 1.35
+                        policy_weight_eff *= 0.97
+                    elif value_loss_scalar < 0.45:
+                        value_weight_eff *= 0.90
+                        policy_weight_eff *= 1.05
+
+                    # When PPO is overly conservative (very low KL, ratio near 1,
+                    # near-zero policy loss), softly boost actor weight.
+                    if (
+                        abs(float(policy_loss_component.detach().item())) < 0.003
+                        and approx_kl < 0.010
+                        and abs(ratio_mean - 1.0) < 0.03
+                    ):
+                        policy_weight_eff *= 1.15
 
                 loss = \
                     policy_weight_eff * policy_loss_component \
@@ -2515,8 +2736,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     + self.weight_action_diversity * action_diversity_loss_component \
                     + self.weight_aux_deadlock * aux_deadlock_loss_component \
                     + comm_weight_eff * comm_loss_component
+                if profile_enabled:
+                    _add_t('forward_loss', _tic() - t0)
 
                 # Backward pass
+                t0 = _tic() if profile_enabled else 0.0
                 self.optimizer_encoder_actor.zero_grad()
                 self.optimizer_actor_head.zero_grad()
                 self.optimizer_encoder_critic.zero_grad()
@@ -2542,6 +2766,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     list(self.actor_critic_model.critic.parameters()),
                     max_norm=0.50
                 )
+                if profile_enabled:
+                    _add_t('backward_clip', _tic() - t0)
                 
                 grad_norm = max(grad_norm_actor.item(), grad_norm_critic.item())
 
@@ -2582,6 +2808,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     continue
                 
                 # Update optimizers - mode-dependent
+                t0 = _tic() if profile_enabled else 0.0
                 if self.optimizer_mode == 'single':
                     # Single shared optimizer: one step for all parameters
                     self.optimizer.step()
@@ -2592,6 +2819,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                         self.optimizer_actor_head.step()
                     self.optimizer_encoder_critic.step()
                     self.optimizer_critic_head.step()
+                if profile_enabled:
+                    _add_t('optimizer_step', _tic() - t0)
                 
                 self.loss = loss.detach().cpu().numpy()
 
@@ -2727,6 +2956,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             self.training_step = 0
         self.training_step += 1
 
+        if profile_enabled:
+            timing['total'] = _tic() - update_t0
+            for k in self._time_profile_buf:
+                self._time_profile_buf[k].append(float(timing.get(k, 0.0)))
+
         # Clear data
         del all_state_tuples
         del all_actions
@@ -2769,42 +3003,32 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         print("\n" + "="*80 + "\n")
 
     # Feature names/descriptions for current DecisionPointObservation layout
-    # (24D base vector; tree context is provided out-of-band via payload).
+    # (15D base vector; tree context is provided out-of-band via payload).
     _OBS_FEATURE_NAMES = [
         "path_left", "path_forward", "path_right",
         "delta_left", "delta_forward", "delta_right",
-        "st_0", "st_1", "st_2", "st_3", "st_4", "st_5", "st_6",
+        "st_3", "st_4", "st_6",
         "priority_rank",
-        "is_pre_merge", "is_switch", "is_started", "is_done",
+        "is_pre_merge", "is_switch",
         "sp_left", "sp_forward", "sp_right",
-        "deadlock_ahead", "deadlock_hard_block", "deadlock_escapable",
     ]
 
     _OBS_FEATURE_DESC = [
         "Relative transition exists: left",
         "Relative transition exists: forward",
         "Relative transition exists: right",
-        "Distance delta to left successor (clipped)",
-        "Distance delta to forward successor (clipped)",
-        "Distance delta to right successor (clipped)",
-        "TrainState: READY",
-        "TrainState: MOVING",
-        "TrainState: STOPPED",
+        "Distance delta to left successor (exp-squashed; -1 if no transition)",
+        "Distance delta to forward successor (exp-squashed; -1 if no transition)",
+        "Distance delta to right successor (exp-squashed; -1 if no transition)",
+        "TrainState: READY_TO_DEPART",
         "TrainState: MALFUNCTION",
-        "TrainState: DONE",
-        "TrainState: WAITING",
         "State flag: not started (position is None)",
         "Normalized priority rank",
         "One step before merge-conflict point",
         "Current cell is a switch",
-        "State flag: agent is on map",
-        "State flag: agent is done",
         "Shortest-path hint: left",
         "Shortest-path hint: forward",
         "Shortest-path hint: right",
-        "Ahead conflict with mismatched direction",
-        "Ahead conflict + no immediate free exit",
-        "Ahead conflict and blocker has free alternative",
     ]
 
     def _print_obs_statistics(self):
@@ -3367,6 +3591,37 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         else:
             print(f"\n    {color('OK', C_GREEN)}  Tree encoder diagnostics look healthy.")
 
+        # ── 3c) Timing Profile (every _obs_stat_interval episodes) ──
+        tbuf = self._time_profile_buf
+        t_n = len(tbuf['total']) if 'total' in tbuf else 0
+        if t_n > 0:
+            t_total = np.array(tbuf['total'], dtype=np.float32)
+            total_mean = float(np.mean(t_total)) if t_total.size > 0 else 0.0
+            print(f"\n{color(W, C_BLUE)}")
+            print(f"  SECTION 3C — TRAINING TIMING PROFILE  (n={t_n} updates)")
+            print(f"  +{'─'*26}+{'─'*14}+{'─'*10}+{'─'*34}+")
+            print(f"  | {'Block':<24s} | {'mean_s':>12s} | {'share%':>8s} | {'note':<32s} |")
+            print(f"  +{'─'*26}+{'─'*14}+{'─'*10}+{'─'*34}+")
+            for key, note in [
+                ('pool_collect', 'episode pool assembly'),
+                ('gae_prep', 'critic enc + gae preparation'),
+                ('concat_sample', 'concat + sampling'),
+                ('old_logprobs', 'precompute old logprobs'),
+                ('encode_batch', 'encoder forward per batch'),
+                ('forward_loss', 'actor/critic forward + losses'),
+                ('backward_clip', 'backward + grad clipping'),
+                ('optimizer_step', 'optimizer update'),
+            ]:
+                arr = np.array(tbuf.get(key, []), dtype=np.float32)
+                mean_s = float(np.mean(arr)) if arr.size > 0 else 0.0
+                share = (100.0 * mean_s / max(total_mean, 1e-9)) if total_mean > 0.0 else 0.0
+                print(f"  | {key:<24s} | {mean_s:12.4f} | {share:8.2f} | {note:<32s} |")
+            print(f"  +{'─'*26}+{'─'*14}+{'─'*10}+{'─'*34}+")
+            print(f"  | {'total':<24s} | {total_mean:12.4f} | {100.0:8.2f} | {'per PPO update':<32s} |")
+            print(f"  +{'─'*26}+{'─'*14}+{'─'*10}+{'─'*34}+")
+            for k in tbuf:
+                tbuf[k].clear()
+
         # ── 4) Obs-Sanity ──────────────────────────────────────────────────────
         obs_issues = []
         if self._obs_stat_buffer:
@@ -3432,8 +3687,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             if dups:
                 obs_issues.append(
                     f"{len(dups)} duplicate feature pair(s) (|corr|>0.99): "
-                    + ", ".join(f"[{a}]{fname(a)}↔[{b}]{fname(b)}"
-                                for a, b, _ in dups[:4]))
+                    + ", ".join(f"[{a}]{fname(a):<20s} <-> [{b}]{fname(b):<20s}  corr={c:+.4f}"
+                                for a, b, c in dups[:4]))
 
             print(f"  +{'─'*30}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*7}+{'─'*6}+")
             print(f"  | {'Feature':<28s} | {'mean':>5} | {'std':>5} | "
@@ -3532,116 +3787,81 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         for key in self._stat_buf:
             self._stat_buf[key].clear()
 
-    def _apply_episode_end_bonus(self, episode_memory, done_count, num_agents):
-        """Apply cooperative episode-end shaping — PER AGENT ONLY.
-
-        🎯 CRITICAL: Bonus applied ONLY to agents where final transition has done==True
-        - Each agent (handle) has at most ONE done==True transition (the last one)
-        - Multiple agents CAN be done in the same episode
-        - Bonus applied exactly ONCE per agent, to their final transition only
-        
-        Mechanism:
-        - Progress reward grows non-linearly with team completion ratio
-        - Deadlock-risk on terminal states is penalized
-        - Total shaping is normalized and capped for stability across 1..n agents
-
-        Returns:
-            Total scalar delta applied over all modified final transitions.
-        """
-        if num_agents <= 0:
-            return 0.0
-    
-        # Cooperative progress bonus is computed as an EPISODE budget, then distributed
-        # over done agents. This keeps scale stable for variable team sizes.
-        completion_ratio = float(done_count) / float(num_agents)
-        TEAM_BONUS_EPISODE_CAP = 100.0
-        TEAM_BONUS_EXP = 1.8
-        total_bonus_budget = TEAM_BONUS_EPISODE_CAP * (completion_ratio ** TEAM_BONUS_EXP)
-        per_done_agent_bonus = total_bonus_budget / max(1, done_count)
-
-        # Penalize agents that finish in high deadlock-risk states (aux_dl in [0, 1]).
-        DEADLOCK_PENALTY_PER_AGENT_MAX = 45.0
-
-        # Safety clamps to prevent reward/cost explosion.
-        PER_AGENT_DELTA_MIN = -40.0
-        PER_AGENT_DELTA_MAX = 45.0
-        EPISODE_DELTA_ABS_CAP = 120.0
-
-        done_updates = []
-        for handle in episode_memory.memory:
-            transitions = episode_memory.memory[handle]
-            if not transitions:
-                continue
-
-            # Get final transition for this agent
-            state, action, reward, next_state, done, aux_dl = transitions[-1]
-            # 🎯 ONLY process agents with done==True in their final transition
-            if not done:
-                continue
-            
-            deadlock_risk = max(
-                self._extract_deadlock_label_from_temporal_state(state),
-                self._extract_deadlock_label_from_temporal_state(next_state),
-            )
-            delta = per_done_agent_bonus - (DEADLOCK_PENALTY_PER_AGENT_MAX * deadlock_risk)
-            delta = float(np.clip(delta, PER_AGENT_DELTA_MIN, PER_AGENT_DELTA_MAX))
-            # Store: (handle, ..., delta) — exactly ONE entry per done agent
-            done_updates.append((handle, state, action, reward, next_state, done, aux_dl, delta))
-
-        if not done_updates:
-            return 0.0
-
-        total_delta = float(sum(item[7] for item in done_updates))
-
-        # Final episode-level cap independent of number of agents.
-        if abs(total_delta) > EPISODE_DELTA_ABS_CAP:
-            scale = EPISODE_DELTA_ABS_CAP / (abs(total_delta) + 1e-8)
-            done_updates = [
-                (h, s, a, r, ns, d, adl, delta * scale)
-                for (h, s, a, r, ns, d, adl, delta) in done_updates
-            ]
-            total_delta = float(sum(item[7] for item in done_updates))
-
-        # 🎯 Apply bonus to each done agent — exactly ONCE to their final transition
-        for handle, state, action, reward, next_state, done, aux_dl, delta in done_updates:
-            transitions = episode_memory.memory[handle]
-            # Modify only the final transition reward (done flag stays True)
-            transitions[-1] = (state, action, reward + delta, next_state, done, aux_dl)
-
-        return float(total_delta)
-
     def end_episode(self, train):
         if train:
             # Collect episode-level stats before buffer is reset
             ep_total_reward = 0.0
             ep_done_count   = 0
             ep_n_agents     = len(self.current_episode_memory.memory)
+            ep_timeout_count = 0
+            ep_len_list: List[int] = []
+            ep_final_aux_list: List[float] = []
+            ep_sp_match = 0
+            ep_sp_total = 0
             for transitions in self.current_episode_memory.memory.values():
                 if transitions:
+                    ep_len_list.append(len(transitions))
                     ep_total_reward += sum(float(t[2]) for t in transitions)
+                    last_t = transitions[-1]
+                    if len(last_t) >= 6:
+                        ep_final_aux_list.append(float(last_t[5]))
+
+                    for t in transitions:
+                        state, action, _, _, _, _ = t
+                        best_action = self._extract_local_shortest_action_from_temporal_state(state)
+                        if best_action is None:
+                            continue
+                        ep_sp_total += 1
+                        if int(action) == int(best_action):
+                            ep_sp_match += 1
+
                     # Count agents with done==True in their final transition
                     if transitions[-1][4]:   # done flag of last transition
                         ep_done_count += 1
-            # ═══════════════════════════════════════════════════════════════
-            # POST-EPISODE SHAPING: cooperative progress bonus + deadlock penalty
-            # Applied PER AGENT to agents with done==True only
-            # ═══════════════════════════════════════════════════════════════
-            team_bonus = self._apply_episode_end_bonus(
-                self.current_episode_memory, ep_done_count, ep_n_agents
-            )
-
-            # Keep logging aligned with the actual rewards used for training.
-            ep_total_reward += team_bonus
+                    else:
+                        ep_timeout_count += 1
+            # Keep logging aligned with rewards already shaped at transition time.
             self._ep_stat_buf['reward'].append(ep_total_reward)
-            self._ep_stat_buf['done_frac'].append(
-                ep_done_count / ep_n_agents if ep_n_agents > 0 else 0.0)
+            done_frac = ep_done_count / ep_n_agents if ep_n_agents > 0 else 0.0
+            timeout_frac = ep_timeout_count / ep_n_agents if ep_n_agents > 0 else 0.0
+            self._ep_stat_buf['done_frac'].append(done_frac)
+
+            self._rollout_diag_buf['sp_match'].append(int(ep_sp_match))
+            self._rollout_diag_buf['sp_total'].append(int(ep_sp_total))
+            self._rollout_diag_buf['timeout_frac'].append(float(timeout_frac))
+            self._rollout_diag_buf['ep_len'].append(float(np.mean(ep_len_list)) if ep_len_list else 0.0)
+            self._rollout_diag_buf['final_aux'].append(float(np.mean(ep_final_aux_list)) if ep_final_aux_list else 0.0)
+            self._rollout_diag_buf['done_frac'].append(float(done_frac))
+
+            if self.show_pre_train_debug_msg and (self.episode_count + 1) % 10 == 0:
+                win_sp_total = int(sum(self._rollout_diag_buf['sp_total']))
+                win_sp_match = int(sum(self._rollout_diag_buf['sp_match']))
+                win_sp_acc = (win_sp_match / win_sp_total) if win_sp_total > 0 else 0.0
+                win_done = float(np.mean(self._rollout_diag_buf['done_frac'])) if self._rollout_diag_buf['done_frac'] else 0.0
+                win_timeout = float(np.mean(self._rollout_diag_buf['timeout_frac'])) if self._rollout_diag_buf['timeout_frac'] else 0.0
+                win_len = float(np.mean(self._rollout_diag_buf['ep_len'])) if self._rollout_diag_buf['ep_len'] else 0.0
+                win_aux = float(np.mean(self._rollout_diag_buf['final_aux'])) if self._rollout_diag_buf['final_aux'] else 0.0
+                print(
+                    f"[RolloutDiag] ep={self.episode_count + 1} "
+                    f"done_win={win_done:.3f} timeout_win={win_timeout:.3f} "
+                    f"sp_match_win={win_sp_acc:.3f} (n={win_sp_total}) "
+                    f"ep_len_win={win_len:.1f} final_aux_win={win_aux:.3f}"
+                )
 
             self.accumulated_episodes.append(self.current_episode_memory)
+            elite_score = self._episode_priority_score(ep_total_reward, ep_done_count, ep_n_agents)
+            self._maybe_add_elite_episode(self.current_episode_memory, elite_score)
             self.current_episode_memory = EpisodeBuffers()
 
             if self.episode_count % self.train_frequency == 0:
                 if self.show_pre_train_debug_msg:
-                    print(f"\n🎯 Training with sliding window of {len(self.accumulated_episodes)} episodes...")
+                    if self.use_elite_buffer:
+                        print(
+                            f"\n🎯 Training with recent={len(self.accumulated_episodes)} "
+                            f"and elite_pool={len(self.elite_episodes)} episodes..."
+                        )
+                    else:
+                        print(f"\n🎯 Training with sliding window of {len(self.accumulated_episodes)} episodes...")
                 self.train_net_accumulated()
 
             if (self.episode_count + 1) % self._obs_stat_interval == 0 and self._obs_stat_buffer:

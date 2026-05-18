@@ -25,6 +25,7 @@ import numpy as np
 from flatland.core.env_observation_builder import ObservationBuilder
 from flatland.core.grid.grid4_utils import get_new_position
 from flatland.envs.fast_methods import fast_argmax, fast_count_nonzero
+from flatland.envs.step_utils.states import TrainState
 
 from marl_attention_temporal_observation.decision_point_utils import DecisionPointUtils
 
@@ -52,8 +53,8 @@ class DecisionPointObservation(ObservationBuilder):
     _last_100_features = []  # List of np.arrays (n_agents, n_features)
     _last_100_tree_stats = []  # List of tree_stats pro Episode
 
-    # Export 15 base features (17D reduced: removed redundant [12]is_started and [13]is_done).
-    # [12]is_started was inverse of [8]st_6; [13]is_done was duplicate of [7]st_4.
+    # Export 15 base features.
+    # Legacy lifecycle duplicates were removed; deadlock signals live in tree payload.
     BASE_OBS_SIZE = 15
     OBS_SIZE = BASE_OBS_SIZE
     # Legacy alias; active runtime cap is configured via self.local_search_max_nodes.
@@ -61,8 +62,8 @@ class DecisionPointObservation(ObservationBuilder):
 
     FEATURE_GROUPS_DOC = [
         ("[0-2]",   "path_left/forward/right",  "1 if relative transition exists"),
-        ("[3-5]",   "delta_left/forward/right", "clipped distance delta in [-1,1] for relative move"),
-        ("[6-8]",   "st_3/st_4/st_6",           "TrainState MALFUNCTION + DONE + not-started (dead states removed)"),
+        ("[3-5]",   "delta_left/forward/right", "exp-squashed gap-to-best successor in [-1,1] (0=best, <0=worse)"),
+        ("[6-8]",   "st_3/st_4/st_6",           "TrainState READY_TO_DEPART + MALFUNCTION + not-started"),
         ("[9]",     "priority_rank",            "normalized rank by remaining distance"),
         ("[10-11]", "merge/switch",             "cell semantics (redundant lifecycle flags removed)"),
         ("[12-14]", "sp_left/sp_forward/sp_right", "shortest-path action hint one-hot"),
@@ -77,11 +78,11 @@ class DecisionPointObservation(ObservationBuilder):
         (0,  "path_left",            "1 if relative left transition exists else 0"),
         (1,  "path_forward",         "1 if relative forward transition exists else 0"),
         (2,  "path_right",           "1 if relative right transition exists else 0"),
-        (3,  "delta_left",           "clipped distance delta to next_left in [-1,1], else 0"),
-        (4,  "delta_forward",        "clipped distance delta to next_forward in [-1,1], else 0"),
-        (5,  "delta_right",          "clipped distance delta to next_right in [-1,1], else 0"),
-        (6,  "st_3",                 "TrainState MALFUNCTION one-hot (only alive state)"),
-        (7,  "st_4",                 "TrainState DONE one-hot (only alive state)"),
+        (3,  "delta_left",           "exp-squashed (best_successor_dist - left_dist) in [-1,1], else -1 if no transition"),
+        (4,  "delta_forward",        "exp-squashed (best_successor_dist - forward_dist) in [-1,1], else -1 if no transition"),
+        (5,  "delta_right",          "exp-squashed (best_successor_dist - right_dist) in [-1,1], else -1 if no transition"),
+        (6,  "st_3",                 "TrainState READY_TO_DEPART one-hot (state_value==3)"),
+        (7,  "st_4",                 "TrainState MALFUNCTION one-hot (only alive state)"),
         (8,  "st_6",                 "1 if agent is not started (position is None) else 0"),
         (9,  "priority_rank",        "normalized distance-rank priority"),
         (10, "is_pre_merge",         "1 if one step before merge-conflict point else 0"),
@@ -116,7 +117,9 @@ class DecisionPointObservation(ObservationBuilder):
         self.local_search_mcts_horizon = 4
         self.local_search_ucb_c = 1.2
         self.local_search_contract_depth = 7
-        self.local_search_disable_corridor_contraction = True
+        # Enable corridor contraction by default so local search reaches
+        # downstream decision points within limited node budgets.
+        self.local_search_disable_corridor_contraction = False
         self.local_search_max_nodes = 72
         self.local_search_min_nodes = 24
         self.local_search_adaptive_budget = True
@@ -202,6 +205,17 @@ class DecisionPointObservation(ObservationBuilder):
             return 0.0
         denom = max(1.0, float(max_dist))
         return float(np.clip((float(root_dist) - float(dst_dist)) / denom, -1.0, 1.0))
+
+    @staticmethod
+    def _exp_squash_signed(value: float, scale: float = 8.0) -> float:
+        """Map unbounded signed values smoothly to (-1, 1) while preserving magnitude order."""
+        if not np.isfinite(value):
+            return 0.0
+        s = max(1e-6, float(scale))
+        x = float(value)
+        if x == 0.0:
+            return 0.0
+        return float(np.sign(x) * (1.0 - np.exp(-abs(x) / s)))
 
     @staticmethod
     def _pos_tuple(pos):
@@ -414,6 +428,8 @@ class DecisionPointObservation(ObservationBuilder):
 
         while frontier:
             current_pos, current_dir, decision_depth = frontier.pop()
+            if int(decision_depth) > int(depth_limit):
+                continue
             state_key = (int(current_pos[0]), int(current_pos[1]), int(current_dir))
 
             # Pruning: already visited at better depth
@@ -445,9 +461,23 @@ class DecisionPointObservation(ObservationBuilder):
                     depth_limit=depth_limit,
                     target=agent_target,
                 )
-                # Frontier: add end-of-corridor as new search state
-                if edge_len > 0 or final_pos == current_pos:
-                    frontier.append((final_pos, final_dir, decision_depth + 1))
+                # Frontier: add end-of-corridor as new search state.
+                # If contraction produced no movement, expand one-step
+                # successors to avoid local-search plateaus.
+                moved = not (
+                    int(final_pos[0]) == int(current_pos[0])
+                    and int(final_pos[1]) == int(current_pos[1])
+                    and int(final_dir) == int(current_dir)
+                )
+                if moved:
+                    if int(decision_depth) + 1 <= int(depth_limit):
+                        frontier.append((final_pos, final_dir, decision_depth + 1))
+                else:
+                    for nd in range(4):
+                        if transitions[nd]:
+                            npos = get_new_position(current_pos, nd)
+                            if int(decision_depth) + 1 <= int(depth_limit):
+                                frontier.append((npos, nd, decision_depth + 1))
                 continue
 
             # === Create Decision-Point Node ===
@@ -584,7 +614,8 @@ class DecisionPointObservation(ObservationBuilder):
                 })
 
                 # Add to frontier for next decision-point search
-                frontier.append((final_pos, final_dir, decision_depth + 1))
+                if int(decision_depth) + 1 <= int(depth_limit):
+                    frontier.append((final_pos, final_dir, decision_depth + 1))
 
         # === Link edges to node indices ===
         tree_edges = []
@@ -753,15 +784,15 @@ class DecisionPointObservation(ObservationBuilder):
     @classmethod
     def _print_feature_layout_doc(cls):
         if os.getenv("DEBUG_OBSERVATION", "0") == "1":
-            print(">> DecisionPointObservation (17D Base + Tree Payload) - Feature-Layout:")
+            print(">> DecisionPointObservation (15D Base + Tree Payload) - Feature-Layout:")
             for idx, name, desc in cls.FEATURE_GROUPS_DOC:
                 print(f"   {idx:<8} {name:<18} {desc}")
-            print("   0..16    base_feature_specs  exact index-to-meaning mapping (17D total)")
+            print("   0..14    base_feature_specs  exact index-to-meaning mapping (15D total)")
             print("   Tree Payload: nodes and edges contain deadlock_risk, deadlock_ahead, deadlock_hard_block")
 
     @classmethod
     def _cleanup_base_features(cls, raw_features: np.ndarray) -> None:
-        # No masking: all 17 base features are kept as-is.
+        # No masking: all 15 base features are kept as-is.
         return
 
     @staticmethod
@@ -891,7 +922,7 @@ class DecisionPointObservation(ObservationBuilder):
 
     def get(self, handle: int = 0):
         """Return (base_features, seen_agents, raw_tree_payload) for one agent.
-        Export 17 base features (dead TrainStates removed, deadlock moved to tree).
+        Export 15 base features (dead TrainStates removed, deadlock moved to tree).
         Deadlock information is embedded in tree payload nodes/edges.
         """
         raw_features = np.zeros(self.BASE_OBS_SIZE, dtype=np.float32)
@@ -914,7 +945,7 @@ class DecisionPointObservation(ObservationBuilder):
             self.env.dev_tree_dict = {}
         self.env.dev_tree_dict[handle] = tree_payload
 
-        # Fill base features according to the 24D schema.
+        # Fill base features according to the 15D schema.
         transitions = self._rail_get_transitions(pos, direction)
         left_dir = (int(direction) - 1) % 4
         fwd_dir = int(direction) % 4
@@ -924,20 +955,31 @@ class DecisionPointObservation(ObservationBuilder):
         raw_features[1] = 1.0 if transitions[fwd_dir] else 0.0
         raw_features[2] = 1.0 if transitions[right_dir] else 0.0
 
-        current_dist = self._safe_distance(handle, pos, direction, distance_map)
-        for feat_idx, ndir in ((3, left_dir), (4, fwd_dir), (5, right_dir)):
+        successor_dist = {}
+        for ndir in (left_dir, fwd_dir, right_dir):
             if transitions[ndir]:
                 npos = get_new_position(pos, ndir)
-                ndist = self._safe_distance(handle, npos, ndir, distance_map)
-                if not np.isfinite(current_dist) and not np.isfinite(ndist):
-                    # Keep progress deltas bounded for stable PPO value scaling.
-                    raw_features[feat_idx] = float(current_dist - ndist)
-                else:
-                    raw_features[feat_idx] = 0.0
+                successor_dist[ndir] = self._safe_distance(handle, npos, ndir, distance_map)
+
+        finite_successors = [d for d in successor_dist.values() if np.isfinite(d)]
+        best_successor_dist = min(finite_successors) if finite_successors else np.inf
+
+        for feat_idx, ndir in ((3, left_dir), (4, fwd_dir), (5, right_dir)):
+            ndist = successor_dist.get(ndir, np.inf)
+            if np.isfinite(best_successor_dist) and np.isfinite(ndist):
+                # Relative quality against the best local successor:
+                # 0.0 for best branch, negative for longer alternatives.
+                # Use smooth exponential squashing instead of hard clipping so
+                # large gaps remain distinguishable but bounded.
+                raw_gap = float(best_successor_dist - ndist)
+                raw_features[feat_idx] = self._exp_squash_signed(raw_gap)
             else:
-                raw_features[feat_idx] = 0.0
+                # Mark unavailable/unreachable branches as clearly worse than
+                # the best local successor to avoid conflicting with SP hints.
+                raw_features[feat_idx] = -1.0
 
         all_distance = []
+        self_distance = np.inf
         for idx, a in enumerate(self.env.agents):
             apos = a.position if a.position is not None else a.initial_position
             adir = a.direction if a.direction is not None else a.initial_direction
@@ -946,16 +988,25 @@ class DecisionPointObservation(ObservationBuilder):
             else:
                 adist = float(distance_map[a.handle, apos[0], apos[1], adir])
             all_distance.append((a.handle, adist, idx))
+            if a.handle == handle:
+                self_distance = adist
+
         all_distance.sort(key=lambda x: (x[1], x[2]))
-        value_to_rank = {}
-        next_rank = 1
-        handle_to_rank = {}
-        for h, dist, _ in all_distance:
-            if dist not in value_to_rank:
-                value_to_rank[dist] = next_rank
-                next_rank += 1
-            handle_to_rank[h] = value_to_rank[dist]
-        priority_rank = float(handle_to_rank.get(handle, next_rank)) / next_rank
+        finite_distances = [dist for _, dist, _ in all_distance if np.isfinite(dist)]
+        finite_unique = sorted(set(finite_distances))
+
+        if len(finite_unique) >= 2:
+            # Generic normalized distance-rank priority in [0, 1].
+            # Best (smallest remaining distance) -> 0.0, worst -> 1.0.
+            value_to_rank = {dist: i for i, dist in enumerate(finite_unique)}
+            denom = max(1, len(finite_unique) - 1)
+            rank = value_to_rank.get(self_distance, len(finite_unique) - 1)
+            priority_rank = float(rank) / float(denom)
+        else:
+            # If cohort rank is undefined (all same distance / single sample),
+            # fall back to normalized remaining distance so the feature remains informative.
+            fallback_max = max(1.0, float(self.env.width + self.env.height))
+            priority_rank = self._distance_to_unit(self_distance, fallback_max)
 
         opp_agents = set()
         opp_agents.update(local_search_seen_agents)
@@ -965,13 +1016,12 @@ class DecisionPointObservation(ObservationBuilder):
             other_pos = other.position if other.position is not None else other.initial_position
             if other_pos == pos:
                 opp_agents.add(other.handle)
-
-        state_value = int(agent.state.value)
+ 
         is_started = agent.position is not None
-        # Only export alive TrainStates: st_3 (MALFUNCTION) and st_4 (DONE).
-        # Skip st_0,1,2,5 (dead states).
-        raw_features[6] = 1.0 if is_started and state_value == 3 else 0.0  # st_3 (MALFUNCTION)
-        raw_features[7] = 1.0 if is_started and state_value == 4 else 0.0  # st_4 (DONE)
+        # Export selected lifecycle flags used by the current 15D contract.
+        # st_3=READY_TO_DEPART, st_4=MALFUNCTION, st_6=not-started.
+        raw_features[6] = 1.0 if is_started and agent.state == TrainState.READY_TO_DEPART else 0.0  # st_3 (READY_TO_DEPART)
+        raw_features[7] = 1.0 if is_started and agent.state == TrainState.MALFUNCTION else 0.0  # st_4 (MALFUNCTION)
         raw_features[8] = 0.0 if is_started else 1.0                       # st_6 (not-started)
         raw_features[9] = priority_rank
 
@@ -997,7 +1047,7 @@ class DecisionPointObservation(ObservationBuilder):
         # See tree_payload['nodes'] and tree_payload['edges'] for deadlock_risk.
 
         # No masking: all features are exported
-        base_features = raw_features.copy()
+        base_features = raw_features.copy() 
 
         agent.cur_opp_agent_handles = sorted(opp_agents)
         return (base_features, agent.cur_opp_agent_handles, tree_payload)
@@ -1054,35 +1104,115 @@ class DecisionPointObservation(ObservationBuilder):
             if len(type(self)._last_100_tree_stats) > 100:
                 type(self)._last_100_tree_stats.pop(0)
 
-        # --- Ausgabe nur am Ende jeder 100. Episode ---
-        if is_end_of_episode and episode_count is not None and episode_count > 0 and episode_count % 100 == 0:
+        # --- Ausgabe nur am Ende jeder 50. Episode ---
+        if is_end_of_episode and episode_count is not None and episode_count > 0 and episode_count % 50 == 0:
             feature_names = [name for _, name, _ in type(self).BASE_FEATURE_SPECS]
-            feature_expl = [desc for _, _, desc in type(self).BASE_FEATURE_SPECS]
-            # Features der letzten 100 Episoden
             last_feats = type(self)._last_100_features
             last_trees = type(self)._last_100_tree_stats
             all_feats = np.concatenate(last_feats, axis=0) if last_feats else arr
-            print(f"[DecisionPointObservation][Summary] Statistik der letzten 100 Episoden (Episode {episode_count})")
-            print(f"  Agents pro Episode: {arr.shape[0]}, Features: {arr.shape[1]}")
-            print("[DecisionPointObservation][Feature Erklärung]")
-            for idx, (name, expl) in enumerate(zip(feature_names, feature_expl)):
-                print(f"  {idx:2d} {name:>10}: {expl}")
-            print("[DecisionPointObservation][Feature-Statistik über 100 Episoden]")
+            n_ep = len(last_feats)
+
+            # ── helpers ──────────────────────────────────────────────────────
+            def _trend_label(series: np.ndarray) -> str:
+                """Return monotone-trend label for a 1-D time series of episode means."""
+                if len(series) < 4:
+                    return "n/a"
+                diffs = np.diff(series.astype(float))
+                n_down = int(np.sum(diffs < -1e-4))
+                n_up   = int(np.sum(diffs >  1e-4))
+                frac_down = n_down / max(1, len(diffs))
+                frac_up   = n_up   / max(1, len(diffs))
+                if frac_down >= 0.65:
+                    return "↓ mono-fall"
+                if frac_up >= 0.65:
+                    return "↑ mono-rise"
+                if frac_down >= 0.40 and frac_up < 0.20:
+                    return "↓ tend-fall"
+                if frac_up >= 0.40 and frac_down < 0.20:
+                    return "↑ tend-rise"
+                return "↔ flat/noisy"
+
+            def _ep_means(feat_idx: int) -> np.ndarray:
+                """Per-episode mean of a feature over all agents/steps in that episode."""
+                return np.array([ep[:, feat_idx].mean() for ep in last_feats if ep.shape[0] > 0])
+
+            def _deadlock_ratio(col: np.ndarray) -> float:
+                """Fraction of steps where a binary feature is active (value > 0.5)."""
+                return float(np.mean(col > 0.5)) if len(col) > 0 else 0.0
+
+            # ── header ───────────────────────────────────────────────────────
+            W = "=" * 72
+            print(f"\n{W}")
+            print(f"  [DecisionPointObs] BASE FEATURE REPORT  (n={n_ep} episodes, ep={episode_count})")
+            print(W)
+            print(f"  {'#':>2}  {'Feature':<22} {'min':>6} {'max':>6} {'mean':>7} {'std':>6}  {'trend':>13}  note")
+            print(f"  {'-'*68}")
+
             for idx, name in enumerate(feature_names):
                 col = all_feats[:, idx]
-                print(f"  {name:>10}: min={np.min(col):.4f} max={np.max(col):.4f} mean={np.mean(col):.4f} std={np.std(col):.4f}")
-            # Tree-Statistik
-            print("[DecisionPointObservation][Tree-Statistik über 100 Episoden]")
-            all_nodes = []
-            all_edges = []
+                ep_m = _ep_means(idx)
+                trend = _trend_label(ep_m)
+                note = ""
+                # ── feature-specific annotations ─────────────────────────────
+                if name == "priority_rank":
+                    # Should fall toward 0 as agent approaches goal
+                    if "fall" in trend:
+                        note = "✅ agent approaching goal"
+                    elif np.std(col) < 0.01:
+                        note = "⚠️  CONSTANT – check obs"
+                    else:
+                        note = "🟡 no clear progress trend"
+                elif name in ("st_3",):
+                    ready_frac = float(np.mean(col > 0.5))
+                    if ready_frac > 0.5:
+                        note = f"✅ ready_to_depart {ready_frac*100:.0f}% of steps"
+                    else:
+                        note = f"🟡 ready_to_depart {ready_frac*100:.0f}% of steps"
+                elif name in ("st_4",):
+                    malf_frac = float(np.mean(col > 0.5))
+                    note = f"malfunction={malf_frac*100:.0f}% of steps"
+                elif name in ("st_6",):
+                    not_started_frac = float(np.mean(col > 0.5))
+                    note = f"not_started={not_started_frac*100:.0f}% of steps"
+                elif name in ("sp_forward", "sp_left", "sp_right"):
+                    frac = float(np.mean(col > 0.5))
+                    note = f"used {frac*100:.0f}% of steps"
+                elif name == "is_switch":
+                    frac = float(np.mean(col > 0.5))
+                    note = f"at switch {frac*100:.0f}% of steps"
+                elif name == "is_pre_merge":
+                    frac = float(np.mean(col > 0.5))
+                    note = f"pre-merge {frac*100:.0f}% of steps"
+
+                print(
+                    f"  {idx:>2}  {name:<22} "
+                    f"{np.min(col):>6.3f} {np.max(col):>6.3f} "
+                    f"{np.mean(col):>7.4f} {np.std(col):>6.4f}  "
+                    f"{trend:>13}  {note}"
+                )
+
+            # ── priority_rank episode-mean trend (compact) ───────────────────
+            pr_ep = _ep_means(9)  # feature [9] = priority_rank
+            if len(pr_ep) >= 2:
+                half = max(1, len(pr_ep) // 2)
+                first_half = pr_ep[:half].mean()
+                second_half = pr_ep[half:].mean()
+                delta = second_half - first_half
+                arrow = "↓" if delta < -0.02 else ("↑" if delta > 0.02 else "↔")
+                print(f"\n  priority_rank half-half: first={first_half:.4f} → second={second_half:.4f}  Δ={delta:+.4f} {arrow}")
+
+            # ── Tree-Statistik ────────────────────────────────────────────────
+            all_nodes, all_edges = [], []
             for ep_tree_stats in last_trees:
-                for _h, n_nodes, n_edges, _seen_agents in ep_tree_stats:
+                for _h, n_nodes, n_edges, _seen in ep_tree_stats:
                     all_nodes.append(n_nodes)
                     all_edges.append(n_edges)
             if all_nodes:
-                print(f"  Nodes: min={np.min(all_nodes)} max={np.max(all_nodes)} mean={np.mean(all_nodes):.2f} std={np.std(all_nodes):.2f}")
-            if all_edges:
-                print(f"  Edges: min={np.min(all_edges)} max={np.max(all_edges)} mean={np.mean(all_edges):.2f} std={np.std(all_edges):.2f}")
+                print(f"\n  Tree: nodes={np.mean(all_nodes):.1f}±{np.std(all_nodes):.1f} "
+                      f"[{np.min(all_nodes)},{np.max(all_nodes)}]   "
+                      f"edges={np.mean(all_edges):.1f}±{np.std(all_edges):.1f} "
+                      f"[{np.min(all_edges)},{np.max(all_edges)}]")
+            print(W)
 
         for agent in self.env.agents:
             agent.opp_agent_handles = agent.cur_opp_agent_handles

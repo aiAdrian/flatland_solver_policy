@@ -193,8 +193,7 @@ class BaseSolver:
         scores_window = deque(maxlen=checkpoint_interval)
         terminate_window = deque(maxlen=checkpoint_interval)
         nbr_agents_window = deque(maxlen=checkpoint_interval)
-        tot_steps_window = deque(maxlen=checkpoint_interval)
-        deadlock_count_window = deque(maxlen=checkpoint_interval)
+        tot_steps_window = deque(maxlen=checkpoint_interval) 
 
         writer = None
         if write_summary:
@@ -210,39 +209,15 @@ class BaseSolver:
             nbr_agents_window.append(self.env.get_num_agents())
             tot_steps_window.append(tot_steps)
 
-            deadlock_count = self._get_deadlock_count()
-            deadlock_count_window.append(deadlock_count)
-
-            # Optional policy hook: allow adaptive exploration control based on
-            # recent done/deadlock trends without hard-coding policy internals here.
-            done_mean = float(np.mean(terminate_window))
-            deadlock_mean = float(np.mean(deadlock_count_window))
-            if hasattr(self.policy, 'on_training_episode_end'):
-                try:
-                    hook_out = self.policy.on_training_episode_end(
-                        episode=episode,
-                        eps=eps,
-                        min_eps=min_eps,
-                        done_mean=done_mean,
-                        deadlock_mean=deadlock_mean,
-                        num_agents=self.env.get_num_agents(),
-                    )
-                    if isinstance(hook_out, dict) and 'eps' in hook_out:
-                        eps = float(np.clip(hook_out['eps'], 0.0, 1.0))
-                except Exception:
-                    # Keep solver robust even if a custom policy hook fails.
-                    pass
-
+      
             b = int(np.round(50 * np.mean(terminate_window)))
             done_bar = ['#'] * b + ['_'] * (50 - b)
 
             print(
-                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f}  \tdead locks  [{:^5.0f}/{:^5.0f}] : {:4.3f} : done [{:^5.0f}/{:^5.0f}] : {:4.3f}  \t [{}]'.format(
+                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f}  \tdone [{:^5.0f}/{:^5.0f}] : {:4.3f}  \t [{}]'.format(
                     episode,
                     tot_reward,
                     np.mean(scores_window),
-                    deadlock_count, self.env.get_num_agents(),
-                    np.mean(deadlock_count_window),
                     tot_terminate * self.env.get_num_agents(), self.env.get_num_agents(),
                     np.mean(terminate_window),
                     ''.join(list(done_bar)),
@@ -254,8 +229,6 @@ class BaseSolver:
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_reward", np.mean(scores_window), episode)
                 writer.add_scalar(self.get_name() + "/evaluation_value_done", tot_terminate, episode)
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_done", np.mean(terminate_window), episode)
-                writer.add_scalar(self.get_name() + "/evaluation_value_deadlock_count", deadlock_count, episode)
-                writer.add_scalar(self.get_name() + "/evaluation_smoothed_deadlock_count", np.mean(deadlock_count_window), episode)
                 writer.add_scalar(self.get_name() + "/evaluation_value_nbr_agents", self.env.get_num_agents(), episode)
                 writer.add_scalar(self.get_name() + "/evaluation_smoothed_nbr_agents", np.mean(nbr_agents_window),
                                   episode)
@@ -322,39 +295,8 @@ class BaseSolver:
             terminate_window.append(tot_terminate)
             nbr_agents_window.append(self.env.get_num_agents())
             tot_steps_window.append(tot_steps)
-
-            deadlock_count = self._get_deadlock_count()
-            deadlock_count_window.append(deadlock_count)
-
-            # Adaptive exploration uses a short recent window so triggers are
-            # not diluted by zero-initialized long buffers at training start.
-            recent_w = min(20, len(terminate_window))
-            done_recent = float(np.mean(list(terminate_window)[-recent_w:]))
-            deadlock_recent = float(np.mean(list(deadlock_count_window)[-recent_w:]))
-            if hasattr(self.policy, 'on_training_episode_end'):
-                try:
-                    hook_out = self.policy.on_training_episode_end(
-                        episode=episode,
-                        eps=eps,
-                        min_eps=min_eps,
-                        done_mean=done_recent,
-                        deadlock_mean=deadlock_recent,
-                        num_agents=self.env.get_num_agents(),
-                    )
-                    if isinstance(hook_out, dict) and 'eps' in hook_out:
-                        eps = float(np.clip(hook_out['eps'], 0.0, 1.0))
-                except Exception:
-                    pass
-
-            # Solver-level fallback rescue in case policy hook is unavailable or
-            # too conservative. Keeps exploration alive during deadlock plateaus.
-            n_agents = max(int(self.env.get_num_agents()), 1)
-            deadlock_rate = deadlock_recent / float(n_agents)
-            if done_recent < 0.10 and deadlock_rate > 0.60:
-                eps = max(eps, min(0.16, max(min_eps, 0.12)))
-            elif done_recent < 0.16 and deadlock_rate > 0.50:
-                eps = max(eps, min(0.12, max(min_eps, 0.08)))
-
+ 
+  
             if not allow_eps_above_cli:
                 eps = min(eps, eps_cli_cap)
 
@@ -362,12 +304,10 @@ class BaseSolver:
             done_bar = ['#'] * b + ['_'] * (50 - b)
 
             print(
-                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f} \tdead locks: [{:^5.0f}/{:^5.0f}] : {:4.3f} : done [{:^5.0f}/{:^5.0f}] : {:4.3f} \t [{}] \t eps: {:7.3f} '.format(
+                '\rEpisode: {:5}\treward: {:9.3f} : {:9.3f} \tdone [{:^5.0f}/{:^5.0f}] : {:4.3f} \t [{}] \t eps: {:7.3f} '.format(
                     episode,
                     tot_reward,
-                    np.mean(scores_window),
-                    deadlock_count, self.env.get_num_agents(),
-                    np.mean(deadlock_count_window),
+                    np.mean(scores_window),  
                     tot_terminate * self.env.get_num_agents(), self.env.get_num_agents(),
                     np.mean(terminate_window),
                     ''.join(list(done_bar)),
@@ -381,8 +321,6 @@ class BaseSolver:
                     writer.add_scalar(self.get_name() + "/training_smoothed_reward", np.mean(scores_window), episode)
                     writer.add_scalar(self.get_name() + "/training_value_done", tot_terminate, episode)
                     writer.add_scalar(self.get_name() + "/training_smoothed_done", np.mean(terminate_window), episode)
-                    writer.add_scalar(self.get_name() + "/training_value_deadlock_count", deadlock_count, episode)
-                    writer.add_scalar(self.get_name() + "/training_smoothed_deadlock_count", np.mean(deadlock_count_window), episode)
                     writer.add_scalar(self.get_name() + "/training_value_nbr_agents", self.env.get_num_agents(), episode)
                     writer.add_scalar(self.get_name() + "/training_smoothed_nbr_agents", np.mean(nbr_agents_window), episode)
                     writer.add_scalar(self.get_name() + "/training_value_nbr_steps", tot_steps, episode)
@@ -443,71 +381,7 @@ class BaseSolver:
             filename = "training_output/{}_{}".format(self.get_name(), self.policy.get_name())
         if self.policy is not None:
             self.policy.load(filename)
-
-    def _get_deadlock_count(self) -> int:
-        """Return per-episode deadlock count.
-
-        Priority:
-        1) Use reward shaper metric if available.
-        2) Fallback to solver-level deadlock detection on the current env.
-        """
-        if hasattr(self, '_reward_shaper') and self._reward_shaper is not None:
-            if hasattr(self._reward_shaper, 'get_last_episode_deadlock_count'):
-                try:
-                    return int(self._reward_shaper.get_last_episode_deadlock_count())
-                except Exception:
-                    pass
-
-        local_deadlocks = self._estimate_deadlock_count_from_env()
-        if local_deadlocks > 0:
-            return int(local_deadlocks)
-
-        # Fallback proxy: agents that are still on-map and not DONE at episode end.
-        # This catches practical gridlock cases where strict corridor-deadlock
-        # logic is too conservative and returns 0.
-        status = self._last_episode_agent_status or {}
-        return int(status.get('unfinished_on_map', 0))
-
-    def _estimate_deadlock_count_from_env(self) -> int:
-        """Best-effort deadlock count independent of reward shaper.
-
-        This keeps training/eval logging meaningful when no reward shaper is used.
-        """
-        try:
-            raw_env = self.env.get_raw_env() if hasattr(self.env, 'get_raw_env') else getattr(self.env, 'raw_env', self.env)
-            if raw_env is None or not hasattr(raw_env, 'agents') or not hasattr(raw_env, 'rail'):
-                return 0
-            if not hasattr(raw_env, 'height') or not hasattr(raw_env, 'width'):
-                return 0
-
-            DecisionPointUtils = self._load_decision_point_utils()
-            if DecisionPointUtils is None:
-                return 0
-
-            agent_map = np.zeros((raw_env.height, raw_env.width), dtype=np.int32) - 1
-            for a in raw_env.agents:
-                if getattr(a, 'position', None) is not None:
-                    agent_map[a.position] = int(a.handle)
-
-            deadlock_handles = set()
-            for a in raw_env.agents:
-                pos = getattr(a, 'position', None)
-                direction = getattr(a, 'direction', None)
-                if pos is None or direction is None:
-                    continue
-                state = getattr(a, 'state', None)
-                state_name = getattr(state, 'name', '') if state is not None else ''
-                if state_name == 'DONE':
-                    continue
-                try:
-                    if DecisionPointUtils.is_local_deadlock(raw_env, a, agent_map):
-                        deadlock_handles.add(int(a.handle))
-                except Exception:
-                    continue
-
-            return int(len(deadlock_handles))
-        except Exception:
-            return 0
+  
 
     @staticmethod
     def _load_decision_point_utils():
@@ -606,7 +480,7 @@ class BaseSolver:
 
                 local_max_depth = 0
                 for n in nodes:
-                    d = int(n.get('depth', 0))
+                    d = int(n.get('decision_depth', n.get('depth', 0)))
                     if d > local_max_depth:
                         local_max_depth = d
                     if bool(n.get('has_oncoming', False)):
