@@ -257,6 +257,21 @@ class TreePayloadEncoder(nn.Module):
             nn.LayerNorm(hidden_dim),
             nn.Tanh(),
         )
+        
+        # ========================================================================
+        # LEVEL ATTENTION (Hierarchisch: Root → Level 1 → Level 2 → Level 3)
+        # ========================================================================
+        self.level_attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=4,
+            batch_first=True
+        )
+        
+        # Level Prior: Root wichtiger als Leaves
+        self.register_buffer(
+            "level_importance",
+            torch.tensor([1.0, 0.8, 0.6, 0.4], dtype=torch.float32)
+        )
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -353,6 +368,65 @@ class TreePayloadEncoder(nn.Module):
             _safe_float(edge.get("branch_choice_prob", 0.0), 0.0),
             min(1.0, _safe_float(edge.get("alternative_routes_count", 0), 0.0) / 3.0),
         ], dtype=np.float32)
+
+    def _estimate_node_depths_batch(self, payload_batch: List[Dict[str, Any]], max_nodes: int) -> torch.Tensor:
+        """
+        Schätze Tiefe (depth) jedes Nodes pro Batch-Sample.
+        Gruppiert in Level: 0 (0.0-0.25), 1 (0.25-0.50), 2 (0.50-0.75), 3 (0.75-1.0)
+        
+        Fallback-Strategie:
+        1. Nutze depth_norm aus Node (falls vorhanden)
+        2. Fallback: Nutze depth (raw depth count)
+        3. Fallback: Nutze Node-Typ (INIT=0, SWITCH=1, PRE_M=2) → heuristische Tiefe
+        4. Fallback: Nutze Node-Index (Node 0 = root, später = tiffer)
+        
+        Returns: (B, N) mit Level-Indizes {0, 1, 2, 3}
+        """
+        bsz = len(payload_batch)
+        depth_bins = torch.zeros((bsz, max_nodes), dtype=torch.long)
+        
+        for b, payload in enumerate(payload_batch):
+            if not isinstance(payload, dict):
+                continue
+            
+            nodes = payload.get("nodes", []) or []
+            max_depth = max([float(n.get("depth", 0)) for n in nodes], default=4.0)
+            if max_depth <= 0:
+                max_depth = 4.0
+            
+            for node_idx, node in enumerate(nodes):
+                if node_idx >= max_nodes:
+                    break
+                
+                # Versuch 1: depth_norm direkt
+                if "depth_norm" in node:
+                    depth_norm = float(node.get("depth_norm", 0.0))
+                # Versuch 2: Berechne aus depth (raw depth value)
+                elif "depth" in node:
+                    depth_raw = float(node.get("depth", 0))
+                    depth_norm = min(1.0, depth_raw / max_depth) if max_depth > 0 else 0.0
+                # Versuch 3: Heuristische Tiefe aus Node-Typ
+                else:
+                    node_type = int(node.get("type", -1))
+                    # INIT=0 → depth=0, SWITCH=1 → depth≈0.5, PRE_M=2 → depth≈0.75
+                    type_hints = {0: 0.0, 1: 0.5, 2: 0.75}
+                    depth_norm = type_hints.get(node_type, float(node_idx) / (len(nodes) + 1))
+                
+                depth_norm = max(0.0, min(1.0, depth_norm))  # Clamp to [0, 1]
+                
+                # Bin Tiefe in 4 Levels
+                if depth_norm < 0.25:
+                    level = 0
+                elif depth_norm < 0.50:
+                    level = 1
+                elif depth_norm < 0.75:
+                    level = 2
+                else:
+                    level = 3
+                
+                depth_bins[b, node_idx] = level
+        
+        return depth_bins
 
     def _payload_to_graph(self, payload: Dict[str, Any], max_nodes: int) -> Tuple[np.ndarray, List[Tuple[int, int, np.ndarray]], int]:
         max_nodes = int(max(1, max_nodes))
@@ -502,8 +576,50 @@ class TreePayloadEncoder(nn.Module):
         msg_h = self.msg_proj(messages)
         node_u = self.update_proj(torch.cat([node_h, msg_h], dim=-1))
 
-        denom = node_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
-        pooled = (node_u * node_mask.unsqueeze(-1)).sum(dim=1) / denom
+        # ========================================================================
+        # HIERARCHICAL POOLING (Topologie-erhaltend für variable Größen)
+        # ========================================================================
+        # Statt einfaches Mean-Pooling: Gruppiere nach Tiefe & aggregiere pro Level
+        # So bleibt Root vs. Leaves Struktur erhalten!
+        
+        # Zuerst: Schätze depth pro Node aus Payload
+        depth_bins = self._estimate_node_depths_batch(payload_batch, max_nodes)
+        depth_bins = depth_bins.to(device)  # (B, N) mit Werten {0, 1, 2, 3}
+        
+        # Für jeden Level: Masked Average der Node-Updates
+        level_embeddings = []
+        for level_idx in range(4):  # Levels 0-3 (depth groups)
+            level_mask = (depth_bins == level_idx).float()  # (B, N)
+            level_mask_expanded = level_mask.unsqueeze(-1)  # (B, N, 1)
+            
+            # Masked pooling für diesen Level
+            level_sum = (node_u * level_mask_expanded).sum(dim=1)  # (B, H)
+            level_count = level_mask.sum(dim=1, keepdim=True).clamp(min=1.0)  # (B, 1)
+            level_pool = level_sum / level_count  # (B, H)
+            level_embeddings.append(level_pool)
+        
+        # Stack alle Level-Embeddings
+        levels_stacked = torch.stack(level_embeddings, dim=1)  # (B, 4, H)
+        
+        # ========================================================================
+        # LEVEL ATTENTION (Lernt welche Tiefen wichtig sind)
+        # ========================================================================
+        # Selbst-Attention über die 4 Tiefe-Level
+        level_context, _ = self.level_attention(
+            query=levels_stacked,
+            key=levels_stacked,
+            value=levels_stacked
+        )  # (B, 4, H)
+        
+        # Gewichte aggregieren (Root hat höchstes Gewicht, Leaves flexible)
+        level_weights = torch.softmax(
+            self.level_importance.unsqueeze(0).expand(bsz, -1),
+            dim=-1
+        )  # (B, 4) - Prior: Root am wichtigsten
+        
+        # Finale Aggregation
+        pooled = (level_context * level_weights.unsqueeze(-1)).sum(dim=1)  # (B, H)
+        
         return self.output_proj(pooled)
 
 
