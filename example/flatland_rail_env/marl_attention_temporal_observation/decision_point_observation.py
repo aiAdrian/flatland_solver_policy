@@ -96,41 +96,14 @@ class DecisionPointObservation(ObservationBuilder):
 
     def __init__(self,
                  debug: bool = False,
-                 search_depth: int = 5,
-                 observation_profile: str = "local_tree_encoder",
-                 use_trainable_tree_encoder: bool = True):
+                 search_depth: int = 4):
         super().__init__()
         if debug:
             os.environ["DEBUG_OBSERVATION"] = "1"
         # Core observation configuration used throughout get()/local search.
         self.search_depth = max(1, int(search_depth))
-        self.observation_profile = observation_profile
-        self.use_trainable_tree_encoder = bool(use_trainable_tree_encoder)
-        self.local_search_min_search_depth = 8
-        # Local-tree search control to avoid branch explosion at higher depths.
-        # Up to depth 1: expand all transitions.
-        # From depth >= 2: always keep shortest-path branch and sample side branches.
-        self.local_search_random_start_depth = 3  # ab Tiefe 3 nur noch bester Pfad + 1 Side-Branch
-        self.local_search_max_side_branches = 1   # max. 1 Side-Branch pro Entscheidung
-        self.local_search_distance_bias = 2.0
-        # Optional advanced controls for deeper searches.
-        self.local_search_mode = "stochastic"  # stochastic | mcts
-        self.local_search_mcts_rollouts = 6
-        self.local_search_mcts_horizon = 4
-        self.local_search_ucb_c = 1.2
-        self.local_search_contract_depth = 7
-        # Enable corridor contraction by default so local search reaches
-        # downstream decision points within limited node budgets.
-        self.local_search_disable_corridor_contraction = False
-        self.local_search_max_nodes = 32   # weniger Knoten pro Agent
-        self.local_search_min_nodes = 24
-        self.local_search_adaptive_budget = True
-        self.local_search_adaptive_branch_bonus = 6
-        self.local_search_adaptive_conflict_bonus = 8
-        self.local_search_adaptive_depth_bonus = 2
-        self.local_search_deadlock_probe_depth = 14
-        self.local_search_deadlock_max_states = 256
-        self.local_tree_clip_features = True
+        self.local_search_min_search_depth = 6
+        self.local_search_max_nodes = 24   # kleinerer Baum fuer schnellere Observation
         # Debug-only render overlay. Handle 0 exports pseudo-agent cell sets:
         # 0=all node cells, 1=pre-merge, 2=switch, 3/4=even/odd corridor cells.
         self.debug_tree_overlay_enabled = True
@@ -161,7 +134,7 @@ class DecisionPointObservation(ObservationBuilder):
         bucket['sum'] += float(dt)
         bucket['count'] += 1
  
-    def set_env(self, env):
+    def set_env(self, env): 
         super().set_env(env)
         self.env = env
 
@@ -265,155 +238,6 @@ class DecisionPointObservation(ObservationBuilder):
             return -1
         p = self._pos_tuple(pos)
         return int(self.agent_map[p[0], p[1]])
-
-    def _mcts_rollout_score(self, handle, start_pos, start_dir, start_depth, horizon, distance_map):
-        """Small Monte-Carlo rollout score for one root branch.
-
-        Uses a light UCT-style policy over local successor choices to keep
-        selection robust while staying compute-bounded.
-        """
-        if self.env is None or self.env.rail is None:
-            return -1e9
-
-        pos = start_pos
-        direction = int(start_dir)
-        score = 0.0
-        max_steps = max(1, int(horizon))
-
-        for _ in range(max_steps):
-            dist = self._safe_distance(handle, pos, direction, distance_map)
-            if np.isfinite(dist):
-                score += 1.0 / (1.0 + dist)
-            else:
-                score -= 0.05
-
-            if self.agent_map is not None:
-                other_idx = self._agent_at_pos(pos)
-                if other_idx != -1 and other_idx != handle:
-                    score -= 0.7
-                    other_dir = self.env.agents[other_idx].direction
-                    if other_dir is not None and DecisionPointUtils.is_opposite_direction(direction, other_dir):
-                        score -= 0.8
-
-            transitions = self._rail_get_transitions(pos, direction)
-
-            choices = [nd for nd in range(4) if transitions[nd]]
-            if not choices:
-                score -= 1.0
-                break
-
-            # Soft distance-biased stochastic rollout policy.
-            cand = []
-            for nd in choices:
-                np_pos = get_new_position(pos, nd)
-                ndist = self._safe_distance(handle, np_pos, nd, distance_map)
-                cand.append((nd, np_pos, ndist))
-            dvals = np.array([c[2] if np.isfinite(c[2]) else 1000.0 for c in cand], dtype=np.float64)
-            dmin = float(np.min(dvals))
-            closeness = 1.0 / (1.0 + np.maximum(0.0, dvals - dmin))
-            alpha = max(0.1, float(self.local_search_distance_bias))
-            weights = np.power(closeness, alpha)
-            wsum = float(np.sum(weights))
-            if wsum <= 0.0 or not np.isfinite(wsum):
-                probs = np.full(len(cand), 1.0 / len(cand), dtype=np.float64)
-            else:
-                probs = weights / wsum
-
-            idx = int(np.random.choice(len(cand), p=probs))
-            direction, pos, _ = cand[idx]
-
-        return score
-
-    def _compute_adaptive_node_budget(
-        self,
-        handle,
-        start_pos,
-        start_dir,
-        depth_limit,
-        transition_cache=None,
-        incoming_degree_cache=None,
-    ) -> int:
-        max_nodes = self.local_search_max_nodes
-        min_nodes = self.local_search_min_nodes
-        if not self.local_search_adaptive_budget:
-            return max(min_nodes, max_nodes)
-
-        bonus = max(0, int(depth_limit) - 3) * self.local_search_adaptive_depth_bonus
-        transitions = self._rail_get_transitions(start_pos, start_dir)
-        if fast_count_nonzero(transitions) > 1:
-            bonus += self.local_search_adaptive_branch_bonus
-
-        budget = max_nodes + bonus
-        return max(min_nodes, min(max_nodes + 2 * self.local_search_adaptive_depth_bonus, budget))
-
-    def _select_local_search_branches(
-        self,
-        handle,
-        depth,
-        current_pos,
-        current_dir,
-        transitions,
-        distance_map,
-    ) -> list:
-        candidates = []
-        for nd in range(4):
-            if not transitions[nd]:
-                continue
-            np_pos = get_new_position(current_pos, nd)
-            ndist = self._safe_distance(handle, np_pos, nd, distance_map)
-            candidates.append((nd, np_pos, ndist))
-
-        if not candidates:
-            return []
-        if len(candidates) == 1:
-            return candidates
-
-        ordered = self._sort_branch_candidates_relative(candidates, current_dir)
-        shortest = min(ordered, key=lambda c: (c[2] if np.isfinite(c[2]) else float("inf")))
-        side = [c for c in ordered if c is not shortest]
-
-        if int(depth) < self.local_search_random_start_depth:
-            return ordered
-
-        k_side = max(0, self.local_search_max_side_branches)
-        if k_side == 0 or not side:
-            return [shortest]
-
-        side_sorted = sorted(side, key=lambda c: (c[2] if np.isfinite(c[2]) else float("inf")))
-        return [shortest] + side_sorted[:k_side]
-
-    def _contract_corridor_segment(self, handle, pos, direction, depth, depth_limit, target):
-        cur_pos = pos
-        cur_dir = int(direction)
-        edge_len = 1
-        target_on_edge = bool(target is not None and cur_pos == target)
-        if self.local_search_disable_corridor_contraction:
-            return cur_pos, cur_dir, edge_len, target_on_edge
-        visited = set()
-
-        while int(depth) + edge_len < int(depth_limit):
-            if target_on_edge:
-                break
-            state = (int(cur_pos[0]), int(cur_pos[1]), int(cur_dir))
-            if state in visited:
-                break
-            visited.add(state)
-
-            transitions = self._rail_get_transitions(cur_pos, cur_dir)
-            if fast_count_nonzero(transitions) != 1:
-                break
-
-            ndir = int(fast_argmax(transitions))
-            next_pos = get_new_position(cur_pos, ndir)
-            if next_pos[0] < 0 or next_pos[0] >= self.env.height or next_pos[1] < 0 or next_pos[1] >= self.env.width:
-                break
-
-            cur_pos = next_pos
-            cur_dir = ndir
-            edge_len += 1
-            target_on_edge = bool(target is not None and cur_pos == target)
-
-        return cur_pos, cur_dir, edge_len, target_on_edge
 
     def _local_node_type(self, pos, direction, is_root=False):
         transitions = self._rail_get_transitions(pos, direction)

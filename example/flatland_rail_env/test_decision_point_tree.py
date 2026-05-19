@@ -39,7 +39,6 @@ def test_tree_structure():
     obs_builder = DecisionPointObservation(
         debug=False,
         search_depth=5,
-        observation_profile="local_tree_encoder",
     )
     obs_builder.env = env
     

@@ -25,10 +25,7 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         self.temporal_window = temporal_window
         self.max_opponents = max(0, int(max_opponents))
         if base_obs is None:
-            self.base_obs = DecisionPointObservation(
-                observation_profile="local_tree_encoder",
-                use_trainable_tree_encoder=True,
-            )
+            self.base_obs = DecisionPointObservation()
         elif isinstance(base_obs, ObservationBuilder):
             self.base_obs = base_obs
         elif isinstance(base_obs, type) and issubclass(base_obs, ObservationBuilder):
@@ -41,10 +38,7 @@ class TemporalMultiAgentObservation(ObservationBuilder):
             }
             if base_obs in registry:
                 if base_obs == 'DecisionPointObservation':
-                    self.base_obs = DecisionPointObservation(
-                        observation_profile="local_tree_encoder",
-                        use_trainable_tree_encoder=True,
-                    )
+                    self.base_obs = DecisionPointObservation()
                 else:
                     self.base_obs = registry[base_obs]()
             else:

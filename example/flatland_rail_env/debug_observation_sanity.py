@@ -35,10 +35,7 @@ RANGE_TOL    = 0.05   # erlaubte Abweichung von [0,1]
 
 # ── Environment aufbauen ─────────────────────────────────────────────────────
 def make_env():
-    obs_builder = DecisionPointObservation(
-        observation_profile="local_tree_encoder",
-        use_trainable_tree_encoder=True,
-    )
+    obs_builder = DecisionPointObservation()
     env = RailEnv(
         width=WIDTH,
         height=HEIGHT,
