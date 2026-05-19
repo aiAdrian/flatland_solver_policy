@@ -276,6 +276,14 @@ class TreePayloadEncoder(nn.Module):
     @classmethod
     def _encode_node_feature(cls, node: Dict[str, Any]) -> np.ndarray:
         depth = int(node.get("depth", 0))
+        node_type = int(node.get("type", -1))
+        is_switch = bool(node.get("is_switch", node_type == 1))
+        is_pre_merge = bool(node.get("is_pre_merge", node_type == 2))
+        is_branch = bool(node.get("is_branch", False) or is_switch)
+        alt_routes = int(node.get("alternative_routes_count", 0))
+        if is_pre_merge and alt_routes <= 0:
+            # Preserve pre-merge signal in the fixed 12D node feature budget.
+            alt_routes = 1
         feat = np.array([
             float(node.get("deadlock_risk", 0.0)),
             min(1.0, float(node.get("num_transitions", 1)) / 3.0),
@@ -284,22 +292,41 @@ class TreePayloadEncoder(nn.Module):
             min(1.0, float(max(depth, 0)) / 12.0),
             1.0 if node.get("has_agents_encountered", False) else 0.0,
             min(1.0, float(node.get("incoming_agent_count", 0)) / 2.0),
-            1.0 if node.get("is_branch", False) else 0.0,
+            1.0 if is_branch else 0.0,
             float(node.get("deadlock_distance_norm", 0.0)),
             float(node.get("deadlock_hard_distance_norm", 0.0)),
             1.0 if node.get("deadlock_exists_within_probe", False) else 0.0,
-            min(1.0, float(node.get("alternative_routes_count", 0)) / 3.0),
+            min(1.0, float(alt_routes) / 3.0),
         ], dtype=np.float32)
         np.clip(feat, 0.0, 1.0, out=feat)
         return feat
 
     @classmethod
     def _encode_edge_feature(cls, edge: Dict[str, Any]) -> np.ndarray:
-        rel_bin = int(edge.get("rel_dir_bin", 1))
-        action_left = float(edge.get("action_left", 1.0 if rel_bin == 0 else 0.0))
-        action_forward = float(edge.get("action_forward", 1.0 if rel_bin == 1 else 0.0))
-        action_right = float(edge.get("action_right", 1.0 if rel_bin == 2 else 0.0))
-        agents_on_edge_count = int(edge.get("agents_on_edge_count", 0))
+        def _safe_float(value: Any, default: float = 0.0) -> float:
+            if value is None:
+                return default
+            try:
+                out = float(value)
+            except (TypeError, ValueError):
+                return default
+            if not np.isfinite(out):
+                return default
+            return out
+
+        def _safe_int(value: Any, default: int = 0) -> int:
+            if value is None:
+                return default
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        rel_bin = _safe_int(edge.get("rel_dir_bin", 1), 1)
+        action_left = _safe_float(edge.get("action_left", 1.0 if rel_bin == 0 else 0.0), 0.0)
+        action_forward = _safe_float(edge.get("action_forward", 1.0 if rel_bin == 1 else 0.0), 0.0)
+        action_right = _safe_float(edge.get("action_right", 1.0 if rel_bin == 2 else 0.0), 0.0)
+        agents_on_edge_count = _safe_int(edge.get("agents_on_edge_count", 0), 0)
         if agents_on_edge_count <= 0:
             agents_on_edge = edge.get("agents_on_edge", [])
             if isinstance(agents_on_edge, list):
@@ -310,21 +337,21 @@ class TreePayloadEncoder(nn.Module):
             action_right,
             1.0 if agents_on_edge_count > 0 else 0.0,
             1.0 if edge.get("has_oncoming_edge", False) else 0.0,
-            min(1.0, float(edge.get("edge_len_cells", 1)) / 4.0),
-            float(edge.get("src_dist_to_target", 1.0)),
-            float(edge.get("dst_dist_to_target", 1.0)),
-            float(edge.get("delta_from_root", 0.5)),
-            float(edge.get("improves_over_current", 0.0)),
+            min(1.0, _safe_float(edge.get("edge_len_cells", 1), 1.0) / 4.0),
+            _safe_float(edge.get("src_dist_to_target", 1.0), 1.0),
+            _safe_float(edge.get("dst_dist_to_target", 1.0), 1.0),
+            _safe_float(edge.get("delta_from_root", 0.5), 0.5),
+            _safe_float(edge.get("improves_over_current", 0.0), 0.0),
             1.0 if edge.get("target_on_edge", False) else 0.0,
-            float(edge.get("dst_deadlock_risk", 0.0)),
-            float(edge.get("dst_deadlock_hard_block", 0.0)),
-            float(edge.get("dst_deadlock_distance_norm", 0.0)),
-            float(edge.get("dst_deadlock_hard_distance_norm", 0.0)),
-            float(edge.get("src_deadlock_distance_norm", 0.0)),
-            float(edge.get("deadlock_distance_delta", 0.0)),
-            float(edge.get("is_shortest_path_edge", 0.0)),
-            float(edge.get("branch_choice_prob", 0.0)),
-            min(1.0, float(edge.get("alternative_routes_count", 0)) / 3.0),
+            _safe_float(edge.get("dst_deadlock_risk", 0.0), 0.0),
+            _safe_float(edge.get("dst_deadlock_hard_block", 0.0), 0.0),
+            _safe_float(edge.get("dst_deadlock_distance_norm", 0.0), 0.0),
+            _safe_float(edge.get("dst_deadlock_hard_distance_norm", 0.0), 0.0),
+            _safe_float(edge.get("src_deadlock_distance_norm", 0.0), 0.0),
+            _safe_float(edge.get("deadlock_distance_delta", 0.0), 0.0),
+            _safe_float(edge.get("is_shortest_path_edge", 0.0), 0.0),
+            _safe_float(edge.get("branch_choice_prob", 0.0), 0.0),
+            min(1.0, _safe_float(edge.get("alternative_routes_count", 0), 0.0) / 3.0),
         ], dtype=np.float32)
 
     def _payload_to_graph(self, payload: Dict[str, Any], max_nodes: int) -> Tuple[np.ndarray, List[Tuple[int, int, np.ndarray]], int]:
@@ -1656,7 +1683,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # Optional performance switch: disable tree-payload encoding in core/simple runs.
         # Default is ON in CORE mode to keep runtime stable from 1 -> 5 -> 10 -> 100 agents
         # without extra manual environment flags.
-        disable_tree_payload = str(os.getenv('FLATLAND_DISABLE_TREE_PAYLOAD_ENCODER', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+        disable_tree_payload = str(os.getenv('FLATLAND_DISABLE_TREE_PAYLOAD_ENCODER', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
         if self.simplified_mode > 0 and disable_tree_payload:
             self.encoder_actor.use_tree_payload_encoder = False
             self.encoder_critic.use_tree_payload_encoder = False
@@ -2162,6 +2189,17 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
     @staticmethod
     def _extract_local_shortest_action_from_temporal_state(temporal_state) -> Optional[int]:
         """Infer shortest-path action from payload edges (1=L, 2=F, 3=R)."""
+        def _safe_float(value: Any, default: float = 0.0) -> float:
+            if value is None:
+                return default
+            try:
+                out = float(value)
+            except (TypeError, ValueError):
+                return default
+            if not np.isfinite(out):
+                return default
+            return out
+
         if not isinstance(temporal_state, (list, tuple)) or len(temporal_state) == 0:
             return None
         last_step = temporal_state[-1]
@@ -2180,9 +2218,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             if not isinstance(edge, dict):
                 continue
 
-            a_l = float(edge.get("action_left", 0.0))
-            a_f = float(edge.get("action_forward", 0.0))
-            a_r = float(edge.get("action_right", 0.0))
+            a_l = _safe_float(edge.get("action_left", 0.0), 0.0)
+            a_f = _safe_float(edge.get("action_forward", 0.0), 0.0)
+            a_r = _safe_float(edge.get("action_right", 0.0), 0.0)
             if a_l >= a_f and a_l >= a_r:
                 action = 1
                 confidence = a_l
@@ -2196,8 +2234,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             if confidence <= 0.0:
                 continue
 
-            dst = float(edge.get("dst_dist_to_target", 1.0))
-            deadlock_pen = 0.10 * float(edge.get("dst_deadlock_risk", 0.0))
+            dst = _safe_float(edge.get("dst_dist_to_target", 1.0), 1.0)
+            deadlock_pen = 0.10 * _safe_float(edge.get("dst_deadlock_risk", 0.0), 0.0)
             score = dst + deadlock_pen
             if score < best_score:
                 best_score = score

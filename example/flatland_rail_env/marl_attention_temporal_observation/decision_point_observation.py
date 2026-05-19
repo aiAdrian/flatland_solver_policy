@@ -419,7 +419,7 @@ class DecisionPointObservation(ObservationBuilder):
             return {"nodes": [], "edges": [], "seen_agents": []}
 
         agent = self.env.agents[handle]
-        agent_target = getattr(agent, 'target', None)
+        agent_target = agent.target
         distance_map = self.env.distance_map.get()
         agent_map = self.agent_map
         max_nodes = int(getattr(self, "local_search_max_nodes", 72))
@@ -440,10 +440,8 @@ class DecisionPointObservation(ObservationBuilder):
                 return 1  # SWITCH
             # Pre-Merge: nur wenn aktuelle Zelle kein Switch ist
             if n_trans == 1:
-                ndir = int(np.argmax(transitions))
+                ndir = fast_argmax(transitions)
                 next_pos = get_new_position(pos, ndir)
-                if not (0 <= next_pos[0] < self.env.height and 0 <= next_pos[1] < self.env.width):
-                    return None
                 # Für Ankunftsrichtung auf next_pos
                 next_trans = self.env.rail.get_transitions(*next_pos, ndir)
                 n_next_trans = fast_count_nonzero(next_trans)
@@ -457,6 +455,58 @@ class DecisionPointObservation(ObservationBuilder):
                             return 2  # PRE_MERGE
             return None
 
+        def build_node_payload(ntype, npos, ndir, depth_value):
+            transitions_local = self.env.rail.get_transitions(*npos, ndir)
+            num_transitions_local = int(fast_count_nonzero(transitions_local))
+            incoming_degree_local = int(self._incoming_degree(npos))
+
+            incoming_agent_count = 0
+            has_oncoming = False
+            occ_handle = self._agent_at_pos(npos)
+            if occ_handle != -1 and occ_handle != handle:
+                incoming_agent_count = 1
+                other_dir = self.env.agents[occ_handle].direction
+                if other_dir is not None and DecisionPointUtils.is_opposite_direction(ndir, other_dir):
+                    has_oncoming = True
+
+            deadlock_profile = self._calculate_deadlock_profile(
+                handle=handle,
+                pos=npos,
+                direction=ndir,
+                max_depth=min(12, max(4, max_depth)),
+            )
+
+            node_type_value = int(ntype)
+            is_start = bool(node_type_value == 0)
+            is_switch = bool(node_type_value == 1)
+            is_pre_merge = bool(node_type_value == 2)
+            node_type_name = "start" if is_start else ("switch" if is_switch else "pre_merge")
+
+            return {
+                "type": int(ntype),
+                "node_type_name": node_type_name,
+                "is_start": bool(is_start),
+                "is_switch": bool(is_switch),
+                "is_pre_merge": bool(is_pre_merge),
+                "depth": int(depth_value),
+                "num_transitions": int(num_transitions_local),
+                "is_branch": bool(is_switch or num_transitions_local > 1),
+                "has_oncoming": bool(has_oncoming),
+                "incoming_agent_count": int(incoming_agent_count),
+                "has_agents_encountered": bool(incoming_agent_count > 0),
+                "backward_inflow_count": int(max(0, incoming_degree_local - 1)),
+                "deadlock_risk": float(deadlock_profile.get("risk", 0.0)),
+                "deadlock_distance_norm": float(deadlock_profile.get("deadlock_distance_norm", 0.0)),
+                "deadlock_hard_distance_norm": float(deadlock_profile.get("hard_block_distance_norm", 0.0)),
+                "deadlock_exists_within_probe": bool(int(deadlock_profile.get("min_deadlock_depth", -1)) >= 0),
+                "alternative_routes_count": int(max(1 if is_pre_merge else 0, max(0, num_transitions_local - 1))),
+            }
+
+        # Early exit für Waiting/Done
+        if agent.state in [TrainState.WAITING, TrainState.DONE]:
+            return {"nodes": [], "edges": [], "seen_agents": []}
+
+
         # Initiale Position und Richtung bestimmen
         if agent.position is not None:
             pos = agent.position
@@ -467,14 +517,9 @@ class DecisionPointObservation(ObservationBuilder):
         else:
             return {"nodes": [], "edges": [], "seen_agents": []}
 
-        # Early exit für Waiting/Done
-        if agent.state in [TrainState.WAITING, TrainState.DONE]:
-            return {"nodes": [], "edges": [], "seen_agents": []}
 
         # Startknoten anlegen (nur Typ für Training, keine Metadaten)
-        nodes.append({
-            "type": 0,  # START
-        })
+        nodes.append(build_node_payload(0, pos, direction, 0))
         node_map = {(tuple(pos), int(direction)): 0}
         node_pos_dir_map[0] = (tuple(pos), int(direction))
         n_nodes = 1
@@ -500,9 +545,7 @@ class DecisionPointObservation(ObservationBuilder):
                 ntype = node_type(cpos, cdir)
                 if ntype is not None:
                     if (tuple(cpos), int(cdir)) not in node_map:
-                        nodes.append({
-                            "type": ntype,
-                        })
+                        nodes.append(build_node_payload(ntype, cpos, cdir, depth))
                         node_map[(tuple(cpos), int(cdir))] = n_nodes
                         node_pos_dir_map[n_nodes] = (tuple(cpos), int(cdir))
                         dst_idx = n_nodes
@@ -594,6 +637,41 @@ class DecisionPointObservation(ObservationBuilder):
                                     action_feature = -1 # left
                                 else:
                                     action_feature = None
+
+                        rel_dir_bin = 1
+                        action_left = 0.0
+                        action_forward = 1.0
+                        action_right = 0.0
+                        if action_feature == -1:
+                            rel_dir_bin = 0
+                            action_left, action_forward, action_right = 1.0, 0.0, 0.0
+                        elif action_feature == 0:
+                            rel_dir_bin = 1
+                            action_left, action_forward, action_right = 0.0, 1.0, 0.0
+                        elif action_feature == 1:
+                            rel_dir_bin = 2
+                            action_left, action_forward, action_right = 0.0, 0.0, 1.0
+
+                        src_dist_to_target = None
+                        dst_dist_to_target = None
+                        if distance_map is not None and src_pos is not None and src_dir is not None:
+                            sdist = distance_map[handle, src_pos[0], src_pos[1], src_dir]
+                            if np.isfinite(sdist):
+                                src_dist_to_target = float(sdist)
+                            ddist = distance_map[handle, cpos[0], cpos[1], cdir]
+                            if np.isfinite(ddist):
+                                dst_dist_to_target = float(ddist)
+
+                        improves_over_current = False
+                        if src_dist_to_target is not None and dst_dist_to_target is not None:
+                            improves_over_current = bool(dst_dist_to_target < src_dist_to_target)
+
+                        src_choices = 1
+                        if src_pos is not None and src_dir is not None:
+                            src_transitions = self.env.rail.get_transitions(*src_pos, src_dir)
+                            src_choices = max(1, int(fast_count_nonzero(src_transitions)))
+                        branch_choice_prob = 1.0 / float(src_choices)
+
                         edges.append({
                             "src": src_idx,
                             "dst": dst_idx,
@@ -604,6 +682,18 @@ class DecisionPointObservation(ObservationBuilder):
                             "min_dist_to_target": min_dist if min_dist != float('inf') else None,
                             "target_on_edge": target_on_edge,
                             "action": action_feature,
+                            "rel_dir_bin": int(rel_dir_bin),
+                            "action_left": float(action_left),
+                            "action_forward": float(action_forward),
+                            "action_right": float(action_right),
+                            "has_agents_on_edge": bool(len(edge_agents) > 0),
+                            "has_oncoming_edge": bool(edge_has_other_dir),
+                            "agents_on_edge_count": int(len(edge_agents)),
+                            "edge_len_cells": int(edge_len),
+                            "src_dist_to_target": src_dist_to_target,
+                            "dst_dist_to_target": dst_dist_to_target,
+                            "improves_over_current": bool(improves_over_current),
+                            "branch_choice_prob": float(branch_choice_prob),
                         })
                         seen_agents.update(edge_agents)
                         # Nächste Suche ab dst_idx
@@ -985,7 +1075,7 @@ class DecisionPointObservation(ObservationBuilder):
         is_started = agent.position is not None
         # Export selected lifecycle flags used by the current 15D contract.
         # st_3=READY_TO_DEPART, st_4=MALFUNCTION, st_6=not-started.
-        raw_features[6] = 1.0 if is_started and agent.state == TrainState.READY_TO_DEPART else 0.0  # st_3 (READY_TO_DEPART)
+        raw_features[6] = 1.0 if (not is_started) and agent.state == TrainState.READY_TO_DEPART else 0.0  # st_3 (READY_TO_DEPART)
         raw_features[7] = 1.0 if is_started and agent.state == TrainState.MALFUNCTION else 0.0  # st_4 (MALFUNCTION)
         raw_features[8] = 0.0 if is_started else 1.0                       # st_6 (not-started)
         raw_features[9] = priority_rank
