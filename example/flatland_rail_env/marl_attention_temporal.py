@@ -65,7 +65,6 @@
 from typing import Callable, Optional, List, Union
 import os
 import sys
-import inspect
 import argparse
 import numpy as np
 import torch
@@ -94,9 +93,7 @@ from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_av
 from utils.training_evaluation_pipeline import create_random_policy  # noqa: E402
 from marl_attention_temporal_mappo import MARL_ATTENTION_TEMPORAL_PPOPolicy, MARL_ATTENTION_TEMPORAL_MAPPO_Param  # noqa: E402
 from marl_attention_temporal_observation.temporal_multi_agent_observation import TemporalMultiAgentObservation  # noqa: E402
-from marl_attention_temporal_observation.hierarchical_routes_observation import HierarchicalRoutesObservation  # noqa: E402
 from marl_attention_temporal_observation.decision_point_utils import DecisionPointUtils  # noqa: E402
-from decider_policy import DeciderPPOPolicy  # noqa: E402
 
 # Runtime/device config.
 # CPU-first default: this workload contains many small Python-side operations
@@ -626,79 +623,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 TEMPORAL_WINDOW = 3  # 3 Frames -> Bewegung/Velocity wird durch Temporal-Attention nutzbar
 
 
-# Local tree-search horizon for DecisionPointObservation.
-# Controls how many rail cells ahead the local search explores from the agent.
-# Higher => better look-ahead for merges/deadlocks, but slower per step.
-# Feasible values: 1..12
-LOCAL_TREE_SEARCH_DEPTH = 12
-# Depth after which non-shortest side branches are sampled instead of fully expanded.
-# Lower => earlier stochastic pruning (faster, less exhaustive).
-# Feasible values: 0..12
-LOCAL_TREE_RANDOM_START_DEPTH = 2
-# Maximum number of additional side branches per node after the shortest branch.
-# 0 = only shortest branch, higher = more alternatives (more compute).
-# Feasible values: 0..3
-LOCAL_TREE_MAX_SIDE_BRANCHES = 1
-# Sampling bias toward shorter side branches (>1 prefers short branches strongly).
-# Larger alpha => more focus on short alternatives.
-# Feasible values: 0.1..10.0
-LOCAL_TREE_DISTANCE_BIAS = 2.0
-# Branch selection strategy after random_start_depth:
-# 'stochastic' = weighted sampling, 'mcts' = rollout-guided selection.
-# Feasible values: 'stochastic' | 'mcts'
-LOCAL_TREE_MODE = 'stochastic'
-# Only used when LOCAL_TREE_MODE='mcts': rollout count per expanded node.
-# Higher => stabler estimates, slower runtime.
-# Feasible values: 1..64
-LOCAL_TREE_MCTS_ROLLOUTS = 6
-# Only used for MCTS mode: rollout look-ahead horizon in cells.
-# Higher => deeper tactical preview, more cost.
-# Feasible values: 1..16
-LOCAL_TREE_MCTS_HORIZON = 4
-# Only used for MCTS mode: exploration constant in UCB score.
-# Higher => more exploration; lower => greedier branch choice.
-# Feasible values: 0.01..4.0
-LOCAL_TREE_UCB_C = 1.2
-# From this depth onward, linear corridors are compressed into single edges.
-# Lower => stronger compression (faster, less geometric detail).
-# Feasible values: 0..12
-LOCAL_TREE_CONTRACT_DEPTH = 8
-# Hard upper bound for created tree nodes per agent step.
-# Protects runtime in complex maps.
-# Feasible values: 8..256
-LOCAL_TREE_MAX_NODES = 32
-# Minimum node budget when adaptive budget mode is enabled.
-# Prevents under-exploration in seemingly simple states.
-# Feasible values: 8..256 (must be <= LOCAL_TREE_MAX_NODES)
-LOCAL_TREE_MIN_NODES = 8
-# Adaptive node budget switch:
-# 'on' = dynamic budget between min/max nodes, 'off' = fixed max_nodes.
-# Feasible values: 'on' | 'off'
-LOCAL_TREE_ADAPTIVE_BUDGET = 'on'
-# Extra node budget per additional root branch (adaptive mode only).
-# Increases compute when local branching complexity is high.
-# Feasible values: 0..32
-LOCAL_TREE_ADAPTIVE_BRANCH_BONUS = 6
-# Extra node budget when merge/conflict hotspots are detected.
-# Raises search effort in deadlock-prone situations.
-# Feasible values: 0..32
-LOCAL_TREE_ADAPTIVE_CONFLICT_BONUS = 14
-# Extra node budget per depth step above baseline depth.
-# Helps preserve deep look-ahead when depth is configured high.
-# Feasible values: 0..16
-LOCAL_TREE_ADAPTIVE_DEPTH_BONUS = 2
-# Max depth for the per-node deadlock probe sub-search.
-# Higher => better deadlock foresight, higher CPU cost.
-# Feasible values: 1..32
-LOCAL_TREE_DEADLOCK_PROBE_DEPTH = 7
-# Max explored probe states for deadlock checks.
-# Caps combinatorial blow-ups in dense junction areas.
-# Feasible values: 8..512
-LOCAL_TREE_DEADLOCK_MAX_STATES = 32
-# Whether serialized tree features are clipped to [0,1] before policy input.
-# 'on' stabilizes scale and reduces outlier impact.
-# Feasible values: 'on' | 'off'
-LOCAL_TREE_CLIP_FEATURES = 'on'
+
 
 # ========================================================================
 # DYNAMIC AGENT COUNT CONFIG: Override via FLATLAND_SIMPLIFIED_MAPPO env var
@@ -764,147 +689,26 @@ if INCLUDE_5_AGENTS_IN_FINAL:
     CURRICULUM_PHASES[-1]['agent_counts'] = [1, 2, 3, 4, 5]
     CURRICULUM_PHASES[-1]['episodes'] = 10000
 
-# Toggle: when True, the temporal wrapper uses HierarchicalRoutesObservation
-# (48D = 24 base + 24 sparse-neighbor block) as base. The decider policy expects
-# this. The legacy larger DecisionPointObservation versions are no longer active;
-# current base contract is 24D.
-# performs best with the extended layout.
-USE_HIERARCHICAL_OBS = False
 
-def create_temporal_obs_builder_object(
-    debug: bool = False,
-    search_depth: int = LOCAL_TREE_SEARCH_DEPTH,
-    random_start_depth: int = LOCAL_TREE_RANDOM_START_DEPTH,
-    max_side_branches: int = LOCAL_TREE_MAX_SIDE_BRANCHES,
-    distance_bias: float = LOCAL_TREE_DISTANCE_BIAS,
-    tree_mode: str = LOCAL_TREE_MODE,
-    mcts_rollouts: int = LOCAL_TREE_MCTS_ROLLOUTS,
-    mcts_horizon: int = LOCAL_TREE_MCTS_HORIZON,
-    ucb_c: float = LOCAL_TREE_UCB_C,
-    contract_depth: int = LOCAL_TREE_CONTRACT_DEPTH,
-    max_nodes: int = LOCAL_TREE_MAX_NODES,
-    min_nodes: int = LOCAL_TREE_MIN_NODES,
-    adaptive_budget: str = LOCAL_TREE_ADAPTIVE_BUDGET,
-    adaptive_branch_bonus: int = LOCAL_TREE_ADAPTIVE_BRANCH_BONUS,
-    adaptive_conflict_bonus: int = LOCAL_TREE_ADAPTIVE_CONFLICT_BONUS,
-    adaptive_depth_bonus: int = LOCAL_TREE_ADAPTIVE_DEPTH_BONUS,
-    deadlock_probe_depth: int = LOCAL_TREE_DEADLOCK_PROBE_DEPTH,
-    deadlock_max_states: int = LOCAL_TREE_DEADLOCK_MAX_STATES,
-    clip_tree_features: str = LOCAL_TREE_CLIP_FEATURES,
-):
-    """Build TemporalMultiAgentObservation with strict 24D-base + raw-tree contract.
 
-    Contract used by the MAPPO encoder pipeline:
-    - Base observation vector: fixed 24D from DecisionPointObservation.
-    - Tree context: provided only via raw payload (nodes/edges/seen_agents),
-      not serialized into the base vector.
-    - Opponents: supplied through seen_agents-based temporal wrapper selection.
-
-    The function applies CLI tree-search parameters directly to the underlying
-    base observation builder and returns a temporal wrapper with window size
-    TEMPORAL_WINDOW.
+def create_temporal_obs_builder_object(debug: bool = False):
     """
-
-    def _apply_tree_search_cfg(base_obs):
-        if hasattr(base_obs, 'search_depth'):
-            base_obs.search_depth = max(1, int(search_depth))
-        if hasattr(base_obs, 'local_search_random_start_depth'):
-            base_obs.local_search_random_start_depth = max(0, int(random_start_depth))
-        if hasattr(base_obs, 'local_search_max_side_branches'):
-            base_obs.local_search_max_side_branches = max(0, int(max_side_branches))
-        if hasattr(base_obs, 'local_search_distance_bias'):
-            base_obs.local_search_distance_bias = max(0.1, float(distance_bias))
-        if hasattr(base_obs, 'local_search_mode'):
-            base_obs.local_search_mode = str(tree_mode).lower()
-        if hasattr(base_obs, 'local_search_mcts_rollouts'):
-            base_obs.local_search_mcts_rollouts = max(1, int(mcts_rollouts))
-        if hasattr(base_obs, 'local_search_mcts_horizon'):
-            base_obs.local_search_mcts_horizon = max(1, int(mcts_horizon))
-        if hasattr(base_obs, 'local_search_ucb_c'):
-            base_obs.local_search_ucb_c = max(0.01, float(ucb_c))
-        if hasattr(base_obs, 'local_search_contract_depth'):
-            base_obs.local_search_contract_depth = max(0, int(contract_depth))
-        if hasattr(base_obs, 'local_search_max_nodes'):
-            base_obs.local_search_max_nodes = max(8, int(max_nodes))
-        if hasattr(base_obs, 'local_search_min_nodes'):
-            base_obs.local_search_min_nodes = max(8, int(min_nodes))
-        if hasattr(base_obs, 'local_search_adaptive_budget'):
-            base_obs.local_search_adaptive_budget = str(adaptive_budget).lower() == 'on'
-        if hasattr(base_obs, 'local_search_adaptive_branch_bonus'):
-            base_obs.local_search_adaptive_branch_bonus = max(0, int(adaptive_branch_bonus))
-        if hasattr(base_obs, 'local_search_adaptive_conflict_bonus'):
-            base_obs.local_search_adaptive_conflict_bonus = max(0, int(adaptive_conflict_bonus))
-        if hasattr(base_obs, 'local_search_adaptive_depth_bonus'):
-            base_obs.local_search_adaptive_depth_bonus = max(0, int(adaptive_depth_bonus))
-        if hasattr(base_obs, 'local_search_deadlock_probe_depth'):
-            base_obs.local_search_deadlock_probe_depth = max(1, int(deadlock_probe_depth))
-        if hasattr(base_obs, 'local_search_deadlock_max_states'):
-            base_obs.local_search_deadlock_max_states = max(8, int(deadlock_max_states))
-        if hasattr(base_obs, 'local_tree_clip_features'):
-            base_obs.local_tree_clip_features = str(clip_tree_features).lower() == 'on'
-
+    Build TemporalMultiAgentObservation with strict base contract.
+    All tree-search parameters are now managed exclusively in DecisionPointObservation.
+    """
     def _ctor_accepts_kwarg(cls, kwarg: str) -> bool:
+        import inspect
         return kwarg in inspect.signature(cls.__init__).parameters
 
-    def _build_temporal_obs(base_obs=None):
+    def _build_temporal_obs():
         kwargs = {'temporal_window': TEMPORAL_WINDOW}
-        if base_obs is not None:
-            kwargs['base_obs'] = base_obs
         if _ctor_accepts_kwarg(TemporalMultiAgentObservation, 'debug'):
             kwargs['debug'] = debug
         return TemporalMultiAgentObservation(**kwargs)
 
-    if USE_HIERARCHICAL_OBS:
-        hr_kwargs = {}
-        if _ctor_accepts_kwarg(HierarchicalRoutesObservation, 'debug'):
-            hr_kwargs['debug'] = debug
-        if _ctor_accepts_kwarg(HierarchicalRoutesObservation, 'search_depth'):
-            hr_kwargs['search_depth'] = search_depth
-        base = HierarchicalRoutesObservation(**hr_kwargs)
-        if not hr_kwargs and hasattr(base, 'search_depth'):
-            base.search_depth = max(1, int(search_depth))
-        _apply_tree_search_cfg(base)
-        return _build_temporal_obs(base_obs=base)
-
-    obs = _build_temporal_obs(base_obs=None)
-    if hasattr(obs, 'base_obs'):
-        _apply_tree_search_cfg(obs.base_obs)
+    # Nur noch DecisionPointObservation als Basis
+    obs = _build_temporal_obs()
     return obs
-
-
-def create_decider_agent(observation_space: int, action_space: int, eps: float = 0.0) -> LearningPolicy:
-    """Hierarchical Decider policy with Specialist sub-modules + PPO + 1-step
-    deadlock BCE aux-loss. See HIERARCHICAL_DECIDER_ARCHITECTURE.md."""
-    print('>> DeciderPPOPolicy (Hierarchical Specialists + Decider)')
-    print('   - observation_space:', observation_space)
-    print('   - action_space:', action_space)
-    print('   - temporal_window:', TEMPORAL_WINDOW)
-    print(f'   - EPS (epsilon floor): {eps:.4f}')
-    policy = DeciderPPOPolicy(
-        state_size=observation_space,
-        action_size=action_space,
-        learning_rate=5.0e-5,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_eps=0.10,
-        k_epochs=1,
-        batch_size=512,
-        max_episodes_in_memory=20,
-        # Increased entropy pressure for better exploration (done-rate too low at 0.095)
-        weight_entropy=0.06,
-        weight_value=0.5,
-        # Keep auxiliary signal active but avoid overpowering PPO objective.
-        weight_aux_dl=0.035,
-        temporal_window=TEMPORAL_WINDOW,
-        train_frequency=10,     # ⬆️ Train every 10 episodes (faster feedback)
-        reward_scale=0.12,
-        aux_pos_weight=4.0,
-        target_kl=0.04,
-        max_eps_random=0.02,
-        clear_buffer_after_update=True,
-    )
-    policy.eps_smoothing = eps  # Set epsilon floor
-    return policy
 
 
 # Central speed profiles
@@ -935,40 +739,6 @@ ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     encoder_shared=os.getenv('FLATLAND_ENCODER_SHARED', 'false').lower() == 'true',
     use_spatial_attention=os.getenv('FLATLAND_USE_SPATIAL_ATTENTION', 'true').lower() == 'true'
 )
-
-def create_ma_ppo_agent(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'single') -> LearningPolicy:
-    """
-    Creates PPO Policy with Temporal Transformer Encoder
-    
-    observation_space: temporal observation size (24D DecisionPoint or 48D HierarchicalRoutes)
-    eps: Epsilon floor (0.0-1.0)
-    optimizer_mode: 'single' = consolidated optimizer, 'multiple' = 4 optimizers with sync decay
-    """
-    print('>> MARL_ATTENTION_TEMPORAL_PPOPolicy (Temporal Transformer)')
-    print('   - observation_space:', observation_space)
-    print('   - action_space:', action_space)
-    print('   - temporal_window:', TEMPORAL_WINDOW)
-    print('   - architecture: 2-Level Attention (Temporal + Spatial)')
-    print(f'   - EPS (epsilon floor): {eps:.4f}')
-    print(f'   - optimizer_mode: {optimizer_mode}')
-        
-    policy = MARL_ATTENTION_TEMPORAL_PPOPolicy(
-        observation_space,
-        action_space,
-        ppo_param,
-        show_pre_train_debug_msg=False,
-        show_progress_bar=True,
-        train_frequency=10,    # ⬆️ Train every 10 episodes (faster feedback)
-        optimizer_mode=optimizer_mode
-    )
-    # Avoid late-stage over-conservative clipping that caused the 0.54-0.57 plateau.
-    policy.surrogate_eps_clip = 0.15
-    policy.weight_entropy = 0.016  # Erhöhtes Entropie-Gewicht für mehr Exploration
-    policy.stability_guard_start_episode = 2600
-    policy.stability_guard_hard_episode = 3800
-    policy.eps_smoothing = eps  # Set epsilon floor
-    return policy
-
 
 def create_deadlock_avoidance_policy(environment: Environment, action_space: int, show_debug_plot: bool = False) -> Policy:
     return DeadLockAvoidancePolicy(
@@ -1100,8 +870,6 @@ def resolve_policy_creator_list(environment: Environment, policy_mode: Optional[
     if policy_mode is None:
         policy_mode = os.environ.get('FLATLAND_POLICY_MODE', 'pure_marl')
     policy_mode = policy_mode.strip().lower()
-    if policy_mode == 'decider':
-        return [create_decider_agent]
     if policy_mode in ('pure_marl_dla', 'marl_dla'):
         return [create_ma_ppo_agent_dp_dla]
     if policy_mode in ('dla', 'dead_lock_avoidance', 'deadlock_avoidance'):
@@ -1153,13 +921,6 @@ ARCHITECTURE CONFIGURATION:
     ⚠️  Loses agent-agent attention (temporal-only)
     
   For GPU: Keep defaults (separate encoders, spatial attention)
-
-EXAMPLES WITH TREE SEARCH TUNING:
-  # Fast tree search + shared encoder
-  python marl_attention_temporal.py final --eps 0.0 --encoder-shared --search_depth 8
-  
-  # Minimal tree search + maximum speed optimization
-  python marl_attention_temporal.py final --eps 0.0 --encoder-shared --no-spatial-attention --search_depth 6
 
 LEGACY EXAMPLES (still supported):
   python marl_attention_temporal.py --train --fresh-start
@@ -1245,7 +1006,7 @@ LEGACY EXAMPLES (still supported):
         '--policy_mode',
         type=str,
         default='pure_marl',
-        choices=['pure_marl', 'pure_marl_dla', 'marl_dla', 'dla', 'dead_lock_avoidance', 'deadlock_avoidance', 'random', 'decider'],
+        choices=['pure_marl', 'pure_marl_dla', 'marl_dla', 'dla', 'dead_lock_avoidance', 'deadlock_avoidance', 'random'],
         metavar='POLICY_MODE',
         dest='policy_mode',
         help=(
@@ -1256,8 +1017,7 @@ LEGACY EXAMPLES (still supported):
             "  dla                  -> nur DeadLockAvoidancePolicy (heuristisch)\n"
             "  dead_lock_avoidance  -> Alias fuer dla\n"
             "  deadlock_avoidance   -> Alias fuer dla\n"
-            "  random               -> RandomPolicy (Baseline)\n"
-            "  decider              -> DeciderPPOPolicy"
+            "  random               -> RandomPolicy (Baseline)"
         )
     )
     
@@ -1266,153 +1026,6 @@ LEGACY EXAMPLES (still supported):
         action='store_true',
         dest='debug',
         help='Enable debug mode for DecisionPointObservation (default: off)'
-    )
-    parser.add_argument(
-        '--search_depth',
-        type=int,
-        default=LOCAL_TREE_SEARCH_DEPTH,
-        metavar='DEPTH',
-        dest='search_depth',
-        help='Local tree search depth for observation builder (default: 12; recommended 8-12 with adaptive budgeting)'
-    )
-    parser.add_argument(
-        '--tree_random_start_depth',
-        type=int,
-        default=LOCAL_TREE_RANDOM_START_DEPTH,
-        metavar='DEPTH',
-        dest='tree_random_start_depth',
-        help='From this tree depth onward, side branches are sampled (default: 2)'
-    )
-    parser.add_argument(
-        '--tree_max_side_branches',
-        type=int,
-        default=LOCAL_TREE_MAX_SIDE_BRANCHES,
-        metavar='K',
-        dest='tree_max_side_branches',
-        help='Maximum sampled side branches per node after shortest branch (default: 1)'
-    )
-    parser.add_argument(
-        '--tree_distance_bias',
-        type=float,
-        default=LOCAL_TREE_DISTANCE_BIAS,
-        metavar='ALPHA',
-        dest='tree_distance_bias',
-        help='Sampling bias toward shorter side branches; larger means stronger short-path bias (default: 2.0)'
-    )
-    parser.add_argument(
-        '--tree_mode',
-        type=str,
-        default=LOCAL_TREE_MODE,
-        choices=['stochastic', 'mcts'],
-        metavar='MODE',
-        dest='tree_mode',
-        help='Branch-selection mode after tree_random_start_depth: stochastic or mcts (default: stochastic)'
-    )
-    parser.add_argument(
-        '--tree_mcts_rollouts',
-        type=int,
-        default=LOCAL_TREE_MCTS_ROLLOUTS,
-        metavar='N',
-        dest='tree_mcts_rollouts',
-        help='MCTS-lite rollout budget per expanded node when tree_mode=mcts (default: 6)'
-    )
-    parser.add_argument(
-        '--tree_mcts_horizon',
-        type=int,
-        default=LOCAL_TREE_MCTS_HORIZON,
-        metavar='H',
-        dest='tree_mcts_horizon',
-        help='Rollout horizon in rail cells for tree_mode=mcts (default: 4)'
-    )
-    parser.add_argument(
-        '--tree_ucb_c',
-        type=float,
-        default=LOCAL_TREE_UCB_C,
-        metavar='C',
-        dest='tree_ucb_c',
-        help='Exploration constant for MCTS-lite UCB action selection (default: 1.2)'
-    )
-    parser.add_argument(
-        '--tree_contract_depth',
-        type=int,
-        default=LOCAL_TREE_CONTRACT_DEPTH,
-        metavar='DEPTH',
-        dest='tree_contract_depth',
-        help='From this depth onward linear corridors are contracted into one edge (default: 8)'
-    )
-    parser.add_argument(
-        '--tree_max_nodes',
-        type=int,
-        default=LOCAL_TREE_MAX_NODES,
-        metavar='N',
-        dest='tree_max_nodes',
-        help='Hard node budget for local tree search per agent step (default: 32)'
-    )
-    parser.add_argument(
-        '--tree_min_nodes',
-        type=int,
-        default=LOCAL_TREE_MIN_NODES,
-        metavar='N',
-        dest='tree_min_nodes',
-        help='Minimum node budget when adaptive budgeting is enabled (default: 8)'
-    )
-    parser.add_argument(
-        '--tree_adaptive_budget',
-        type=str,
-        default=LOCAL_TREE_ADAPTIVE_BUDGET,
-        choices=['on', 'off'],
-        metavar='MODE',
-        dest='tree_adaptive_budget',
-        help='Adaptive node budget mode: on lowers cost in simple scenes, off uses fixed max_nodes (default: on)'
-    )
-    parser.add_argument(
-        '--tree_adaptive_branch_bonus',
-        type=int,
-        default=LOCAL_TREE_ADAPTIVE_BRANCH_BONUS,
-        metavar='N',
-        dest='tree_adaptive_branch_bonus',
-        help='Node bonus per extra root branch for adaptive budgeting (default: 6)'
-    )
-    parser.add_argument(
-        '--tree_adaptive_conflict_bonus',
-        type=int,
-        default=LOCAL_TREE_ADAPTIVE_CONFLICT_BONUS,
-        metavar='N',
-        dest='tree_adaptive_conflict_bonus',
-        help='Node bonus for merge/conflict hotspots in adaptive budgeting (default: 14)'
-    )
-    parser.add_argument(
-        '--tree_adaptive_depth_bonus',
-        type=int,
-        default=LOCAL_TREE_ADAPTIVE_DEPTH_BONUS,
-        metavar='N',
-        dest='tree_adaptive_depth_bonus',
-        help='Node bonus per depth step above 6 in adaptive budgeting (default: 2)'
-    )
-    parser.add_argument(
-        '--tree_deadlock_probe_depth',
-        type=int,
-        default=LOCAL_TREE_DEADLOCK_PROBE_DEPTH,
-        metavar='DEPTH',
-        dest='tree_deadlock_probe_depth',
-        help='Depth cap for per-node deadlock probe used inside local search (default: 7)'
-    )
-    parser.add_argument(
-        '--tree_deadlock_max_states',
-        type=int,
-        default=LOCAL_TREE_DEADLOCK_MAX_STATES,
-        metavar='N',
-        dest='tree_deadlock_max_states',
-        help='State cap for per-node deadlock probe used inside local search (default: 32)'
-    )
-    parser.add_argument(
-        '--tree_clip_features',
-        type=str,
-        default=LOCAL_TREE_CLIP_FEATURES,
-        choices=['on', 'off'],
-        metavar='MODE',
-        dest='tree_clip_features',
-        help='Clip serialized tree-node features to [0,1] before policy input (default: on)'
     )
     
     # ====================================================================
@@ -1461,24 +1074,6 @@ LEGACY EXAMPLES (still supported):
     encoder_shared_cli = True  # Default: True (shared encoder for speed)
     use_spatial_attention_cli = not bool(args.no_spatial_attention)  # Default: True (spatial attention enabled)
     
-    search_depth = int(args.search_depth)
-    tree_random_start_depth = int(args.tree_random_start_depth)
-    tree_max_side_branches = int(args.tree_max_side_branches)
-    tree_distance_bias = float(args.tree_distance_bias)
-    tree_mode = str(args.tree_mode).lower()
-    tree_mcts_rollouts = int(args.tree_mcts_rollouts)
-    tree_mcts_horizon = int(args.tree_mcts_horizon)
-    tree_ucb_c = float(args.tree_ucb_c)
-    tree_contract_depth = int(args.tree_contract_depth)
-    tree_max_nodes = int(args.tree_max_nodes)
-    tree_min_nodes = int(args.tree_min_nodes)
-    tree_adaptive_budget = str(args.tree_adaptive_budget).lower()
-    tree_adaptive_branch_bonus = int(args.tree_adaptive_branch_bonus)
-    tree_adaptive_conflict_bonus = int(args.tree_adaptive_conflict_bonus)
-    tree_adaptive_depth_bonus = int(args.tree_adaptive_depth_bonus)
-    tree_deadlock_probe_depth = int(args.tree_deadlock_probe_depth)
-    tree_deadlock_max_states = int(args.tree_deadlock_max_states)
-    tree_clip_features = str(args.tree_clip_features).lower()
     do_training = mode != 'eval'
     do_rendering = rendering
     checkpoint_interval = 50
@@ -1528,63 +1123,6 @@ LEGACY EXAMPLES (still supported):
             print("[Warn] eps=0.0 and min_eps=0.0 in training: global epsilon exploration is disabled.")
         else:
             print(f"[Info] eps=0.0 in training: using min_eps floor={min_eps:.4f} for global exploration.")
-    if not (1 <= search_depth <= 12):
-        print(f"ERROR: --search_depth must be between 1 and 12, got {search_depth}")
-        sys.exit(1)
-    if not (0 <= tree_random_start_depth <= 12):
-        print(f"ERROR: --tree_random_start_depth must be between 0 and 12, got {tree_random_start_depth}")
-        sys.exit(1)
-    if not (0 <= tree_max_side_branches <= 3):
-        print(f"ERROR: --tree_max_side_branches must be between 0 and 3, got {tree_max_side_branches}")
-        sys.exit(1)
-    if not (0.1 <= tree_distance_bias <= 10.0):
-        print(f"ERROR: --tree_distance_bias must be between 0.1 and 10.0, got {tree_distance_bias}")
-        sys.exit(1)
-    if tree_mode not in ('stochastic', 'mcts'):
-        print(f"ERROR: --tree_mode must be one of ['stochastic', 'mcts'], got {tree_mode}")
-        sys.exit(1)
-    if not (1 <= tree_mcts_rollouts <= 64):
-        print(f"ERROR: --tree_mcts_rollouts must be between 1 and 64, got {tree_mcts_rollouts}")
-        sys.exit(1)
-    if not (1 <= tree_mcts_horizon <= 16):
-        print(f"ERROR: --tree_mcts_horizon must be between 1 and 16, got {tree_mcts_horizon}")
-        sys.exit(1)
-    if not (0.01 <= tree_ucb_c <= 4.0):
-        print(f"ERROR: --tree_ucb_c must be between 0.01 and 4.0, got {tree_ucb_c}")
-        sys.exit(1)
-    if not (0 <= tree_contract_depth <= 12):
-        print(f"ERROR: --tree_contract_depth must be between 0 and 12, got {tree_contract_depth}")
-        sys.exit(1)
-    if not (8 <= tree_max_nodes <= 256):
-        print(f"ERROR: --tree_max_nodes must be between 8 and 256, got {tree_max_nodes}")
-        sys.exit(1)
-    if not (8 <= tree_min_nodes <= 256):
-        print(f"ERROR: --tree_min_nodes must be between 8 and 256, got {tree_min_nodes}")
-        sys.exit(1)
-    if tree_min_nodes > tree_max_nodes:
-        print(f"ERROR: --tree_min_nodes must be <= --tree_max_nodes, got {tree_min_nodes}>{tree_max_nodes}")
-        sys.exit(1)
-    if tree_adaptive_budget not in ('on', 'off'):
-        print(f"ERROR: --tree_adaptive_budget must be one of ['on', 'off'], got {tree_adaptive_budget}")
-        sys.exit(1)
-    if not (0 <= tree_adaptive_branch_bonus <= 32):
-        print(f"ERROR: --tree_adaptive_branch_bonus must be between 0 and 32, got {tree_adaptive_branch_bonus}")
-        sys.exit(1)
-    if not (0 <= tree_adaptive_conflict_bonus <= 32):
-        print(f"ERROR: --tree_adaptive_conflict_bonus must be between 0 and 32, got {tree_adaptive_conflict_bonus}")
-        sys.exit(1)
-    if not (0 <= tree_adaptive_depth_bonus <= 16):
-        print(f"ERROR: --tree_adaptive_depth_bonus must be between 0 and 16, got {tree_adaptive_depth_bonus}")
-        sys.exit(1)
-    if not (1 <= tree_deadlock_probe_depth <= 32):
-        print(f"ERROR: --tree_deadlock_probe_depth must be between 1 and 32, got {tree_deadlock_probe_depth}")
-        sys.exit(1)
-    if not (8 <= tree_deadlock_max_states <= 512):
-        print(f"ERROR: --tree_deadlock_max_states must be between 8 and 512, got {tree_deadlock_max_states}")
-        sys.exit(1)
-    if tree_clip_features not in ('on', 'off'):
-        print(f"ERROR: --tree_clip_features must be one of ['on', 'off'], got {tree_clip_features}")
-        sys.exit(1)
     # Honor the configured minimum exploration floor even when --eps is 0.0.
     if do_training and min_eps > eps:
         eps = float(min_eps)
@@ -1592,17 +1130,7 @@ LEGACY EXAMPLES (still supported):
     print(
         f"\n[Config] mode={mode}, eps={eps:.4f}, optimizer_mode={optimizer_mode}, "
         f"encoder_shared={encoder_shared_cli}, use_spatial_attention={use_spatial_attention_cli}, "
-        f"policy_mode={policy_mode}, debug={debug_mode}, search_depth={search_depth}, "
-        f"tree_mode={tree_mode}, tree_start={tree_random_start_depth}, tree_k={tree_max_side_branches}, "
-        f"tree_bias={tree_distance_bias:.2f}, tree_rollouts={tree_mcts_rollouts}, "
-        f"tree_horizon={tree_mcts_horizon}, tree_ucb_c={tree_ucb_c:.2f}, "
-        f"tree_contract_depth={tree_contract_depth}, tree_min_nodes={tree_min_nodes}, "
-        f"tree_max_nodes={tree_max_nodes}, tree_adaptive_budget={tree_adaptive_budget}, "
-        f"tree_adaptive_branch_bonus={tree_adaptive_branch_bonus}, "
-        f"tree_adaptive_conflict_bonus={tree_adaptive_conflict_bonus}, "
-        f"tree_adaptive_depth_bonus={tree_adaptive_depth_bonus}, "
-        f"tree_deadlock_probe_depth={tree_deadlock_probe_depth}, tree_deadlock_max_states={tree_deadlock_max_states}, "
-        f"tree_clip_features={tree_clip_features}"
+        f"policy_mode={policy_mode}, debug={debug_mode}"
     )
     if USE_CURRICULUM_PHASES:
         print(f"[Config] curriculum_start_phase_index={start_from_phase} ({CURRICULUM_PHASES[start_from_phase]['name']})")
@@ -1610,24 +1138,6 @@ LEGACY EXAMPLES (still supported):
     environment = RailEnvironmentPersistable(
         obs_builder_object_creator=lambda: create_temporal_obs_builder_object(
             debug=debug_mode,
-            search_depth=search_depth,
-            random_start_depth=tree_random_start_depth,
-            max_side_branches=tree_max_side_branches,
-            distance_bias=tree_distance_bias,
-            tree_mode=tree_mode,
-            mcts_rollouts=tree_mcts_rollouts,
-            mcts_horizon=tree_mcts_horizon,
-            ucb_c=tree_ucb_c,
-            contract_depth=tree_contract_depth,
-            max_nodes=tree_max_nodes,
-            min_nodes=tree_min_nodes,
-            adaptive_budget=tree_adaptive_budget,
-            adaptive_branch_bonus=tree_adaptive_branch_bonus,
-            adaptive_conflict_bonus=tree_adaptive_conflict_bonus,
-            adaptive_depth_bonus=tree_adaptive_depth_bonus,
-            deadlock_probe_depth=tree_deadlock_probe_depth,
-            deadlock_max_states=tree_deadlock_max_states,
-            clip_tree_features=tree_clip_features,
         ),
         n_cities=PURE_MARL_N_CITIES,
         grid_width=PURE_MARL_GRID_WIDTH,
@@ -1655,27 +1165,9 @@ LEGACY EXAMPLES (still supported):
     environment.load_environments_from_path(path=default_env_path)
     policy_creator_list = resolve_policy_creator_list(environment, policy_mode=policy_mode)
 
-    # Use the actual base-obs size so the policy gets a matching state_size
-    # (64D for DecisionPointObservation, 88D for HierarchicalRoutesObservation).
+    # Use the actual base-obs size so the policy gets a matching state_size.
     _obs_builder_for_size = create_temporal_obs_builder_object(
-        search_depth=search_depth,
-        random_start_depth=tree_random_start_depth,
-        max_side_branches=tree_max_side_branches,
-        distance_bias=tree_distance_bias,
-        tree_mode=tree_mode,
-        mcts_rollouts=tree_mcts_rollouts,
-        mcts_horizon=tree_mcts_horizon,
-        ucb_c=tree_ucb_c,
-        contract_depth=tree_contract_depth,
-        max_nodes=tree_max_nodes,
-        min_nodes=tree_min_nodes,
-        adaptive_budget=tree_adaptive_budget,
-        adaptive_branch_bonus=tree_adaptive_branch_bonus,
-        adaptive_conflict_bonus=tree_adaptive_conflict_bonus,
-        adaptive_depth_bonus=tree_adaptive_depth_bonus,
-        deadlock_probe_depth=tree_deadlock_probe_depth,
-        deadlock_max_states=tree_deadlock_max_states,
-        clip_tree_features=tree_clip_features,
+        debug=debug_mode,
     )
     if hasattr(_obs_builder_for_size, 'get_observation_size'):
         _state_size = _obs_builder_for_size.get_observation_size()

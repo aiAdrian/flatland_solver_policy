@@ -110,8 +110,8 @@ class DecisionPointObservation(ObservationBuilder):
         # Local-tree search control to avoid branch explosion at higher depths.
         # Up to depth 1: expand all transitions.
         # From depth >= 2: always keep shortest-path branch and sample side branches.
-        self.local_search_random_start_depth = 2
-        self.local_search_max_side_branches = 3
+        self.local_search_random_start_depth = 3  # ab Tiefe 3 nur noch bester Pfad + 1 Side-Branch
+        self.local_search_max_side_branches = 1   # max. 1 Side-Branch pro Entscheidung
         self.local_search_distance_bias = 2.0
         # Optional advanced controls for deeper searches.
         self.local_search_mode = "stochastic"  # stochastic | mcts
@@ -122,7 +122,7 @@ class DecisionPointObservation(ObservationBuilder):
         # Enable corridor contraction by default so local search reaches
         # downstream decision points within limited node budgets.
         self.local_search_disable_corridor_contraction = False
-        self.local_search_max_nodes = 72
+        self.local_search_max_nodes = 32   # weniger Knoten pro Agent
         self.local_search_min_nodes = 24
         self.local_search_adaptive_budget = True
         self.local_search_adaptive_branch_bonus = 6
@@ -333,18 +333,18 @@ class DecisionPointObservation(ObservationBuilder):
         transition_cache=None,
         incoming_degree_cache=None,
     ) -> int:
-        max_nodes = int(getattr(self, "local_search_max_nodes", 48))
-        min_nodes = int(getattr(self, "local_search_min_nodes", 24))
-        if not bool(getattr(self, "local_search_adaptive_budget", True)):
+        max_nodes = self.local_search_max_nodes
+        min_nodes = self.local_search_min_nodes
+        if not self.local_search_adaptive_budget:
             return max(min_nodes, max_nodes)
 
-        bonus = int(max(0, int(depth_limit) - 3)) * int(getattr(self, "local_search_adaptive_depth_bonus", 2))
+        bonus = max(0, int(depth_limit) - 3) * self.local_search_adaptive_depth_bonus
         transitions = self._rail_get_transitions(start_pos, start_dir)
         if fast_count_nonzero(transitions) > 1:
-            bonus += int(getattr(self, "local_search_adaptive_branch_bonus", 6))
+            bonus += self.local_search_adaptive_branch_bonus
 
         budget = max_nodes + bonus
-        return max(min_nodes, min(max_nodes + 2 * int(getattr(self, "local_search_adaptive_depth_bonus", 2)), budget))
+        return max(min_nodes, min(max_nodes + 2 * self.local_search_adaptive_depth_bonus, budget))
 
     def _select_local_search_branches(
         self,
@@ -372,10 +372,10 @@ class DecisionPointObservation(ObservationBuilder):
         shortest = min(ordered, key=lambda c: (c[2] if np.isfinite(c[2]) else float("inf")))
         side = [c for c in ordered if c is not shortest]
 
-        if int(depth) < int(getattr(self, "local_search_random_start_depth", 2)):
+        if int(depth) < self.local_search_random_start_depth:
             return ordered
 
-        k_side = max(0, int(getattr(self, "local_search_max_side_branches", 1)))
+        k_side = max(0, self.local_search_max_side_branches)
         if k_side == 0 or not side:
             return [shortest]
 
@@ -387,7 +387,7 @@ class DecisionPointObservation(ObservationBuilder):
         cur_dir = int(direction)
         edge_len = 1
         target_on_edge = bool(target is not None and cur_pos == target)
-        if bool(getattr(self, "local_search_disable_corridor_contraction", False)):
+        if self.local_search_disable_corridor_contraction:
             return cur_pos, cur_dir, edge_len, target_on_edge
         visited = set()
 
@@ -907,7 +907,7 @@ class DecisionPointObservation(ObservationBuilder):
         agent = self.env.agents[handle]
         agent_target = agent.target
         distance_map = self.env.distance_map.get()
-        max_nodes = int(getattr(self, "local_search_max_nodes", 72))
+        max_nodes = self.local_search_max_nodes
         max_depth = int(depth_limit)
 
         # Early exit für Waiting/Done
@@ -1339,7 +1339,7 @@ class DecisionPointObservation(ObservationBuilder):
         distance_map = self.env.distance_map.get()
 
         # Lokale Suche → Baum-Payload für trainierbare Encoder-Integration
-        search_depth = max(int(self.search_depth), int(getattr(self, "local_search_min_search_depth", 8)))
+        search_depth = max(int(self.search_depth), self.local_search_min_search_depth)
         prev_active = self._obs_profile_active
         self._obs_profile_active = bool(prof_active)
         tree_payload = self._local_search(handle, pos, direction, search_depth)
