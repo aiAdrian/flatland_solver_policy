@@ -1,7 +1,7 @@
 """Decision-point observation used by MAPPO.
 
 Layout:
-- BASE_OBS_SIZE=15: local agent state features
+- BASE_OBS_SIZE=13: local agent state features
 - TREE PAYLOAD: Decision-Point Graph with three node types:
   - INIT (type=0): Agent initialization/spawn
   - SWITCH (type=1): Route choice (num_transitions > 1)
@@ -55,9 +55,9 @@ class DecisionPointObservation(ObservationBuilder):
     _last_100_tree_stats = []  # List of tree_stats pro Episode
     _last_obs_fn_perf_report = None
 
-    # Export 15 base features.
+    # Export 13 base features.
     # Legacy lifecycle duplicates were removed; deadlock signals live in tree payload.
-    BASE_OBS_SIZE = 15
+    BASE_OBS_SIZE = 13
     OBS_SIZE = BASE_OBS_SIZE
     # Legacy alias; active runtime cap is configured via self.local_search_max_nodes.
     MAX_NODES = 48
@@ -1113,7 +1113,7 @@ class DecisionPointObservation(ObservationBuilder):
             fallback_max = max(1.0, float(self.env.width + self.env.height))
             priority_rank = self._distance_to_unit(self_distance, fallback_max)
  
-        # Export selected lifecycle flags used by the current 15D contract.
+        # Export selected lifecycle flags used by the current 13D contract.
         # st_3=READY_TO_DEPART (st_4=MALFUNCTION and st_6=done removed as dead constants).
         raw_features[6] = 1.0 if agent.state == TrainState.READY_TO_DEPART else 0.0  # st_3 (READY_TO_DEPART)
         raw_features[7] = priority_rank

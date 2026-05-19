@@ -1631,13 +1631,13 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         else:
             self.K_epoch = 3  # Back to baseline
             
-        self.surrogate_eps_clip = 0.12  # tighter trust region to reduce KL spikes
-        self.weight_loss = 0.9  # Lower critic pressure to prevent value-overfit from killing actor gradients
-        self.weight_entropy = 0.11  # +0.02 to boost exploration for low done-rate regime
+        self.surrogate_eps_clip = 0.10  # tighter trust region to reduce KL spikes
+        self.weight_loss = 0.75  # lower critic pressure so shared encoder does not swamp actor updates
+        self.weight_entropy = 0.13  # stronger exploration for deadlock-heavy sparse decision regimes
         # Exploration boost: increase decision_eps_floor and max_eps_random
-        self.decision_eps_floor = 0.12  # +0.02 keep exploration active in sparse-decision regimes
-        self.max_eps_random = 0.18      # +0.02 raise global random exploration ceiling
-        self.weight_policy = 1.60
+        self.decision_eps_floor = 0.14  # keep exploration active in sparse-decision regimes
+        self.max_eps_random = 0.20      # raise global random exploration ceiling
+        self.weight_policy = 1.80
         
         # ========================================================================
         # SIMPLIFIED MODE: Core PPO only, with optional agent count override
@@ -1666,11 +1666,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         
         # Optional auxiliary losses (AuxDL disabled entirely: does not converge, noises gradient)
         self.weight_aux_deadlock = 0.0
-        self.weight_action_diversity = 0.0 if self.simplified_mode > 0 else 0.05
+        self.weight_action_diversity = 0.0 if self.simplified_mode > 0 else 0.07
         self.weight_comm = 0.0 if self.simplified_mode > 0 else 3.0e-4
         
         # Action diversity parameters (used only if weight_action_diversity > 0)
-        self.forward_prob_soft_max = 0.70
+        self.forward_prob_soft_max = 0.66
         self.lr_prob_soft_min = 0.11
         self.idle_prob_soft_max = 0.22
         # Apply action-diversity shaping only at meaningful conflict/decision contexts.
@@ -1694,10 +1694,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.comm_gate_target = 0.032
         self.max_hard_batches_before_lr_decay = 4
         self.hard_spike_streak_limit = 2
-        self.actor_lr_decay_on_instability = 0.92
-        self.actor_lr_recover_rate = 1.02
-        self.actor_lr_min_factor = 0.50
+        self.actor_lr_decay_on_instability = 0.75
+        self.actor_lr_recover_rate = 1.01
+        self.actor_lr_min_factor = 0.35
         self.actor_lr_max_factor = 1.00
+        self.grad_norm_soft = 20.0
+        self.grad_norm_hard = 50.0
         self.gae_lambda = self.ppo_parameters.gae_lambda if self.ppo_parameters else 0.95
 
         # Reward scaling: raw per-step rewards are O(-0.5), giving discounted returns
@@ -1705,7 +1707,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # and advantages remain noisy. Scaling rewards to [-3, +0.3] drives V_Loss to
         # <0.1, enabling the critic to converge. Policy gradient is unaffected because
         # advantages are normalized per mini-batch regardless of absolute scale.
-        self.reward_scale = 0.1
+        self.reward_scale = 0.08
 
         # Memory
         self.current_episode_memory = EpisodeBuffers()
@@ -1882,8 +1884,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.actor_lr_factor = 1.0
         # Entropy rescue prevents late deterministic collapse around local minima.
         self.entropy_rescue_start_episode = 350      # ⬆️ Activate VERY early (was 700, now immediately!)
-        self.entropy_floor = 0.60       # Higher floor to avoid premature deterministic collapse.
-        self.entropy_recovery_scale = 5.0  # Stronger entropy rescue when floor is violated.
+        self.entropy_floor = 0.70       # Higher floor to avoid premature deterministic collapse.
+        self.entropy_recovery_scale = 6.0  # Stronger entropy rescue when floor is violated.
 
         self.loss_function = nn.SmoothL1Loss(beta=1.0)
         self.training_step_count = 0
@@ -2846,7 +2848,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                         and approx_kl < 0.010
                         and abs(ratio_mean - 1.0) < 0.03
                     ):
-                        policy_weight_eff *= 1.15
+                        policy_weight_eff *= 1.30
 
                 loss = \
                     policy_weight_eff * policy_loss_component \
@@ -2889,6 +2891,13 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     _add_t('backward_clip', _tic() - t0)
                 
                 grad_norm = max(grad_norm_actor.item(), grad_norm_critic.item())
+
+                if grad_norm > self.grad_norm_hard:
+                    hard_spike_batches_total += 1
+                    hard_spike_streak += 1
+                    self._set_actor_lr_factor(self.actor_lr_factor * self.actor_lr_decay_on_instability)
+                elif grad_norm > self.grad_norm_soft:
+                    hard_spike_streak = max(hard_spike_streak, 1)
 
                 def _module_grad_norm(module: nn.Module) -> float:
                     sq = 0.0

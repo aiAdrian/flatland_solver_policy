@@ -719,14 +719,14 @@ default_max_batches = 8
 default_memory_episodes = 20
 
 # Recommended default: stronger PPO update to avoid near-zero policy drift.
-default_k_epochs = 3
+default_k_epochs = 2
 
 # NOTE: ppo_param will be REBUILT after CLI args parsing (in main section)
 # This version is only for non-main use (imports, testing)
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     hidden_size=_env_int('FLATLAND_HIDDEN_SIZE', default_hidden_size),
     batch_size=max(32, _env_int('FLATLAND_BATCH_SIZE', default_batch_size)),
-    learning_rate=_env_float('FLATLAND_LR', 1.8e-5),
+    learning_rate=_env_float('FLATLAND_LR', 1.35e-5),
     discount=_env_float('FLATLAND_DISCOUNT', 0.99),
     gae_lambda=_env_float('FLATLAND_GAE_LAMBDA', 0.92),  # ↓ 0.95→0.92: sharper advantage signal
     use_gpu=USE_GPU_EFFECTIVE,
