@@ -132,7 +132,7 @@ class DecisionPointObservation(ObservationBuilder):
         self.local_search_deadlock_max_states = 256
         self.local_tree_clip_features = True
         # Debug-only render overlay. Handle 0 exports pseudo-agent cell sets:
-        # 0=all node cells, 1/2=even/odd corridor cells, 3=pre-merge, 4=switch.
+        # 0=all node cells, 1=pre-merge, 2=switch, 3/4=even/odd corridor cells.
         self.debug_tree_overlay_enabled = True
         # Lightweight function profiler for observation hot paths.
         self.obs_func_profile_enabled = str(os.getenv('FLATLAND_OBS_FUNC_PROFILE', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
@@ -843,9 +843,9 @@ class DecisionPointObservation(ObservationBuilder):
             node_cells = _node_cells(node)
             overlay[0].update(node_cells)
             if bool(node.get("is_pre_merge", False)):
-                overlay[3].update(node_cells)
+                overlay[1].update(node_cells)
             if bool(node.get("is_switch", False)):
-                overlay[4].update(node_cells)
+                overlay[2].update(node_cells)
 
             for edge in edges_by_src.get(node_idx, []):
                 edge_id = (
@@ -858,7 +858,7 @@ class DecisionPointObservation(ObservationBuilder):
                 visited_edges.add(edge_id)
 
                 edge_depth = int(edge.get("src_depth", node.get("depth", 0)))
-                pseudo_handle = 1 if (edge_depth % 2 == 0) else 2
+                pseudo_handle = 3 if (edge_depth % 2 == 0) else 4
                 corridor_cells = [
                     (int(cell[0]), int(cell[1]))
                     for cell in edge.get("cells", [])
@@ -877,15 +877,15 @@ class DecisionPointObservation(ObservationBuilder):
 
         for node in nodes:
             for cell in _node_cells(node):
-                overlay[1].discard(cell)
-                overlay[2].discard(cell)
+                overlay[3].discard(cell)
+                overlay[4].discard(cell)
 
         # Keep node markers visually clean: a cell should not appear as both
         # corridor parity and explicit switch/merge overlay in the same frame.
-        overlay[1].difference_update(overlay[3])
-        overlay[1].difference_update(overlay[4])
-        overlay[2].difference_update(overlay[3])
-        overlay[2].difference_update(overlay[4])
+        overlay[3].difference_update(overlay[1])
+        overlay[3].difference_update(overlay[2])
+        overlay[4].difference_update(overlay[1])
+        overlay[4].difference_update(overlay[2])
 
         for pseudo_handle, cells in overlay.items():
             self.env.dev_obs_dict[pseudo_handle] = set(cells)
