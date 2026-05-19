@@ -268,8 +268,8 @@ class TreePayloadEncoder(nn.Module):
         )
         
         # Level Prior: Root wichtiger als Leaves
-        self.register_buffer(
-            "level_importance",
+        # WICHTIG: Parameter (nicht Buffer) → wird mit MAPPO trainiert!
+        self.level_importance = nn.Parameter(
             torch.tensor([1.0, 0.8, 0.6, 0.4], dtype=torch.float32)
         )
 
