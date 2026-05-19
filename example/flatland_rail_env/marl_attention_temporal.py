@@ -122,9 +122,9 @@ def _env_float(name: str, default: float) -> float:
 REWARD_STEP_PENALTY = _env_float('FLATLAND_REWARD_STEP_PENALTY', 0.01)
 REWARD_DONE_BONUS = _env_float('FLATLAND_REWARD_DONE_BONUS', 10.0)  # Boosted for stronger positive signal
 REWARD_ALL_DONE_BONUS = _env_float('FLATLAND_REWARD_ALL_DONE_BONUS', 100.0)
-REWARD_DEADLOCK_PENALTY = _env_float('FLATLAND_DEADLOCK_PENALTY', 100.0)  # Lowered for less negative bias
+REWARD_DEADLOCK_PENALTY = _env_float('FLATLAND_DEADLOCK_PENALTY', 8.0)   # Massiv gesenkt: 100→8, verhindert Reward-Varianz-Explosion
 REWARD_PROGRESS_BONUS = _env_float('FLATLAND_REWARD_PROGRESS_BONUS', 0.05)  # ↑ reward for progress
-FINAL_NOT_SOLVED_PENALTY = _env_float('FLATLAND_FINAL_NOT_SOLVED_PENALTY', 10.0)  # Large penalty for not solving by episode end
+FINAL_NOT_SOLVED_PENALTY = _env_float('FLATLAND_FINAL_NOT_SOLVED_PENALTY', 2.0)   # Gesenkt: 10→2, reduziert Varianz der Rückgabe
 
 class FlatlandSparseRewardShaper:
     """Reward shaping for sparse/deadlock-heavy Flatland training.
@@ -790,10 +790,10 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     # - prioritize progress/forward flow
     # - keep stronger decision-point exploration to avoid deadlock plateaus
     # - reduce forward-only collapse while preserving throughput bias
-    policy.surrogate_eps_clip = float(np.clip(_env_float('FLATLAND_CLIP_EPS', 0.18), 0.05, 0.40))
-    policy.weight_entropy = float(np.clip(_env_float('FLATLAND_WEIGHT_ENTROPY', 0.12), 0.0, 1.0))  # ↑ more exploration
-    policy.reward_scale = 0.09
-    policy.weight_loss = float(np.clip(_env_float('FLATLAND_WEIGHT_VALUE', 1.10), 0.1, 5.0))      # ↓ less critic pressure
+    policy.surrogate_eps_clip = float(np.clip(_env_float('FLATLAND_CLIP_EPS', 0.20), 0.05, 0.40))
+    policy.weight_entropy = float(np.clip(_env_float('FLATLAND_WEIGHT_ENTROPY', 0.18), 0.0, 1.0))  # ↑ mehr Exploration
+    policy.reward_scale = 0.12
+    policy.weight_loss = float(np.clip(_env_float('FLATLAND_WEIGHT_VALUE', 0.60), 0.1, 5.0))      # ↓ Critic-Druck reduziert
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600
     policy.ppo_target_kl = 0.040
@@ -808,21 +808,28 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.hard_spike_streak_limit = 4
     policy.actor_lr_min_factor = 0.70
     policy.actor_lr_decay_on_instability = 0.88
-    # Stronger default exploration for deadlock-heavy decision-point regimes.
-    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.22), 0.0, 1.0)) # ↑ more random actions
-    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.22), 0.0, 1.0)) # ↑ more random actions
+    # Stärkere Exploration + Forward-Kollaps brechen
+    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.28), 0.0, 1.0))
+    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.28), 0.0, 1.0))
     policy.use_decision_eps_floor = str(os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
-    # Keep some turning signal and activate diversity shaping earlier at decision points.
-    policy.weight_action_diversity = 0.24
-    policy.action_diversity_gate_threshold = 0.30
-    policy.forward_prob_soft_max = 0.70
-    policy.lr_prob_soft_min = 0.08
-    policy.idle_prob_soft_max = 0.10
-    policy.idle_logit_penalty = 1.60
-    policy.stop_logit_penalty = 1.10
+    # Forward-Kollaps aufbrechen: Diversity früher + stärker erzwingen
+    policy.weight_action_diversity = 0.70  # 0.50 → 0.70: stärkere Diversity erzwingen
+    policy.action_diversity_gate_threshold = 0.15  # 0.30 → 0.15: früher aktiv
+    policy.forward_prob_soft_max = 0.48   # 0.52 → 0.48: noch weniger Forward-Bias
+    policy.lr_prob_soft_min = 0.12        # 0.08 → 0.12: mehr L/R erzwingen
+    policy.idle_prob_soft_max = 0.08
+    policy.idle_logit_penalty = 1.20
+    policy.stop_logit_penalty = 0.80
+    # AuxDL deaktivieren: konvergiert nicht, stört Gradienten
+    for _aux_field in ('weight_aux_deadlock', 'weight_aux_dl'):
+        if hasattr(policy, _aux_field):
+            setattr(policy, _aux_field, 0.0)
+
+    # SP-Prior: für 5-agent weniger dominant, damit Policy echte Routing-Entscheidungen lernt
+    policy.sp_hint_route_prior_prob = float(np.clip(_env_float('FLATLAND_SP_HINT_ROUTE_PRIOR_PROB', 0.45), 0.0, 1.0))  # 0.65 → 0.45
+    policy.sp_hint_logit_bonus = float(np.clip(_env_float('FLATLAND_SP_HINT_LOGIT_BONUS', 0.80), 0.0, 4.0))           # 1.25 → 0.80
 
     # For single-agent core runs, prioritize fast convergence over exploration.
-    # This avoids a persistent ~20% random-failure floor caused by high epsilon floors.
     if simplified_n == 1:
         policy.use_decision_eps_floor = str(os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
         policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.00), 0.0, 1.0))

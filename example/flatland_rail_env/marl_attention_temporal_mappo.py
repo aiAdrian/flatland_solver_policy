@@ -1548,8 +1548,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 self.use_spatial_attention = False
                 print("   - CORE override: use_spatial_attention=False")
         
-        # Optional auxiliary losses (disabled when simplified_mode > 0)
-        self.weight_aux_deadlock = 0.0 if self.simplified_mode > 0 else 0.04
+        # Optional auxiliary losses (AuxDL disabled entirely: does not converge, noises gradient)
+        self.weight_aux_deadlock = 0.0
         self.weight_action_diversity = 0.0 if self.simplified_mode > 0 else 0.05
         self.weight_comm = 0.0 if self.simplified_mode > 0 else 3.0e-4
         
@@ -1792,6 +1792,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             'ret_min': [], 'ret_max': [],
             'comm_loss': [], 'action_div_loss': [], 'action_div_gate_ratio': [], 'total_loss': [],
             'action_hist': [],
+            'action_hist_decision': [],
         }
         # Episode-Kennzahlen (Reward + Done-Rate)
         self._ep_stat_buf: dict = {'reward': [], 'done_frac': []}
@@ -1895,6 +1896,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         action_hist = batch_metrics.get('action_hist', np.zeros(5))
         for i, label in enumerate(action_labels):
             self.writer.add_scalar(f'{policy_prefix}/training_value_action_{label}', action_hist[i], global_step)
+        action_hist_dec = batch_metrics.get('action_hist_decision', np.zeros(5))
+        for i, label in enumerate(action_labels):
+            self.writer.add_scalar(f'{policy_prefix}/training_value_action_decision_{label}', action_hist_dec[i], global_step)
         
         self._tensorboard_batch_counter += 1
     
@@ -2482,6 +2486,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         hard_spike_batches_total = 0
         hard_spike_streak = 0
         action_hist_total = torch.zeros(self.action_size, dtype=torch.long)
+        action_hist_decision_total = torch.zeros(self.action_size, dtype=torch.long)
         action_labels = ['DN', 'L', 'F', 'R', 'S'] if self.action_size == 5 else [f'A{i}' for i in range(self.action_size)]
 
         if self.show_progress_bar:
@@ -2512,6 +2517,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 batch_state_tuples = [all_state_tuples[i] for i in batch_indices]
                 batch_actions = all_actions[batch_indices]
                 batch_action_hist = torch.bincount(batch_actions.detach().cpu(), minlength=self.action_size)
+                batch_action_hist_decision = torch.zeros(self.action_size, dtype=torch.long)
                 action_hist_total += batch_action_hist
                 batch_gae_advantages = all_gae_advantages[batch_indices]
                 batch_gae_returns = all_gae_returns[batch_indices]
@@ -2624,6 +2630,15 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     # 2) keep combined left+right probability above a soft floor
                     # 3) keep idle actions (DO_NOTHING + STOP) below a soft cap
                     if gate_sum >= 1.0:
+                        gate_active = adiv_gate > 0.0
+                        if bool(torch.any(gate_active).item()):
+                            gated_actions = batch_actions[gate_active]
+                            batch_action_hist_decision = torch.bincount(
+                                gated_actions.detach().cpu(),
+                                minlength=self.action_size,
+                            )
+                            action_hist_decision_total += batch_action_hist_decision
+
                         gate_col = adiv_gate.unsqueeze(1)
                         mean_probs = (probs * gate_col).sum(dim=0) / max(gate_sum, 1.0)
                         forward_prob = mean_probs[2]
@@ -2832,6 +2847,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 self._stat_buf['action_div_gate_ratio'].append(action_diversity_gate_ratio)
                 self._stat_buf['total_loss'].append(loss.item())
                 self._stat_buf['action_hist'].append(batch_action_hist.detach().cpu().numpy())
+                self._stat_buf['action_hist_decision'].append(batch_action_hist_decision.detach().cpu().numpy())
                 
                 # Calculate communication intent metrics (needed for batch_metrics)
                 actor_int = self.encoder_actor.last_comm_intent_mean
@@ -2870,6 +2886,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     'comm_weight': comm_weight_eff,
                     'policy_weight': policy_weight_eff,
                     'action_hist': batch_action_hist.numpy() if hasattr(batch_action_hist, 'numpy') else np.array(batch_action_hist),
+                    'action_hist_decision': batch_action_hist_decision.numpy() if hasattr(batch_action_hist_decision, 'numpy') else np.array(batch_action_hist_decision),
                 }
                 self._log_batch_metrics(batch_metrics)
                 self._stat_buf['ret_min'].append(batch_gae_returns.min().item())
@@ -2938,6 +2955,14 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     for label, cnt, pct in zip(action_labels, action_hist_total.tolist(), action_pct)
                 )
                 print(f"\nAction stats this PPO update -> {summary}")
+            total_actions_decision = int(action_hist_decision_total.sum().item())
+            if total_actions_decision > 0:
+                action_pct_dec = (100.0 * action_hist_decision_total.float() / float(total_actions_decision)).tolist()
+                summary_dec = ', '.join(
+                    f"{label}:{int(cnt)} ({pct:.1f}%)"
+                    for label, cnt, pct in zip(action_labels, action_hist_decision_total.tolist(), action_pct_dec)
+                )
+                print(f"Action stats (decision-gated) -> {summary_dec}")
             print("\n")  # New line after progress bar
         
         if not hasattr(self, 'training_step'):
@@ -3158,6 +3183,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         ret_min = 0.0
         ret_max = 0.0
         aux_m = 0.0
+        forward_share_all = 0.0
+        forward_share_decision = 0.0
         if n_b > 0:
             def _ms(key):
                 a = np.array(sb[key], dtype=np.float32)
@@ -3176,6 +3203,16 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             ret_min    = float(np.array(sb['ret_min']).min())
             ret_max    = float(np.array(sb['ret_max']).max())
             aux_m      = float(np.array(sb['aux_dl']).mean())
+            ah = np.array(sb['action_hist'], dtype=np.float32)
+            if ah.ndim == 2 and ah.shape[1] > 2:
+                ah_sum = ah.sum(axis=0)
+                ah_total = float(max(ah_sum.sum(), 1.0))
+                forward_share_all = float(ah_sum[2] / ah_total)
+            ah_dec = np.array(sb.get('action_hist_decision', []), dtype=np.float32)
+            if ah_dec.ndim == 2 and ah_dec.shape[1] > 2:
+                ah_dec_sum = ah_dec.sum(axis=0)
+                ah_dec_total = float(max(ah_dec_sum.sum(), 1.0))
+                forward_share_decision = float(ah_dec_sum[2] / ah_dec_total)
 
             hdr(f"SECTION 2 — PPO TRAINING METRICS  ({n_b} batches, "
                 f"lr_factor={self.actor_lr_factor:.3f})")
@@ -3223,6 +3260,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             tr_row("Adiv gate ratio", adg_m, adg_s, "frac", 0.05, 0.70,
                    "diversity shaped at decisions",
                    "too sparse/broad gating for diversity")
+            tr_row("Forward share (all)", forward_share_all, 0.0, "frac", 0.0, 0.80,
+                   "global action mix plausible for sparse decision env",
+                   "global forward share unusually high")
+            tr_row("Forward share (decision)", forward_share_decision, 0.0, "frac", 0.0, 0.65,
+                   "decision-point action balance plausible",
+                   "forward bias too high at decision contexts")
             print(row("Returns range", f"{ret_min:+.2f}…{ret_max:+.2f}", "", "", "") + " |")
             end_table()
 
@@ -3265,6 +3308,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 issues.append(
                     f"Adiv gate ratio={adg_m:.3f}: diversity shaping is almost never active. "
                     "Check if decision-point/deadlock signals are present in observations.")
+            if forward_share_decision > 0.70:
+                issues.append(
+                    f"Decision forward share={forward_share_decision:.3f} > 0.70: "
+                    "action choice remains too forward-biased at true decision contexts. "
+                    "Increase diversity pressure or reduce route-prior bias.")
 
             if issues:
                 print(f"\n  {color(f'TRAINING ISSUES ({len(issues)}):', C_YELLOW)}")
@@ -3285,6 +3333,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 'ratio_mean': rt_m,
                 'grad_norm_mean': gn_m,
                 'action_div_gate_ratio_mean': adg_m,
+                'forward_share_all': forward_share_all,
+                'forward_share_decision': forward_share_decision,
                 'reward_mean': float(r_arr.mean()) if len(r_arr) > 0 else 0.0,
                 'done_frac': float(d_arr.mean()) if len(d_arr) > 0 else 0.0,
             }
@@ -3769,12 +3819,13 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             f"kl={kl_m:.4f} ratio={rt_m:.4f} grad={gn_m:.4f}\n"
             f"  adv_mean={am_m:+.3f} adv_std={as_m:.3f} "
             f"returns=[{ret_min:+.2f},{ret_max:+.2f}] aux_dl={aux_m:.4f}\n"
+            f"  forward_all={forward_share_all:.3f} forward_decision={forward_share_decision:.3f}\n"
             f"  actor_lr_factor={self.actor_lr_factor:.4f} clip_eps={self._effective_clip_eps():.3f}\n"
             f"\n"
             f"  DECISION_RULES:\n"
             f"  - if done_mean < 0.22 and v_loss > 0.80: increase critic pressure or reduce reward penalties\n"
             f"  - if entropy < {self.entropy_floor:.2f}: raise entropy weight / recovery scale\n"
-            f"  - if forward-action share > 0.55: increase action-diversity penalty\n"
+            f"  - if decision-forward share > 0.65: increase action-diversity penalty\n"
             f"  - if grad > 5.0: lower actor lr or tighten clipping\n"
             f"\n"
             f"  ISSUES:\n{issue_text}\n"

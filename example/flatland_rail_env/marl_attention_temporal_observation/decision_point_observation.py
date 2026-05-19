@@ -57,7 +57,7 @@ class DecisionPointObservation(ObservationBuilder):
 
     # Export 15 base features.
     # Legacy lifecycle duplicates were removed; deadlock signals live in tree payload.
-    BASE_OBS_SIZE = 15
+    BASE_OBS_SIZE = 13
     OBS_SIZE = BASE_OBS_SIZE
     # Legacy alias; active runtime cap is configured via self.local_search_max_nodes.
     MAX_NODES = 48
@@ -65,15 +65,16 @@ class DecisionPointObservation(ObservationBuilder):
     FEATURE_GROUPS_DOC = [
         ("[0-2]",   "path_left/forward/right",  "1 if relative transition exists"),
         ("[3-5]",   "delta_left/forward/right", "exp-squashed gap-to-best successor in [-1,1] (0=best, <0=worse)"),
-        ("[6-8]",   "st_3/st_4/st_6",           "TrainState READY_TO_DEPART + MALFUNCTION + not-started"),
-        ("[9]",     "priority_rank",            "normalized rank by remaining distance"),
-        ("[10-11]", "merge/switch",             "cell semantics (redundant lifecycle flags removed)"),
-        ("[12-14]", "sp_left/sp_forward/sp_right", "shortest-path action hint one-hot"),
+        ("[6]",     "st_3",                     "TrainState READY_TO_DEPART (MALFUNCTION=0% + not-started=100% removed as dead)"),
+        ("[7]",     "priority_rank",            "normalized rank by remaining distance"),
+        ("[8-9]",   "merge/switch",             "cell semantics (redundant lifecycle flags removed)"),
+        ("[10-12]", "sp_left/sp_forward/sp_right", "shortest-path action hint one-hot"),
         ("payload", "raw_tree_payload",         "exported separately via env.dev_tree_dict[handle]. Nodes/edges include deadlock_risk."),
     ]
 
-    # Canonical base-feature specification for indices 0..14 (15D base obs).
-    # Removed [12]is_started (inverse of [8]st_6) and [13]is_done (duplicate of [7]st_4).
+    # Canonical base-feature specification for indices 0..12 (13D base obs).
+    # Removed [7]st_4 (MALFUNCTION=0% always) and [8]st_6 (not_started=100% always)—dead constants.
+    # Kept [6]st_3 (READY_TO_DEPART) as occasional signal (1% of steps).
     # Deadlock features moved to tree payload (node and edge features).
     # Keep this list in sync with get() and runtime summary names.
     BASE_FEATURE_SPECS = [
@@ -83,15 +84,13 @@ class DecisionPointObservation(ObservationBuilder):
         (3,  "delta_left",           "exp-squashed (best_successor_dist - left_dist) in [-1,1], else -1 if no transition"),
         (4,  "delta_forward",        "exp-squashed (best_successor_dist - forward_dist) in [-1,1], else -1 if no transition"),
         (5,  "delta_right",          "exp-squashed (best_successor_dist - right_dist) in [-1,1], else -1 if no transition"),
-        (6,  "st_3",                 "TrainState READY_TO_DEPART one-hot (state_value==3)"),
-        (7,  "st_4",                 "TrainState MALFUNCTION one-hot (only alive state)"),
-        (8,  "st_6",                 "1 if agent is not started (position is None) else 0"),
-        (9,  "priority_rank",        "normalized distance-rank priority"),
-        (10, "is_pre_merge",         "1 if one step before merge-conflict point else 0"),
-        (11, "is_switch",            "1 if current cell has >1 transitions else 0"),
-        (12, "sp_left",              "shortest-path hint one-hot: left"),
-        (13, "sp_forward",           "shortest-path hint one-hot: forward"),
-        (14, "sp_right",             "shortest-path hint one-hot: right"),
+        (6,  "st_3",                 "TrainState READY_TO_DEPART one-hot"),
+        (7,  "priority_rank",        "normalized distance-rank priority"),
+        (8,  "is_pre_merge",         "1 if one step before merge-conflict point else 0"),
+        (9,  "is_switch",            "1 if current cell has >1 transitions else 0"),
+        (10, "sp_left",              "shortest-path hint one-hot: left"),
+        (11, "sp_forward",           "shortest-path hint one-hot: forward"),
+        (12, "sp_right",             "shortest-path hint one-hot: right"),
     ]
 
     def __init__(self,
@@ -1113,17 +1112,14 @@ class DecisionPointObservation(ObservationBuilder):
             # fall back to normalized remaining distance so the feature remains informative.
             fallback_max = max(1.0, float(self.env.width + self.env.height))
             priority_rank = self._distance_to_unit(self_distance, fallback_max)
+ 
+        # Export selected lifecycle flags used by the current 13D contract.
+        # st_3=READY_TO_DEPART (st_4=MALFUNCTION and st_6=done removed as dead constants).
+        raw_features[6] = 1.0 if agent.state == TrainState.READY_TO_DEPART else 0.0  # st_3 (READY_TO_DEPART)
+        raw_features[7] = priority_rank
 
-        is_started = agent.position is not None
-        # Export selected lifecycle flags used by the current 15D contract.
-        # st_3=READY_TO_DEPART, st_4=MALFUNCTION, st_6=not-started.
-        raw_features[6] = 1.0 if (not is_started) and agent.state == TrainState.READY_TO_DEPART else 0.0  # st_3 (READY_TO_DEPART)
-        raw_features[7] = 1.0 if is_started and agent.state == TrainState.MALFUNCTION else 0.0  # st_4 (MALFUNCTION)
-        raw_features[8] = 0.0 if is_started else 1.0                       # st_6 (not-started)
-        raw_features[9] = priority_rank
-
-        raw_features[10] = 1.0 if self._is_pre_merge_one_exit(pos, direction, transitions) else 0.0
-        raw_features[11] = 1.0 if self._is_switch_at_current_cell(pos, direction) else 0.0
+        raw_features[8] = 1.0 if self._is_pre_merge_one_exit(pos, direction, transitions) else 0.0
+        raw_features[9] = 1.0 if self._is_switch_at_current_cell(pos, direction) else 0.0
 
         sp_left, sp_fwd, sp_right = self._shortest_path_action_hint(
             handle=handle,
