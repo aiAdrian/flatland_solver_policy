@@ -131,6 +131,9 @@ class DecisionPointObservation(ObservationBuilder):
         self.local_search_deadlock_probe_depth = 14
         self.local_search_deadlock_max_states = 256
         self.local_tree_clip_features = True
+        # Debug-only render overlay. Handle 0 exports pseudo-agent cell sets:
+        # 0=all node cells, 1/2=even/odd corridor cells, 3=pre-merge, 4=switch.
+        self.debug_tree_overlay_enabled = True
         # Lightweight function profiler for observation hot paths.
         self.obs_func_profile_enabled = str(os.getenv('FLATLAND_OBS_FUNC_PROFILE', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
         self.obs_func_profile_sample_every = max(1, int(os.getenv('FLATLAND_OBS_FUNC_PROFILE_SAMPLE_EVERY', '8')))
@@ -410,97 +413,494 @@ class DecisionPointObservation(ObservationBuilder):
 
         return cur_pos, cur_dir, edge_len, target_on_edge
 
+    def _local_node_type(self, pos, direction, is_root=False):
+        transitions = self._rail_get_transitions(pos, direction)
+        n_trans = fast_count_nonzero(transitions)
+        if is_root:
+            return 0  # START
+        if n_trans > 1:
+            return 1  # SWITCH
+        if n_trans != 1:
+            return None
+
+        ndir = int(fast_argmax(transitions))
+        next_pos = get_new_position(pos, ndir)
+        if next_pos[0] < 0 or next_pos[0] >= self.env.height or next_pos[1] < 0 or next_pos[1] >= self.env.width:
+            return None
+
+        next_trans = self._rail_get_transitions(next_pos, ndir)
+        if fast_count_nonzero(next_trans) != 1:
+            return None
+
+        for d_other in range(4):
+            if d_other == ndir:
+                continue
+            if fast_count_nonzero(self._rail_get_transitions(next_pos, d_other)) > 1:
+                return 2  # PRE_MERGE
+        return None
+
+    def _build_local_node_payload(self, handle, ntype, npos, ndir, depth_value, max_depth):
+        transitions_local = self._rail_get_transitions(npos, ndir)
+        num_transitions_local = int(fast_count_nonzero(transitions_local))
+        incoming_degree_local = int(self._incoming_degree(npos))
+
+        incoming_agent_count = 0
+        has_oncoming = False
+        occ_handle = self._agent_at_pos(npos)
+        if occ_handle != -1 and occ_handle != handle:
+            incoming_agent_count = 1
+            other_dir = self.env.agents[occ_handle].direction
+            if other_dir is not None and DecisionPointUtils.is_opposite_direction(ndir, other_dir):
+                has_oncoming = True
+
+        deadlock_profile = self._calculate_deadlock_profile(
+            handle=handle,
+            pos=npos,
+            direction=ndir,
+            max_depth=min(12, max(4, int(max_depth))),
+        )
+
+        node_type_value = int(ntype)
+        is_start = bool(node_type_value == 0)
+        is_switch = bool(node_type_value == 1)
+        is_pre_merge = bool(node_type_value == 2)
+        node_type_name = "start" if is_start else ("switch" if is_switch else "pre_merge")
+
+        return {
+            "type": int(ntype),
+            "node_type_name": node_type_name,
+            "position": (int(npos[0]), int(npos[1])),
+            "cells": [(int(npos[0]), int(npos[1]))],
+            "direction": int(ndir),
+            "is_start": bool(is_start),
+            "is_switch": bool(is_switch),
+            "is_pre_merge": bool(is_pre_merge),
+            "depth": int(depth_value),
+            "num_transitions": int(num_transitions_local),
+            "is_branch": bool(is_switch or num_transitions_local > 1),
+            "has_oncoming": bool(has_oncoming),
+            "incoming_agent_count": int(incoming_agent_count),
+            "has_agents_encountered": bool(incoming_agent_count > 0),
+            "backward_inflow_count": int(max(0, incoming_degree_local - 1)),
+            "deadlock_risk": float(deadlock_profile.get("risk", 0.0)),
+            "deadlock_distance_norm": float(deadlock_profile.get("deadlock_distance_norm", 0.0)),
+            "deadlock_hard_distance_norm": float(deadlock_profile.get("hard_block_distance_norm", 0.0)),
+            "deadlock_exists_within_probe": bool(int(deadlock_profile.get("min_deadlock_depth", -1)) >= 0),
+            "alternative_routes_count": int(max(1 if is_pre_merge else 0, max(0, num_transitions_local - 1))),
+        }
+
+    def _walk_corridor_until_decision(
+        self,
+        handle,
+        src_pos,
+        src_dir,
+        first_dir,
+        agent_target,
+        distance_map,
+    ):
+        edge_path = []
+        edge_agents = set()
+        same_dir_handles = set()
+        oncoming_handles = set()
+        forward_handles = set()
+        backward_handles = set()
+        edge_len = 0
+        min_dist = float("inf")
+        target_on_edge = False
+        p, d = tuple(src_pos), int(src_dir)
+        step_dir = int(first_dir)
+        max_corridor_steps = max(256, 2 * (self.env.height + self.env.width))
+        visited_states = set()
+
+        while edge_len < max_corridor_steps:
+            state = (tuple(p), int(d), int(step_dir))
+            if state in visited_states:
+                break
+            visited_states.add(state)
+
+            transitions = self._rail_get_transitions(p, d)
+            if not transitions[step_dir]:
+                break
+
+            np_pos = get_new_position(p, step_dir)
+            if np_pos[0] < 0 or np_pos[0] >= self.env.height or np_pos[1] < 0 or np_pos[1] >= self.env.width:
+                break
+
+            edge_path.append((np_pos, step_dir))
+
+            if self.agent_map is not None:
+                aidx = int(self.agent_map[np_pos[0], np_pos[1]])
+                if aidx != -1 and aidx != handle:
+                    edge_agents.add(aidx)
+                    other_agent = self.env.agents[aidx]
+                    if other_agent.direction == step_dir:
+                        same_dir_handles.add(aidx)
+                        forward_handles.add(aidx)
+                    else:
+                        oncoming_handles.add(aidx)
+                        backward_handles.add(aidx)
+
+            if agent_target is not None and tuple(np_pos) == tuple(agent_target):
+                target_on_edge = True
+
+            if distance_map is not None:
+                dist = distance_map[handle, np_pos[0], np_pos[1], step_dir]
+                if np.isfinite(dist):
+                    min_dist = min(min_dist, dist)
+
+            edge_len += 1
+            p, d = np_pos, step_dir
+
+            dst_type = self._local_node_type(p, d)
+            if dst_type is not None:
+                return {
+                    "complete": True,
+                    "dst_pos": tuple(p),
+                    "dst_dir": int(d),
+                    "dst_type": int(dst_type),
+                    "edge_path": edge_path,
+                    "edge_len": int(edge_len),
+                    "edge_agents": sorted(edge_agents),
+                    "same_dir_handles": sorted(same_dir_handles),
+                    "oncoming_handles": sorted(oncoming_handles),
+                    "forward_handles": sorted(forward_handles),
+                    "backward_handles": sorted(backward_handles),
+                    "min_dist_to_target": min_dist if min_dist != float("inf") else None,
+                    "target_on_edge": bool(target_on_edge),
+                }
+
+            transitions_next = self._rail_get_transitions(p, d)
+            next_dirs = [ndir for ndir in range(4) if transitions_next[ndir]]
+            if len(next_dirs) != 1:
+                break
+            step_dir = int(next_dirs[0])
+
+        return {
+            "complete": False,
+            "edge_path": edge_path,
+            "edge_len": int(edge_len),
+            "edge_agents": sorted(edge_agents),
+            "same_dir_handles": sorted(same_dir_handles),
+            "oncoming_handles": sorted(oncoming_handles),
+            "forward_handles": sorted(forward_handles),
+            "backward_handles": sorted(backward_handles),
+            "min_dist_to_target": min_dist if min_dist != float("inf") else None,
+            "target_on_edge": bool(target_on_edge),
+        }
+
+    def _build_corridor_edge_payload(
+        self,
+        handle,
+        src_idx,
+        dst_idx,
+        src_pos,
+        src_dir,
+        src_depth,
+        dst_pos,
+        dst_dir,
+        corridor,
+        distance_map,
+    ):
+        action_feature = None
+        edge_path = corridor.get("edge_path", [])
+        if edge_path:
+            _first_pos, first_dir = edge_path[0]
+            rel_dir = (int(first_dir) - int(src_dir)) % 4
+            if rel_dir == 1:
+                action_feature = 1
+            elif rel_dir == 0:
+                action_feature = 0
+            elif rel_dir == 3:
+                action_feature = -1
+
+        rel_dir_bin = 1
+        action_left = 0.0
+        action_forward = 1.0
+        action_right = 0.0
+        if action_feature == -1:
+            rel_dir_bin = 0
+            action_left, action_forward, action_right = 1.0, 0.0, 0.0
+        elif action_feature == 0:
+            rel_dir_bin = 1
+            action_left, action_forward, action_right = 0.0, 1.0, 0.0
+        elif action_feature == 1:
+            rel_dir_bin = 2
+            action_left, action_forward, action_right = 0.0, 0.0, 1.0
+
+        src_dist_to_target = None
+        dst_dist_to_target = None
+        if distance_map is not None:
+            sdist = distance_map[handle, src_pos[0], src_pos[1], src_dir]
+            if np.isfinite(sdist):
+                src_dist_to_target = float(sdist)
+            ddist = distance_map[handle, dst_pos[0], dst_pos[1], dst_dir]
+            if np.isfinite(ddist):
+                dst_dist_to_target = float(ddist)
+
+        improves_over_current = False
+        if src_dist_to_target is not None and dst_dist_to_target is not None:
+            improves_over_current = bool(dst_dist_to_target < src_dist_to_target)
+
+        src_transitions = self._rail_get_transitions(src_pos, src_dir)
+        src_choices = max(1, int(fast_count_nonzero(src_transitions)))
+        branch_choice_prob = 1.0 / float(src_choices)
+
+        same_dir_handles = corridor.get("same_dir_handles", [])
+        oncoming_handles = corridor.get("oncoming_handles", [])
+        forward_handles = corridor.get("forward_handles", same_dir_handles)
+        backward_handles = corridor.get("backward_handles", oncoming_handles)
+        edge_agents = corridor.get("edge_agents", [])
+        edge_cells = [tuple(cell) for cell, _ in edge_path]
+        if edge_cells and edge_cells[-1] == tuple(dst_pos):
+            edge_cells = edge_cells[:-1]
+
+        return {
+            "src": src_idx,
+            "dst": dst_idx,
+            "len": int(corridor.get("edge_len", 0)),
+            "src_pos": (int(src_pos[0]), int(src_pos[1])),
+            "dst_pos": (int(dst_pos[0]), int(dst_pos[1])),
+            "src_depth": int(src_depth),
+            "agents": list(edge_agents),
+            "has_same_dir_agent": bool(len(same_dir_handles) > 0),
+            "has_other_dir_agent": bool(len(oncoming_handles) > 0),
+            "same_dir_agent_handles": list(same_dir_handles),
+            "oncoming_agent_handles": list(oncoming_handles),
+            "forward_agent_handles": list(forward_handles),
+            "backward_agent_handles": list(backward_handles),
+            "cells": edge_cells,
+            "min_dist_to_target": corridor.get("min_dist_to_target", None),
+            "target_on_edge": bool(corridor.get("target_on_edge", False)),
+            "action": action_feature,
+            "rel_dir_bin": int(rel_dir_bin),
+            "action_left": float(action_left),
+            "action_forward": float(action_forward),
+            "action_right": float(action_right),
+            "has_agents_on_edge": bool(len(edge_agents) > 0),
+            "has_oncoming_edge": bool(len(oncoming_handles) > 0),
+            "agents_on_edge_count": int(len(edge_agents)),
+            "edge_len_cells": int(corridor.get("edge_len", 0)),
+            "src_dist_to_target": src_dist_to_target,
+            "dst_dist_to_target": dst_dist_to_target,
+            "improves_over_current": bool(improves_over_current),
+            "branch_choice_prob": float(branch_choice_prob),
+        }
+
+    def _recursive_expand_local_tree(
+        self,
+        handle,
+        src_idx,
+        depth,
+        max_depth,
+        max_nodes,
+        agent_target,
+        distance_map,
+        state,
+        expansion_guard,
+    ):
+        if depth >= max_depth or state["n_nodes"] >= max_nodes:
+            return
+
+        src_state = state["node_pos_dir_map"].get(src_idx)
+        if src_state is None:
+            return
+        src_pos, src_dir = src_state
+
+        guard_key = (int(src_idx), int(depth))
+        if guard_key in expansion_guard:
+            return
+        expansion_guard.add(guard_key)
+
+        transitions = self._rail_get_transitions(src_pos, src_dir)
+        for first_dir in range(4):
+            if not transitions[first_dir]:
+                continue
+
+            corridor = self._walk_corridor_until_decision(
+                handle=handle,
+                src_pos=src_pos,
+                src_dir=src_dir,
+                first_dir=first_dir,
+                agent_target=agent_target,
+                distance_map=distance_map,
+            )
+            if not corridor.get("complete", False):
+                continue
+
+            dst_pos = corridor.get("dst_pos")
+            dst_dir = corridor.get("dst_dir")
+            dst_type = corridor.get("dst_type")
+            if dst_pos is None or dst_dir is None or dst_type is None:
+                continue
+
+            dst_key = (tuple(dst_pos), int(dst_dir))
+            if dst_key not in state["node_map"]:
+                if state["n_nodes"] >= max_nodes:
+                    continue
+                state["nodes"].append(
+                    self._build_local_node_payload(
+                        handle=handle,
+                        ntype=dst_type,
+                        npos=dst_pos,
+                        ndir=dst_dir,
+                        depth_value=depth + 1,
+                        max_depth=max_depth,
+                    )
+                )
+                dst_idx = state["n_nodes"]
+                state["node_map"][dst_key] = dst_idx
+                state["node_pos_dir_map"][dst_idx] = (tuple(dst_pos), int(dst_dir))
+                state["n_nodes"] += 1
+            else:
+                dst_idx = state["node_map"][dst_key]
+
+            edge_payload = self._build_corridor_edge_payload(
+                handle=handle,
+                src_idx=src_idx,
+                dst_idx=dst_idx,
+                src_pos=src_pos,
+                src_dir=src_dir,
+                src_depth=state["nodes"][src_idx].get("depth", depth),
+                dst_pos=dst_pos,
+                dst_dir=dst_dir,
+                corridor=corridor,
+                distance_map=distance_map,
+            )
+            edge_key = (
+                int(edge_payload.get("src", -1)),
+                int(edge_payload.get("dst", -1)),
+                int(edge_payload.get("rel_dir_bin", -1)),
+            )
+            if edge_key not in state["edge_keys"]:
+                state["edge_keys"].add(edge_key)
+                state["edges"].append(edge_payload)
+                state["seen_agents"].update(edge_payload.get("agents", []))
+
+            if dst_idx in state["active_stack"]:
+                continue
+            state["active_stack"].add(dst_idx)
+            self._recursive_expand_local_tree(
+                handle=handle,
+                src_idx=dst_idx,
+                depth=depth + 1,
+                max_depth=max_depth,
+                max_nodes=max_nodes,
+                agent_target=agent_target,
+                distance_map=distance_map,
+                state=state,
+                expansion_guard=expansion_guard,
+            )
+            state["active_stack"].remove(dst_idx)
+
+    def _export_debug_tree_overlay(self, handle, root_pos, tree_payload):
+        if handle != 0 or not bool(getattr(self, "debug_tree_overlay_enabled", False)):
+            return
+
+        if len(self.env.agents) < 5:
+            return
+
+        if not hasattr(self.env, "dev_obs_dict") or self.env.dev_obs_dict is None:
+            self.env.dev_obs_dict = {}
+
+        overlay = {
+            0: set(),
+            1: set(),
+            2: set(),
+            3: set(),
+            4: set(),
+        }
+        nodes = tree_payload.get("nodes", [])
+        edges = tree_payload.get("edges", [])
+        edges_by_src = {}
+        for edge in edges:
+            src_idx = int(edge.get("src", -1))
+            if src_idx < 0:
+                continue
+            edges_by_src.setdefault(src_idx, []).append(edge)
+
+        visited_nodes = set()
+        visited_edges = set()
+
+        def _node_cells(node_payload):
+            node_cells = node_payload.get("cells")
+            if node_cells:
+                return [
+                    (int(cell[0]), int(cell[1]))
+                    for cell in node_cells
+                    if cell is not None
+                ]
+            node_pos = node_payload.get("position")
+            if node_pos is None:
+                return []
+            return [(int(node_pos[0]), int(node_pos[1]))]
+
+        def _visit_node(node_idx):
+            if node_idx in visited_nodes or node_idx < 0 or node_idx >= len(nodes):
+                return
+            visited_nodes.add(node_idx)
+
+            node = nodes[node_idx]
+            node_cells = _node_cells(node)
+            overlay[0].update(node_cells)
+            if bool(node.get("is_pre_merge", False)):
+                overlay[3].update(node_cells)
+            if bool(node.get("is_switch", False)):
+                overlay[4].update(node_cells)
+
+            for edge in edges_by_src.get(node_idx, []):
+                edge_id = (
+                    int(edge.get("src", -1)),
+                    int(edge.get("dst", -1)),
+                    int(edge.get("rel_dir_bin", -1)),
+                )
+                if edge_id in visited_edges:
+                    continue
+                visited_edges.add(edge_id)
+
+                edge_depth = int(edge.get("src_depth", node.get("depth", 0)))
+                pseudo_handle = 1 if (edge_depth % 2 == 0) else 2
+                corridor_cells = [
+                    (int(cell[0]), int(cell[1]))
+                    for cell in edge.get("cells", [])
+                    if cell is not None
+                ]
+                overlay[pseudo_handle].update(corridor_cells)
+
+                dst_idx = int(edge.get("dst", -1))
+                if dst_idx >= 0:
+                    _visit_node(dst_idx)
+
+        if nodes:
+            _visit_node(0)
+        elif root_pos is not None:
+            overlay[0].add((int(root_pos[0]), int(root_pos[1])))
+
+        for node in nodes:
+            for cell in _node_cells(node):
+                overlay[1].discard(cell)
+                overlay[2].discard(cell)
+
+        # Keep node markers visually clean: a cell should not appear as both
+        # corridor parity and explicit switch/merge overlay in the same frame.
+        overlay[1].difference_update(overlay[3])
+        overlay[1].difference_update(overlay[4])
+        overlay[2].difference_update(overlay[3])
+        overlay[2].difference_update(overlay[4])
+
+        for pseudo_handle, cells in overlay.items():
+            self.env.dev_obs_dict[pseudo_handle] = set(cells)
+
     def _local_search(self, handle, start_pos, start_dir, depth_limit):
         t_start = time.perf_counter()
-        """
-        Neue Local-Tree-Search: Nur Start-, Switch- und Pre-Merge-Knoten. Korridore als Edges mit Features.
-        """
+        """Build local decision-point tree recursively from corridor building blocks."""
         if start_pos is None or start_dir is None or self.env is None or self.env.rail is None:
             return {"nodes": [], "edges": [], "seen_agents": []}
 
         agent = self.env.agents[handle]
         agent_target = agent.target
         distance_map = self.env.distance_map.get()
-        agent_map = self.agent_map
         max_nodes = int(getattr(self, "local_search_max_nodes", 72))
         max_depth = int(depth_limit)
-
-        nodes = []
-        edges = []
-        seen_agents = set()
-        # Mapping: node_idx -> (pos, dir)
-        node_pos_dir_map = {}
-
-        def node_type(pos, direction, is_root=False):
-            transitions = self.env.rail.get_transitions(*pos, direction)
-            n_trans = fast_count_nonzero(transitions)
-            if is_root:
-                return 0  # START
-            if n_trans > 1:
-                return 1  # SWITCH
-            # Pre-Merge: nur wenn aktuelle Zelle kein Switch ist
-            if n_trans == 1:
-                ndir = fast_argmax(transitions)
-                next_pos = get_new_position(pos, ndir)
-                # Für Ankunftsrichtung auf next_pos
-                next_trans = self.env.rail.get_transitions(*next_pos, ndir)
-                n_next_trans = fast_count_nonzero(next_trans)
-                # Pre-Merge: Agent hat auf next_pos nur eine Option, aber für andere Richtungen gibt es einen Switch
-                if n_next_trans == 1:
-                    # Prüfe, ob irgendeine andere Richtung auf next_pos ein Switch ist
-                    for d_other in range(4):
-                        if d_other == ndir:
-                            continue
-                        if fast_count_nonzero(self.env.rail.get_transitions(*next_pos, d_other)) > 1:
-                            return 2  # PRE_MERGE
-            return None
-
-        def build_node_payload(ntype, npos, ndir, depth_value):
-            transitions_local = self.env.rail.get_transitions(*npos, ndir)
-            num_transitions_local = int(fast_count_nonzero(transitions_local))
-            incoming_degree_local = int(self._incoming_degree(npos))
-
-            incoming_agent_count = 0
-            has_oncoming = False
-            occ_handle = self._agent_at_pos(npos)
-            if occ_handle != -1 and occ_handle != handle:
-                incoming_agent_count = 1
-                other_dir = self.env.agents[occ_handle].direction
-                if other_dir is not None and DecisionPointUtils.is_opposite_direction(ndir, other_dir):
-                    has_oncoming = True
-
-            deadlock_profile = self._calculate_deadlock_profile(
-                handle=handle,
-                pos=npos,
-                direction=ndir,
-                max_depth=min(12, max(4, max_depth)),
-            )
-
-            node_type_value = int(ntype)
-            is_start = bool(node_type_value == 0)
-            is_switch = bool(node_type_value == 1)
-            is_pre_merge = bool(node_type_value == 2)
-            node_type_name = "start" if is_start else ("switch" if is_switch else "pre_merge")
-
-            return {
-                "type": int(ntype),
-                "node_type_name": node_type_name,
-                "is_start": bool(is_start),
-                "is_switch": bool(is_switch),
-                "is_pre_merge": bool(is_pre_merge),
-                "depth": int(depth_value),
-                "num_transitions": int(num_transitions_local),
-                "is_branch": bool(is_switch or num_transitions_local > 1),
-                "has_oncoming": bool(has_oncoming),
-                "incoming_agent_count": int(incoming_agent_count),
-                "has_agents_encountered": bool(incoming_agent_count > 0),
-                "backward_inflow_count": int(max(0, incoming_degree_local - 1)),
-                "deadlock_risk": float(deadlock_profile.get("risk", 0.0)),
-                "deadlock_distance_norm": float(deadlock_profile.get("deadlock_distance_norm", 0.0)),
-                "deadlock_hard_distance_norm": float(deadlock_profile.get("hard_block_distance_norm", 0.0)),
-                "deadlock_exists_within_probe": bool(int(deadlock_profile.get("min_deadlock_depth", -1)) >= 0),
-                "alternative_routes_count": int(max(1 if is_pre_merge else 0, max(0, num_transitions_local - 1))),
-            }
 
         # Early exit für Waiting/Done
         if agent.state in [TrainState.WAITING, TrainState.DONE]:
@@ -518,200 +918,50 @@ class DecisionPointObservation(ObservationBuilder):
             return {"nodes": [], "edges": [], "seen_agents": []}
 
 
-        # Startknoten anlegen (nur Typ für Training, keine Metadaten)
-        nodes.append(build_node_payload(0, pos, direction, 0))
-        node_map = {(tuple(pos), int(direction)): 0}
-        node_pos_dir_map[0] = (tuple(pos), int(direction))
-        n_nodes = 1
+        state = {
+            "nodes": [],
+            "edges": [],
+            "edge_keys": set(),
+            "seen_agents": set(),
+            "node_map": {},
+            "node_pos_dir_map": {},
+            "active_stack": {0},
+            "n_nodes": 0,
+        }
 
-        # DFS-Stack: (pos, dir, from_node_idx, depth)
-        stack = [(pos, direction, 0, 0)]
+        state["nodes"].append(
+            self._build_local_node_payload(
+                handle=handle,
+                ntype=0,
+                npos=pos,
+                ndir=direction,
+                depth_value=0,
+                max_depth=max_depth,
+            )
+        )
+        state["node_map"][(tuple(pos), int(direction))] = 0
+        state["node_pos_dir_map"][0] = (tuple(pos), int(direction))
+        state["n_nodes"] = 1
 
-        loop_count = 0
-        t_loop_start = time.perf_counter()
-        while stack and n_nodes < max_nodes:
-            loop_count += 1
-            if loop_count % 1000 == 0:
-                t_now = time.perf_counter()
-                print(f"[PERF] _local_search loop {loop_count}: elapsed {(t_now-t_loop_start)*1000:.2f} ms, stack={len(stack)}, nodes={n_nodes}")
-            cpos, cdir, src_idx, depth = stack.pop()
-            if depth > max_depth:
-                continue
-            transitions = self.env.rail.get_transitions(*cpos, cdir)
-
-            # Branching: Switch oder Pre-Merge?
-            # (Startknoten ist schon angelegt)
-            if depth > 0:
-                ntype = node_type(cpos, cdir)
-                if ntype is not None:
-                    if (tuple(cpos), int(cdir)) not in node_map:
-                        nodes.append(build_node_payload(ntype, cpos, cdir, depth))
-                        node_map[(tuple(cpos), int(cdir))] = n_nodes
-                        node_pos_dir_map[n_nodes] = (tuple(cpos), int(cdir))
-                        dst_idx = n_nodes
-                        n_nodes += 1
-                    else:
-                        dst_idx = node_map[(tuple(cpos), int(cdir))]
-                    # Korridor-Edge von src_idx zu dst_idx erzeugen
-                    edge_path = []
-                    edge_agents = set()
-                    edge_has_same_dir = False
-                    edge_has_other_dir = False
-                    edge_len = 0
-                    min_dist = float('inf')
-                    target_on_edge = False
-                    p, d = node_pos_dir_map.get(src_idx, (None, None))
-                    max_corridor_steps = max(256, 2 * (self.env.height + self.env.width))
-                    visited_states = set()
-                    corridor_complete = False
-
-                    # Korridor-Regel: nur auf eindeutigen (nicht-branching) Segmenten laufen.
-                    # Sobald Weiche/Pre-Merge/Knoten erreicht wird, wird der Korridor beendet.
-                    while edge_len < max_corridor_steps:
-                        if (p, d) == (cpos, cdir):
-                            corridor_complete = True
-                            break
-
-                        state = (tuple(p), int(d))
-                        if state in visited_states:
-                            break
-                        visited_states.add(state)
-
-                        transitions = self.env.rail.get_transitions(*p, d)
-                        next_dirs = [ndir for ndir in range(4) if transitions[ndir]]
-
-                        # Sackgasse oder Branching -> kein reiner Korridor.
-                        if len(next_dirs) != 1:
-                            break
-
-                        ndir = int(next_dirs[0])
-                        np_pos = get_new_position(p, ndir)
-                        if not (0 <= np_pos[0] < self.env.height and 0 <= np_pos[1] < self.env.width):
-                            break
-
-                        edge_path.append((np_pos, ndir))
-
-                        # Agenten auf Korridor sammeln
-                        if agent_map is not None:
-                            aidx = int(agent_map[np_pos[0], np_pos[1]])
-                            if aidx != -1 and aidx != handle:
-                                edge_agents.add(aidx)
-                                other_agent = self.env.agents[aidx]
-                                if other_agent.direction == ndir:
-                                    edge_has_same_dir = True
-                                else:
-                                    edge_has_other_dir = True
-
-                        # Target auf Korridor?
-                        if agent_target is not None and tuple(np_pos) == tuple(agent_target):
-                            target_on_edge = True
-
-                        # Min dist
-                        if distance_map is not None:
-                            dist = distance_map[handle, np_pos[0], np_pos[1], ndir]
-                            if np.isfinite(dist):
-                                min_dist = min(min_dist, dist)
-
-                        edge_len += 1
-                        p, d = np_pos, ndir
-
-                        # Unerwartet vorzeitig an einem Decision-Node angekommen -> abbrechen.
-                        if (p, d) != (cpos, cdir) and node_type(p, d) is not None:
-                            break
-
-                    if corridor_complete:
-                        # Nur komplette Corridore hinzufügen (endet beim korrekten Node)
-                        # Aktionsfeature bestimmen: -1=left, 0=forward, 1=right, None=unklar
-                        action_feature = None
-                        src_pos, src_dir = node_pos_dir_map.get(src_idx, (None, None))
-                        if src_pos is not None and src_dir is not None:
-                            # Richtung von src zu erstem Schritt auf Edge
-                            if edge_path:
-                                first_pos, first_dir = edge_path[0]
-                                rel_dir = (first_dir - src_dir) % 4
-                                if rel_dir == 1:
-                                    action_feature = 1  # right
-                                elif rel_dir == 0:
-                                    action_feature = 0  # forward
-                                elif rel_dir == 3:
-                                    action_feature = -1 # left
-                                else:
-                                    action_feature = None
-
-                        rel_dir_bin = 1
-                        action_left = 0.0
-                        action_forward = 1.0
-                        action_right = 0.0
-                        if action_feature == -1:
-                            rel_dir_bin = 0
-                            action_left, action_forward, action_right = 1.0, 0.0, 0.0
-                        elif action_feature == 0:
-                            rel_dir_bin = 1
-                            action_left, action_forward, action_right = 0.0, 1.0, 0.0
-                        elif action_feature == 1:
-                            rel_dir_bin = 2
-                            action_left, action_forward, action_right = 0.0, 0.0, 1.0
-
-                        src_dist_to_target = None
-                        dst_dist_to_target = None
-                        if distance_map is not None and src_pos is not None and src_dir is not None:
-                            sdist = distance_map[handle, src_pos[0], src_pos[1], src_dir]
-                            if np.isfinite(sdist):
-                                src_dist_to_target = float(sdist)
-                            ddist = distance_map[handle, cpos[0], cpos[1], cdir]
-                            if np.isfinite(ddist):
-                                dst_dist_to_target = float(ddist)
-
-                        improves_over_current = False
-                        if src_dist_to_target is not None and dst_dist_to_target is not None:
-                            improves_over_current = bool(dst_dist_to_target < src_dist_to_target)
-
-                        src_choices = 1
-                        if src_pos is not None and src_dir is not None:
-                            src_transitions = self.env.rail.get_transitions(*src_pos, src_dir)
-                            src_choices = max(1, int(fast_count_nonzero(src_transitions)))
-                        branch_choice_prob = 1.0 / float(src_choices)
-
-                        edges.append({
-                            "src": src_idx,
-                            "dst": dst_idx,
-                            "len": edge_len,
-                            "agents": sorted(edge_agents),
-                            "has_same_dir_agent": edge_has_same_dir,
-                            "has_other_dir_agent": edge_has_other_dir,
-                            "min_dist_to_target": min_dist if min_dist != float('inf') else None,
-                            "target_on_edge": target_on_edge,
-                            "action": action_feature,
-                            "rel_dir_bin": int(rel_dir_bin),
-                            "action_left": float(action_left),
-                            "action_forward": float(action_forward),
-                            "action_right": float(action_right),
-                            "has_agents_on_edge": bool(len(edge_agents) > 0),
-                            "has_oncoming_edge": bool(edge_has_other_dir),
-                            "agents_on_edge_count": int(len(edge_agents)),
-                            "edge_len_cells": int(edge_len),
-                            "src_dist_to_target": src_dist_to_target,
-                            "dst_dist_to_target": dst_dist_to_target,
-                            "improves_over_current": bool(improves_over_current),
-                            "branch_choice_prob": float(branch_choice_prob),
-                        })
-                        seen_agents.update(edge_agents)
-                        # Nächste Suche ab dst_idx
-                        src_idx = dst_idx
-
-            # Branches expandieren
-            for ndir in range(4):
-                if transitions[ndir]:
-                    np_pos = get_new_position(cpos, ndir)
-                    # Prüfe, ob Ziel im Grid
-                    if not (0 <= np_pos[0] < self.env.height and 0 <= np_pos[1] < self.env.width):
-                        continue
-                    stack.append((np_pos, ndir, src_idx, depth + 1))
+        self._recursive_expand_local_tree(
+            handle=handle,
+            src_idx=0,
+            depth=0,
+            max_depth=max_depth,
+            max_nodes=max_nodes,
+            agent_target=agent_target,
+            distance_map=distance_map,
+            state=state,
+            expansion_guard=set(),
+        )
 
         if self._obs_profile_active:
-            # Timing-Ausgabe erfolgt über das bestehende periodische Profiling.
-            _ = (time.perf_counter() - t_start) * 1000.0
-        return {"nodes": nodes, "edges": edges, "seen_agents": sorted(seen_agents)}
+            self._obs_prof_add("local_search", time.perf_counter() - t_start)
+        return {
+            "nodes": state["nodes"],
+            "edges": state["edges"],
+            "seen_agents": sorted(state["seen_agents"]),
+        }
 
     @staticmethod
     def _depth_to_proximity(depth_value: int, max_depth: int) -> float:
@@ -999,6 +1249,7 @@ class DecisionPointObservation(ObservationBuilder):
         if not hasattr(self.env, "dev_tree_dict"):
             self.env.dev_tree_dict = {}
         self.env.dev_tree_dict[handle] = tree_payload
+        self._export_debug_tree_overlay(handle, pos, tree_payload)
 
         # Fill base features according to the 15D schema.
         transitions = self._rail_get_transitions(pos, direction)
