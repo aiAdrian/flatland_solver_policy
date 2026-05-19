@@ -886,18 +886,20 @@ def create_decider_agent(observation_space: int, action_space: int, eps: float =
     return policy
 
 
-FAST_MODE = str(os.getenv('FLATLAND_FAST_MODE', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
-
+# Central speed profiles
+default_hidden_size = 64
 default_batch_size = 256
-default_k_epochs = 1 if FAST_MODE else 2
-default_batch_fraction = 0.65 if FAST_MODE else 0.8
-default_max_batches = 4 if FAST_MODE else 8
-default_memory_episodes = 8 if FAST_MODE else 10
+default_batch_fraction = 0.8
+default_max_batches = 8
+default_memory_episodes = 20
+
+# Recommended default: stronger PPO update to avoid near-zero policy drift.
+default_k_epochs = 3
 
 # NOTE: ppo_param will be REBUILT after CLI args parsing (in main section)
 # This version is only for non-main use (imports, testing)
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
-    hidden_size=_env_int('FLATLAND_HIDDEN_SIZE', 64),
+    hidden_size=_env_int('FLATLAND_HIDDEN_SIZE', default_hidden_size),
     batch_size=max(32, _env_int('FLATLAND_BATCH_SIZE', default_batch_size)),
     learning_rate=_env_float('FLATLAND_LR', 1.8e-5),
     discount=_env_float('FLATLAND_DISCOUNT', 0.99),
@@ -1466,7 +1468,7 @@ LEGACY EXAMPLES (still supported):
     # ====================================================================
     # This replaces the global ppo_param with CLI-configured version
     ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
-        hidden_size=_env_int('FLATLAND_HIDDEN_SIZE', 48),  # Default: 48 (schneller, ausreichend für Flatland)
+        hidden_size=_env_int('FLATLAND_HIDDEN_SIZE', default_hidden_size),
         batch_size=max(32, _env_int('FLATLAND_BATCH_SIZE', default_batch_size)),  # Use mode-aware default (FAST:128, else:256)
         learning_rate=_env_float('FLATLAND_LR', 1.8e-5),
         discount=_env_float('FLATLAND_DISCOUNT', 0.99),

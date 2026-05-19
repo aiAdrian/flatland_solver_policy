@@ -145,6 +145,8 @@ class DecisionPointObservation(ObservationBuilder):
             'get_many': {'sum': 0.0, 'count': 0},
             'local_search': {'sum': 0.0, 'count': 0},
             'deadlock_profile': {'sum': 0.0, 'count': 0},
+            'base_features': {'sum': 0.0, 'count': 0},
+            'debug_overlay': {'sum': 0.0, 'count': 0},
         }
         self.env = None
         self.agent_map = None
@@ -793,6 +795,9 @@ class DecisionPointObservation(ObservationBuilder):
             state["active_stack"].remove(dst_idx)
 
     def _export_debug_tree_overlay(self, handle, root_pos, tree_payload):
+        prof_active = bool(self.obs_func_profile_enabled and self._obs_profile_active)
+        t0 = time.perf_counter() if prof_active else 0.0
+
         if handle != 0 or not bool(getattr(self, "debug_tree_overlay_enabled", False)):
             return
 
@@ -889,6 +894,9 @@ class DecisionPointObservation(ObservationBuilder):
 
         for pseudo_handle, cells in overlay.items():
             self.env.dev_obs_dict[pseudo_handle] = set(cells)
+
+        if prof_active:
+            self._obs_prof_add('debug_overlay', time.perf_counter() - t0)
 
     def _local_search(self, handle, start_pos, start_dir, depth_limit):
         t_start = time.perf_counter()
@@ -1214,44 +1222,12 @@ class DecisionPointObservation(ObservationBuilder):
             decision_type += 4
         return decision_type
 
-    def get(self, handle: int = 0):
-        """Return (base_features, seen_agents, raw_tree_payload) for one agent.
-        Export 15 base features (dead TrainStates removed, deadlock moved to tree).
-        Deadlock information is embedded in tree payload nodes/edges.
-        """
-        prof_active = False
-        t0 = 0.0
-        if self.obs_func_profile_enabled:
-            prof_active = (self._obs_func_profile_call_idx % self.obs_func_profile_sample_every) == 0
-            self._obs_func_profile_call_idx += 1
-            if prof_active:
-                t0 = time.perf_counter()
+    def _build_base_features(self, handle, agent, pos, direction, distance_map):
+        prof_active = bool(self.obs_func_profile_enabled and self._obs_profile_active)
+        t0 = time.perf_counter() if prof_active else 0.0
 
         raw_features = np.zeros(self.BASE_OBS_SIZE, dtype=np.float32)
 
-        agent = self.env.agents[handle]
-        pos = agent.position if agent.position is not None else agent.initial_position
-        direction = agent.direction if agent.direction is not None else agent.initial_direction
-        target = agent.target
-        if pos is None or target is None or direction is None:
-            raise ValueError(f"Agent {handle} has invalid start data for observation building")
-        distance_map = self.env.distance_map.get()
-
-        # Lokale Suche → Baum-Payload für trainierbare Encoder-Integration
-        search_depth = max(int(self.search_depth), int(getattr(self, "local_search_min_search_depth", 8)))
-        prev_active = self._obs_profile_active
-        self._obs_profile_active = bool(prof_active)
-        tree_payload = self._local_search(handle, pos, direction, search_depth)
-        self._obs_profile_active = prev_active
-        local_search_seen_agents = set(tree_payload.get("seen_agents", []))
-
-        # Keep structured tree context available for downstream temporal wrappers.
-        if not hasattr(self.env, "dev_tree_dict"):
-            self.env.dev_tree_dict = {}
-        self.env.dev_tree_dict[handle] = tree_payload
-        self._export_debug_tree_overlay(handle, pos, tree_payload)
-
-        # Fill base features according to the 15D schema.
         transitions = self._rail_get_transitions(pos, direction)
         left_dir = (int(direction) - 1) % 4
         fwd_dir = int(direction) % 4
@@ -1314,15 +1290,6 @@ class DecisionPointObservation(ObservationBuilder):
             fallback_max = max(1.0, float(self.env.width + self.env.height))
             priority_rank = self._distance_to_unit(self_distance, fallback_max)
 
-        opp_agents = set()
-        opp_agents.update(local_search_seen_agents)
-        for other in self.env.agents:
-            if other.handle == handle:
-                continue
-            other_pos = other.position if other.position is not None else other.initial_position
-            if other_pos == pos:
-                opp_agents.add(other.handle)
- 
         is_started = agent.position is not None
         # Export selected lifecycle flags used by the current 15D contract.
         # st_3=READY_TO_DEPART, st_4=MALFUNCTION, st_6=not-started.
@@ -1333,7 +1300,7 @@ class DecisionPointObservation(ObservationBuilder):
 
         raw_features[10] = 1.0 if self._is_pre_merge_one_exit(pos, direction, transitions) else 0.0
         raw_features[11] = 1.0 if self._is_switch_at_current_cell(pos, direction) else 0.0
- 
+
         sp_left, sp_fwd, sp_right = self._shortest_path_action_hint(
             handle=handle,
             pos=pos,
@@ -1344,6 +1311,64 @@ class DecisionPointObservation(ObservationBuilder):
         raw_features[12] = float(sp_left)
         raw_features[13] = float(sp_fwd)
         raw_features[14] = float(sp_right)
+
+        if prof_active:
+            self._obs_prof_add('base_features', time.perf_counter() - t0)
+
+        return raw_features
+
+    def get(self, handle: int = 0):
+        """Return (base_features, seen_agents, raw_tree_payload) for one agent.
+        Export 15 base features (dead TrainStates removed, deadlock moved to tree).
+        Deadlock information is embedded in tree payload nodes/edges.
+        """
+        prof_active = False
+        t0 = 0.0
+        if self.obs_func_profile_enabled:
+            prof_active = (self._obs_func_profile_call_idx % self.obs_func_profile_sample_every) == 0
+            self._obs_func_profile_call_idx += 1
+            if prof_active:
+                t0 = time.perf_counter()
+
+        agent = self.env.agents[handle]
+        pos = agent.position if agent.position is not None else agent.initial_position
+        direction = agent.direction if agent.direction is not None else agent.initial_direction
+        target = agent.target
+        if pos is None or target is None or direction is None:
+            raise ValueError(f"Agent {handle} has invalid start data for observation building")
+        distance_map = self.env.distance_map.get()
+
+        # Lokale Suche → Baum-Payload für trainierbare Encoder-Integration
+        search_depth = max(int(self.search_depth), int(getattr(self, "local_search_min_search_depth", 8)))
+        prev_active = self._obs_profile_active
+        self._obs_profile_active = bool(prof_active)
+        tree_payload = self._local_search(handle, pos, direction, search_depth)
+        self._obs_profile_active = prev_active
+        local_search_seen_agents = set(tree_payload.get("seen_agents", []))
+
+        # Keep structured tree context available for downstream temporal wrappers.
+        if not hasattr(self.env, "dev_tree_dict"):
+            self.env.dev_tree_dict = {}
+        self.env.dev_tree_dict[handle] = tree_payload
+        self._export_debug_tree_overlay(handle, pos, tree_payload)
+
+        opp_agents = set()
+        opp_agents.update(local_search_seen_agents)
+        for other in self.env.agents:
+            if other.handle == handle:
+                continue
+            other_pos = other.position if other.position is not None else other.initial_position
+            if other_pos == pos:
+                opp_agents.add(other.handle)
+
+        # Fill base features according to the 15D schema.
+        raw_features = self._build_base_features(
+            handle=handle,
+            agent=agent,
+            pos=pos,
+            direction=direction,
+            distance_map=distance_map,
+        )
 
         # DEADLOCK FEATURES MOVED TO TREE PAYLOAD:
         # The _local_search() now embeds deadlock_risk in node and edge features.
@@ -1531,12 +1556,15 @@ class DecisionPointObservation(ObservationBuilder):
                 gm_mean_ms = (1000.0 * g['get_many']['sum'] / g['get_many']['count']) if g['get_many']['count'] > 0 else 0.0
                 ls_mean_ms = (1000.0 * g['local_search']['sum'] / g['local_search']['count']) if g['local_search']['count'] > 0 else 0.0
                 dl_mean_ms = (1000.0 * g['deadlock_profile']['sum'] / g['deadlock_profile']['count']) if g['deadlock_profile']['count'] > 0 else 0.0
+                bf_mean_ms = (1000.0 * g['base_features']['sum'] / g['base_features']['count']) if g['base_features']['count'] > 0 else 0.0
+                ov_mean_ms = (1000.0 * g['debug_overlay']['sum'] / g['debug_overlay']['count']) if g['debug_overlay']['count'] > 0 else 0.0
                 dl_per_ls = (float(g['deadlock_profile']['count']) / float(max(1, g['local_search']['count']))) if g['local_search']['count'] > 0 else 0.0
                 print(
                     f"[ObsFnPerf] ep={episode_count + 1} interval={self.obs_func_profile_interval} "
                     f"sample_every={self.obs_func_profile_sample_every} "
                     f"get={get_mean_ms:.3f}ms get_many={gm_mean_ms:.3f}ms "
                     f"local_search={ls_mean_ms:.3f}ms deadlock_profile={dl_mean_ms:.3f}ms "
+                    f"base_features={bf_mean_ms:.3f}ms debug_overlay={ov_mean_ms:.3f}ms "
                     f"deadlock_calls_per_local_search={dl_per_ls:.2f}"
                 )
                 type(self)._last_obs_fn_perf_report = {
@@ -1547,6 +1575,8 @@ class DecisionPointObservation(ObservationBuilder):
                     'get_many_mean_ms': float(gm_mean_ms),
                     'local_search_mean_ms': float(ls_mean_ms),
                     'deadlock_profile_mean_ms': float(dl_mean_ms),
+                    'base_features_mean_ms': float(bf_mean_ms),
+                    'debug_overlay_mean_ms': float(ov_mean_ms),
                     'deadlock_calls_per_local_search': float(dl_per_ls),
                 }
                 for bucket in g.values():
