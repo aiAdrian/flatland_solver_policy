@@ -57,7 +57,7 @@ class DecisionPointObservation(ObservationBuilder):
 
     # Export 15 base features.
     # Legacy lifecycle duplicates were removed; deadlock signals live in tree payload.
-    BASE_OBS_SIZE = 13
+    BASE_OBS_SIZE = 15
     OBS_SIZE = BASE_OBS_SIZE
     # Legacy alias; active runtime cap is configured via self.local_search_max_nodes.
     MAX_NODES = 48
@@ -1113,7 +1113,7 @@ class DecisionPointObservation(ObservationBuilder):
             fallback_max = max(1.0, float(self.env.width + self.env.height))
             priority_rank = self._distance_to_unit(self_distance, fallback_max)
  
-        # Export selected lifecycle flags used by the current 13D contract.
+        # Export selected lifecycle flags used by the current 15D contract.
         # st_3=READY_TO_DEPART (st_4=MALFUNCTION and st_6=done removed as dead constants).
         raw_features[6] = 1.0 if agent.state == TrainState.READY_TO_DEPART else 0.0  # st_3 (READY_TO_DEPART)
         raw_features[7] = priority_rank
@@ -1128,9 +1128,9 @@ class DecisionPointObservation(ObservationBuilder):
             transitions=transitions,
             distance_map=distance_map,
         )
-        raw_features[12] = float(sp_left)
-        raw_features[13] = float(sp_fwd)
-        raw_features[14] = float(sp_right)
+        raw_features[10] = float(sp_left)
+        raw_features[11] = float(sp_fwd)
+        raw_features[12] = float(sp_right)
 
         if prof_active:
             self._obs_prof_add('base_features', time.perf_counter() - t0)
