@@ -1370,13 +1370,6 @@ class DecisionPointObservation(ObservationBuilder):
             distance_map=distance_map,
         )
 
-        # DEADLOCK FEATURES MOVED TO TREE PAYLOAD:
-        # The _local_search() now embeds deadlock_risk in node and edge features.
-        # Policy should analyze tree structure, not use instant binary flags.
-        # NOTE: Deadlock detection (ahead, hard_block, escapable) is now
-        # computed in _local_search() and embedded in tree node/edge features.
-        # See tree_payload['nodes'] and tree_payload['edges'] for deadlock_risk.
-
         # No masking: all features are exported
         base_features = raw_features.copy() 
 

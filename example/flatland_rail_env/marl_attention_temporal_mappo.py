@@ -1526,7 +1526,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # ========================================================================
         # SIMPLIFIED MODE: Core PPO only, with optional agent count override
         # Set FLATLAND_SIMPLIFIED_MAPPO=N where:
-        #   0 = Full Mode (Elite, Aux, Diversity, Comm enabled)
+        #   0 = Full Mode (Aux, Diversity, Comm enabled)
         #   1,5,10,100 = Core PPO only with N agents
         # ========================================================================
         simplified_val = str(os.getenv('FLATLAND_SIMPLIFIED_MAPPO', '0')).strip()
@@ -1536,9 +1536,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             self.simplified_mode = 1 if simplified_val.lower() in ('1', 'true', 'yes', 'on') else 0
         
         if self.simplified_mode > 0:
-            print(f"\n🧠 CORE PPO MODE: {self.simplified_mode} agents, no Elite/Aux/Diversity/Comm")
+            print(f"\n🧠 CORE PPO MODE: {self.simplified_mode} agents, no Aux/Diversity/Comm")
         else:
-            print("\n🚀 FULL MODE: Elite buffer, Aux deadlock, Diversity, Communication enabled")
+            print("\n🚀 FULL MODE: Aux deadlock, Diversity, Communication enabled")
 
         # In CORE mode default to a scalable architecture baseline:
         # no spatial/communication coupling unless explicitly requested.
@@ -1604,25 +1604,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             self.max_batches_per_training = None
         
         self.accumulated_episodes: deque = deque(maxlen=self.max_episodes_in_training_memory)
-
-        # Optional elite replay pool for sparse-reward regimes.
-        # Keeps top-scoring episodes longer and mixes only a small share
-        # into each update to reduce forgetting without drifting too far off-policy.
-        self.use_elite_buffer = (self.simplified_mode == 0) and str(os.getenv('FLATLAND_USE_ELITE_BUFFER', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
-        self.elite_mix_ratio = float(np.clip(float(os.getenv('FLATLAND_ELITE_MIX_RATIO', '0.15')), 0.0, 0.5))
-        self.elite_max_episodes = int(max(
-            0,
-            min(
-                self.max_episodes_in_training_memory * 4,
-                int(os.getenv('FLATLAND_ELITE_BUFFER_SIZE', str(self.max_episodes_in_training_memory)))
-            )
-        ))
-        self.elite_min_score_delta = float(os.getenv('FLATLAND_ELITE_MIN_SCORE_DELTA', '0.0'))
-        self.elite_sample_boost = float(np.clip(float(os.getenv('FLATLAND_ELITE_SAMPLE_BOOST', '1.25')), 0.0, 5.0))
         self.replay_sample_percent = float(np.clip(float(os.getenv('FLATLAND_REPLAY_SAMPLE_PERCENT', '0.10')), 0.02, 1.0))
-        # (score, serial_id, episode_memory)
-        self.elite_episodes: List[Tuple[float, int, EpisodeBuffers]] = []
-        self._episode_serial = 0
         
         self.loss = 0
 
@@ -2319,54 +2301,6 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         
         return advantages, returns
 
-    def _episode_priority_score(self, ep_total_reward: float, ep_done_count: int, ep_n_agents: int) -> float:
-        """Score used for elite-buffer admission.
-
-        Done-rate gets a small bonus so successful episodes are retained
-        even when raw rewards are close in sparse regimes.
-        """
-        done_frac = float(ep_done_count) / float(ep_n_agents) if ep_n_agents > 0 else 0.0
-        return float(ep_total_reward) + 0.25 * done_frac
-
-    def _maybe_add_elite_episode(self, episode_memory: EpisodeBuffers, score: float):
-        if not self.use_elite_buffer or self.elite_max_episodes <= 0:
-            return
-
-        self._episode_serial += 1
-        candidate = (float(score), int(self._episode_serial), episode_memory)
-
-        if len(self.elite_episodes) < self.elite_max_episodes:
-            self.elite_episodes.append(candidate)
-            return
-
-        scores = [item[0] for item in self.elite_episodes]
-        min_idx = int(np.argmin(scores))
-        min_score = float(scores[min_idx])
-        if float(score) > (min_score + self.elite_min_score_delta):
-            self.elite_episodes[min_idx] = candidate
-
-    def _collect_training_episode_pool(self) -> List[EpisodeBuffers]:
-        recent_episodes = list(self.accumulated_episodes)
-        if (not self.use_elite_buffer) or self.elite_mix_ratio <= 0.0 or len(self.elite_episodes) == 0:
-            return recent_episodes
-
-        # Avoid double-counting episodes that are still in the recent window.
-        recent_ids = {id(ep) for ep in recent_episodes}
-        elite_candidates = [ep for _, _, ep in self.elite_episodes if id(ep) not in recent_ids]
-        if len(elite_candidates) == 0:
-            return recent_episodes
-
-        # Mix only a small elite share (default 15%) to limit off-policy drift.
-        target_elite = int(round(self.elite_mix_ratio * max(1, len(recent_episodes))))
-        target_elite = max(0, target_elite)
-        if target_elite == 0:
-            return recent_episodes
-
-        elite_count = min(target_elite, len(elite_candidates))
-        chosen_idx = np.random.choice(len(elite_candidates), size=elite_count, replace=False)
-        chosen_elite = [elite_candidates[int(i)] for i in chosen_idx]
-        return recent_episodes + chosen_elite
-
     def train_net_accumulated(self):
         """Training loop - ORIGINAL VERSION (no early sampling, no cached logprobs)"""
         self.encoder_actor.train()
@@ -2393,31 +2327,21 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             return
 
         t0 = _tic() if profile_enabled else 0.0
-        training_episodes = self._collect_training_episode_pool()
+        training_episodes = list(self.accumulated_episodes)
         if profile_enabled:
             _add_t('pool_collect', _tic() - t0)
-        num_elite_used = max(0, len(training_episodes) - num_recent_episodes)
-        if self.show_pre_train_debug_msg and self.use_elite_buffer and num_elite_used > 0:
-            print(
-                f"🧠 Elite mix: recent={num_recent_episodes}, elite_used={num_elite_used}, "
-                f"elite_pool={len(self.elite_episodes)}, mix_ratio={self.elite_mix_ratio:.2f}"
-            )
         
         # Replay sampling first, then GAE on selected trajectories only.
         t0 = _tic() if profile_enabled else 0.0
         trajectory_pool = []
-        recent_ids = {id(ep) for ep in self.accumulated_episodes}
-        elite_score_by_id = {id(ep): float(score) for score, _, ep in self.elite_episodes}
         total_samples_pool = 0
         for episode_memory in training_episodes:
-            is_elite_only = id(episode_memory) in elite_score_by_id and id(episode_memory) not in recent_ids
-            ep_weight = 1.0 + (self.elite_sample_boost if is_elite_only else 0.0)
             for handle in range(len(episode_memory)):
                 agent_episode_history = episode_memory.get_transitions(handle)
                 traj_len = len(agent_episode_history)
                 if traj_len <= 0:
                     continue
-                trajectory_pool.append((agent_episode_history, traj_len, ep_weight))
+                trajectory_pool.append((agent_episode_history, traj_len))
                 total_samples_pool += traj_len
 
         if len(trajectory_pool) == 0 or total_samples_pool == 0:
@@ -2436,16 +2360,15 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         replay_samples_to_use = int(max(self.batch_size, round(base_samples_to_use * self.replay_sample_percent)))
         samples_to_use = int(min(total_samples_pool, replay_samples_to_use))
 
-        traj_weights = torch.tensor([max(1e-6, float(w)) for _, _, w in trajectory_pool], dtype=torch.float32)
         if samples_to_use >= total_samples_pool:
             sampled_order = list(range(len(trajectory_pool)))
         else:
-            sampled_order = torch.multinomial(traj_weights, num_samples=len(trajectory_pool), replacement=False).tolist()
+            sampled_order = np.random.permutation(len(trajectory_pool)).tolist()
 
         selected_trajectories = []
         selected_samples = 0
         for idx in sampled_order:
-            traj, traj_len, _ = trajectory_pool[idx]
+            traj, traj_len = trajectory_pool[idx]
             selected_trajectories.append(traj)
             selected_samples += int(traj_len)
             if selected_samples >= samples_to_use:
@@ -3221,6 +3144,20 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         sb = self._stat_buf
         n_b = len(sb['v_loss'])
         issues = []
+        # Safe defaults for summary sections when no PPO batch ran in interval.
+        vl_m = 0.0
+        pl_m = 0.0
+        el_m = 0.0
+        kl_m = 0.0
+        rt_m = 1.0
+        en_m = float(self.entropy_floor)
+        am_m = 0.0
+        as_m = 0.0
+        gn_m = 0.0
+        adg_m = 0.0
+        ret_min = 0.0
+        ret_max = 0.0
+        aux_m = 0.0
         if n_b > 0:
             def _ms(key):
                 a = np.array(sb[key], dtype=np.float32)
@@ -3941,19 +3878,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 )
 
             self.accumulated_episodes.append(self.current_episode_memory)
-            elite_score = self._episode_priority_score(ep_total_reward, ep_done_count, ep_n_agents)
-            self._maybe_add_elite_episode(self.current_episode_memory, elite_score)
             self.current_episode_memory = EpisodeBuffers()
 
             if self.episode_count % self.train_frequency == 0:
                 if self.show_pre_train_debug_msg:
-                    if self.use_elite_buffer:
-                        print(
-                            f"\n🎯 Training with recent={len(self.accumulated_episodes)} "
-                            f"and elite_pool={len(self.elite_episodes)} episodes..."
-                        )
-                    else:
-                        print(f"\n🎯 Training with sliding window of {len(self.accumulated_episodes)} episodes...")
+                    print(f"\n🎯 Training with sliding window of {len(self.accumulated_episodes)} episodes...")
                 self.train_net_accumulated()
 
             if (self.episode_count + 1) % self._obs_stat_interval == 0 and self._obs_stat_buffer:

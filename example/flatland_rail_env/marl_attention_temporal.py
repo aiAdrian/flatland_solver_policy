@@ -624,26 +624,80 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 
 # Globale Variable für die temporale Fenstergröße
 TEMPORAL_WINDOW = 3  # 3 Frames -> Bewegung/Velocity wird durch Temporal-Attention nutzbar
+
+
 # Local tree-search horizon for DecisionPointObservation.
-# 6 is a strong default on dense merge topologies; 5 is faster but may miss
-# deeper backward-inflow conflicts.
+# Controls how many rail cells ahead the local search explores from the agent.
+# Higher => better look-ahead for merges/deadlocks, but slower per step.
+# Feasible values: 1..12
 LOCAL_TREE_SEARCH_DEPTH = 12
+# Depth after which non-shortest side branches are sampled instead of fully expanded.
+# Lower => earlier stochastic pruning (faster, less exhaustive).
+# Feasible values: 0..12
 LOCAL_TREE_RANDOM_START_DEPTH = 2
+# Maximum number of additional side branches per node after the shortest branch.
+# 0 = only shortest branch, higher = more alternatives (more compute).
+# Feasible values: 0..3
 LOCAL_TREE_MAX_SIDE_BRANCHES = 1
+# Sampling bias toward shorter side branches (>1 prefers short branches strongly).
+# Larger alpha => more focus on short alternatives.
+# Feasible values: 0.1..10.0
 LOCAL_TREE_DISTANCE_BIAS = 2.0
+# Branch selection strategy after random_start_depth:
+# 'stochastic' = weighted sampling, 'mcts' = rollout-guided selection.
+# Feasible values: 'stochastic' | 'mcts'
 LOCAL_TREE_MODE = 'stochastic'
+# Only used when LOCAL_TREE_MODE='mcts': rollout count per expanded node.
+# Higher => stabler estimates, slower runtime.
+# Feasible values: 1..64
 LOCAL_TREE_MCTS_ROLLOUTS = 6
+# Only used for MCTS mode: rollout look-ahead horizon in cells.
+# Higher => deeper tactical preview, more cost.
+# Feasible values: 1..16
 LOCAL_TREE_MCTS_HORIZON = 4
+# Only used for MCTS mode: exploration constant in UCB score.
+# Higher => more exploration; lower => greedier branch choice.
+# Feasible values: 0.01..4.0
 LOCAL_TREE_UCB_C = 1.2
+# From this depth onward, linear corridors are compressed into single edges.
+# Lower => stronger compression (faster, less geometric detail).
+# Feasible values: 0..12
 LOCAL_TREE_CONTRACT_DEPTH = 8
-LOCAL_TREE_MAX_NODES = 72
-LOCAL_TREE_MIN_NODES = 32
+# Hard upper bound for created tree nodes per agent step.
+# Protects runtime in complex maps.
+# Feasible values: 8..256
+LOCAL_TREE_MAX_NODES = 32
+# Minimum node budget when adaptive budget mode is enabled.
+# Prevents under-exploration in seemingly simple states.
+# Feasible values: 8..256 (must be <= LOCAL_TREE_MAX_NODES)
+LOCAL_TREE_MIN_NODES = 8
+# Adaptive node budget switch:
+# 'on' = dynamic budget between min/max nodes, 'off' = fixed max_nodes.
+# Feasible values: 'on' | 'off'
 LOCAL_TREE_ADAPTIVE_BUDGET = 'on'
+# Extra node budget per additional root branch (adaptive mode only).
+# Increases compute when local branching complexity is high.
+# Feasible values: 0..32
 LOCAL_TREE_ADAPTIVE_BRANCH_BONUS = 6
+# Extra node budget when merge/conflict hotspots are detected.
+# Raises search effort in deadlock-prone situations.
+# Feasible values: 0..32
 LOCAL_TREE_ADAPTIVE_CONFLICT_BONUS = 14
+# Extra node budget per depth step above baseline depth.
+# Helps preserve deep look-ahead when depth is configured high.
+# Feasible values: 0..16
 LOCAL_TREE_ADAPTIVE_DEPTH_BONUS = 2
+# Max depth for the per-node deadlock probe sub-search.
+# Higher => better deadlock foresight, higher CPU cost.
+# Feasible values: 1..32
 LOCAL_TREE_DEADLOCK_PROBE_DEPTH = 7
-LOCAL_TREE_DEADLOCK_MAX_STATES = 96
+# Max explored probe states for deadlock checks.
+# Caps combinatorial blow-ups in dense junction areas.
+# Feasible values: 8..512
+LOCAL_TREE_DEADLOCK_MAX_STATES = 32
+# Whether serialized tree features are clipped to [0,1] before policy input.
+# 'on' stabilizes scale and reduces outlier impact.
+# Feasible values: 'on' | 'off'
 LOCAL_TREE_CLIP_FEATURES = 'on'
 
 # ========================================================================
@@ -680,39 +734,6 @@ except ValueError:
 # High-success curriculum: bias training toward hard coordination cases
 # while keeping a small share of easy cases for stability.
 PURE_MARL_MAX_AGENTS = max(PURE_MARL_AGENT_COUNTS)
-
-# Auto speed profile for local-search complexity.
-# Goal: keep training throughput stable as agent count scales (5/10/20/100)
-# without requiring manual CLI/env tweaks.
-auto_speed_profile = str(os.getenv('FLATLAND_AUTO_SPEED_PROFILE', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
-if auto_speed_profile:
-    if PURE_MARL_MAX_AGENTS >= 20:
-        LOCAL_TREE_SEARCH_DEPTH = 8
-        LOCAL_TREE_CONTRACT_DEPTH = 6
-        LOCAL_TREE_MAX_NODES = 48
-        LOCAL_TREE_MIN_NODES = 20
-        LOCAL_TREE_DEADLOCK_PROBE_DEPTH = 5
-        LOCAL_TREE_DEADLOCK_MAX_STATES = 64
-    elif PURE_MARL_MAX_AGENTS >= 10:
-        LOCAL_TREE_SEARCH_DEPTH = 9
-        LOCAL_TREE_CONTRACT_DEPTH = 7
-        LOCAL_TREE_MAX_NODES = 56
-        LOCAL_TREE_MIN_NODES = 24
-        LOCAL_TREE_DEADLOCK_PROBE_DEPTH = 6
-        LOCAL_TREE_DEADLOCK_MAX_STATES = 80
-    elif PURE_MARL_MAX_AGENTS >= 5:
-        LOCAL_TREE_SEARCH_DEPTH = 10
-        LOCAL_TREE_CONTRACT_DEPTH = 7
-        LOCAL_TREE_MAX_NODES = 64
-        LOCAL_TREE_MIN_NODES = 28
-        LOCAL_TREE_DEADLOCK_PROBE_DEPTH = 6
-        LOCAL_TREE_DEADLOCK_MAX_STATES = 80
-    print(
-        f"[Config] auto_speed_profile=on: depth={LOCAL_TREE_SEARCH_DEPTH}, "
-        f"contract_depth={LOCAL_TREE_CONTRACT_DEPTH}, max_nodes={LOCAL_TREE_MAX_NODES}, "
-        f"min_nodes={LOCAL_TREE_MIN_NODES}, probe_depth={LOCAL_TREE_DEADLOCK_PROBE_DEPTH}, "
-        f"max_states={LOCAL_TREE_DEADLOCK_MAX_STATES}"
-    )
 
 PURE_MARL_GRID_WIDTH = 30
 PURE_MARL_GRID_HEIGHT = 40
@@ -1325,7 +1346,7 @@ LEGACY EXAMPLES (still supported):
         default=LOCAL_TREE_MAX_NODES,
         metavar='N',
         dest='tree_max_nodes',
-        help='Hard node budget for local tree search per agent step (default: 72)'
+        help='Hard node budget for local tree search per agent step (default: 32)'
     )
     parser.add_argument(
         '--tree_min_nodes',
@@ -1333,7 +1354,7 @@ LEGACY EXAMPLES (still supported):
         default=LOCAL_TREE_MIN_NODES,
         metavar='N',
         dest='tree_min_nodes',
-        help='Minimum node budget when adaptive budgeting is enabled (default: 32)'
+        help='Minimum node budget when adaptive budgeting is enabled (default: 8)'
     )
     parser.add_argument(
         '--tree_adaptive_budget',
@@ -1382,7 +1403,7 @@ LEGACY EXAMPLES (still supported):
         default=LOCAL_TREE_DEADLOCK_MAX_STATES,
         metavar='N',
         dest='tree_deadlock_max_states',
-        help='State cap for per-node deadlock probe used inside local search (default: 96)'
+        help='State cap for per-node deadlock probe used inside local search (default: 32)'
     )
     parser.add_argument(
         '--tree_clip_features',
