@@ -780,7 +780,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         observation_space,
         action_space,
         effective_ppo_param,
-        show_pre_train_debug_msg=False,
+        show_pre_train_debug_msg=True,
         show_progress_bar=True,
         train_frequency=10,
         optimizer_mode=optimizer_mode,
@@ -792,7 +792,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     # - reduce forward-only collapse while preserving throughput bias
     policy.surrogate_eps_clip = float(np.clip(_env_float('FLATLAND_CLIP_EPS', 0.20), 0.05, 0.40))
     policy.weight_entropy = float(np.clip(_env_float('FLATLAND_WEIGHT_ENTROPY', 0.18), 0.0, 1.0))  # ↑ mehr Exploration
-    policy.reward_scale = 0.12
+    policy.reward_scale = float(np.clip(_env_float('FLATLAND_REWARD_SCALE', 0.08), 0.01, 0.20))
     policy.weight_loss = float(np.clip(_env_float('FLATLAND_WEIGHT_VALUE', 0.60), 0.1, 5.0))      # ↓ Critic-Druck reduziert
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600

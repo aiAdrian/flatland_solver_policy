@@ -20,6 +20,7 @@ Layout:
 
 import os
 import time
+from collections import deque
 from enum import IntEnum
 
 import numpy as np
@@ -99,35 +100,120 @@ class DecisionPointObservation(ObservationBuilder):
         super().__init__()
         if debug:
             os.environ["DEBUG_OBSERVATION"] = "1"
+        # ── LOCAL SEARCH CONFIGURATION ────────────────────────────────────────
+        #
+        #  Parameter interaction (depth):
+        #
+        #   __init__(search_depth)          local_search_min_search_depth
+        #         │                                     │
+        #         └──── max(search_depth, min_depth) ──┘
+        #                           │
+        #                      depth_limit  ← passed to _local_search()
+        #                           │
+        #     INIT ──edge──► SWITCH ──edge──► PRE_M ──edge──► SWITCH
+        #    depth=0         depth=1         depth=2          depth=3
+        #                                                       ^
+        #                                              depth_limit cap
+        #
+        #  Parameter interaction (node budget):
+        #
+        #   local_search_max_nodes = 24
+        #       │
+        #       └── hard cap: no new node allocated once n_nodes >= max_nodes
+        #           (edges to already-known nodes are still added)
+        #
+        # ── PROFILER CONFIGURATION ─────────────────────────────────────────
+        #
+        #   obs_func_profile_enabled
+        #       │
+        #       ├── True → sample 1 of every sample_every=8 get() calls
+        #       │              └─► measure: get / local_search / deadlock_profile
+        #       │                           base_features / debug_overlay / ...
+        #       │
+        #       └── report printed every profile_interval=20 episodes
+        #              └─► ring buffer keeps last keep_samples=512 timings
+        #
+        # ─────────────────────────────────────────────────────────────────────
         # Core observation configuration used throughout get()/local search.
         self.search_depth = max(1, int(search_depth))
-        self.local_search_min_search_depth = 6
-        self.local_search_max_nodes = 24   # kleinerer Baum fuer schnellere Observation
+        
+        # Lower default for faster smoke tests.
+        self.local_search_min_search_depth = 4
+
+        self.local_search_max_nodes = 16   # kleinerer Baum fuer schnellere Observation
         # Debug-only render overlay. Handle 0 exports pseudo-agent cell sets:
         # 0=all node cells, 1=pre-merge, 2=switch, 3/4=even/odd corridor cells.
+        # env.dev_obs_dict is used to export debug overlays without affecting the main observation payload.
         self.debug_tree_overlay_enabled = True
+
         # Lightweight function profiler for observation hot paths.
-        self.obs_func_profile_enabled = str(os.getenv('FLATLAND_OBS_FUNC_PROFILE', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
-        self.obs_func_profile_sample_every = max(1, int(os.getenv('FLATLAND_OBS_FUNC_PROFILE_SAMPLE_EVERY', '8')))
-        self.obs_func_profile_interval = max(1, int(os.getenv('FLATLAND_OBS_FUNC_PROFILE_INTERVAL_EPISODES', '20')))
+        self.obs_func_profile_enabled = True
+        self.obs_func_profile_sample_every = 8
+        self.obs_func_profile_interval = 20
+        self.obs_func_profile_keep_samples = 512
         self._obs_func_profile_call_idx = 0
+        
         self._obs_profile_active = False
-        self._obs_func_prof = {
-            'get': {'sum': 0.0, 'count': 0},
-            'get_many': {'sum': 0.0, 'count': 0},
-            'local_search': {'sum': 0.0, 'count': 0},
-            'deadlock_profile': {'sum': 0.0, 'count': 0},
-            'base_features': {'sum': 0.0, 'count': 0},
-            'base_transitions': {'sum': 0.0, 'count': 0},
-            'base_successors': {'sum': 0.0, 'count': 0},
-            'base_priority': {'sum': 0.0, 'count': 0},
-            'base_flags': {'sum': 0.0, 'count': 0},
-            'base_sp_hint': {'sum': 0.0, 'count': 0},
-            'debug_overlay': {'sum': 0.0, 'count': 0},
-        }
+        self._obs_func_prof = {}
+        for key in (
+            'get',
+            'get_many',
+            'local_search',
+            'deadlock_profile',
+            'base_features',
+            'base_transitions',
+            'base_successors',
+            'base_priority',
+            'base_flags',
+            'base_sp_hint',
+            'debug_overlay',
+            'local_search_nodes',
+            'local_search_edges',
+            'local_search_seen_agents',
+            'get_many_handles',
+            'get_many_total_nodes',
+            'get_many_total_edges',
+        ):
+            self._obs_func_prof[key] = self._obs_prof_new_bucket()
         self.env = None
         self.agent_map = None
         self._print_feature_layout_doc()
+
+    def _obs_prof_new_bucket(self):
+        return {
+            'sum': 0.0,
+            'count': 0,
+            'samples': deque(maxlen=self.obs_func_profile_keep_samples),
+        }
+
+    @staticmethod
+    def _obs_prof_bucket_stats(bucket):
+        count = int(bucket.get('count', 0))
+        if count <= 0:
+            return {
+                'mean': 0.0,
+                'p50': 0.0,
+                'p95': 0.0,
+                'max': 0.0,
+                'count': 0,
+            }
+        samples = np.array(bucket.get('samples', []), dtype=np.float64)
+        if samples.size <= 0:
+            mean = float(bucket.get('sum', 0.0)) / float(max(1, count))
+            return {
+                'mean': mean,
+                'p50': mean,
+                'p95': mean,
+                'max': mean,
+                'count': count,
+            }
+        return {
+            'mean': float(bucket.get('sum', 0.0)) / float(max(1, count)),
+            'p50': float(np.percentile(samples, 50.0)),
+            'p95': float(np.percentile(samples, 95.0)),
+            'max': float(np.max(samples)),
+            'count': count,
+        }
 
     def _obs_prof_add(self, key: str, dt: float):
         if not self.obs_func_profile_enabled:
@@ -135,8 +221,10 @@ class DecisionPointObservation(ObservationBuilder):
         bucket = self._obs_func_prof.get(key)
         if bucket is None:
             return
-        bucket['sum'] += float(dt)
+        value = float(dt)
+        bucket['sum'] += value
         bucket['count'] += 1
+        bucket['samples'].append(value)
  
     def set_env(self, env): 
         super().set_env(env)
@@ -596,6 +684,24 @@ class DecisionPointObservation(ObservationBuilder):
                 corridor=corridor,
                 distance_map=distance_map,
             )
+            # Enrich edge with deadlock context from src/dst nodes.
+            src_node = state["nodes"][src_idx]
+            dst_node = state["nodes"][dst_idx]
+            dl_src = float(src_node.get("deadlock_distance_norm", 0.0))
+            dl_dst = float(dst_node.get("deadlock_distance_norm", 0.0))
+            edge_payload["dst_deadlock_risk"] = float(dst_node.get("deadlock_risk", 0.0))
+            edge_payload["dst_deadlock_hard_block"] = 1.0 if float(dst_node.get("deadlock_hard_distance_norm", 0.0)) > 0.0 else 0.0
+            edge_payload["dst_deadlock_distance_norm"] = dl_dst
+            edge_payload["dst_deadlock_hard_distance_norm"] = float(dst_node.get("deadlock_hard_distance_norm", 0.0))
+            edge_payload["src_deadlock_distance_norm"] = dl_src
+            edge_payload["deadlock_distance_delta"] = float(np.clip(dl_dst - dl_src, -1.0, 1.0))
+            edge_payload["alternative_routes_count"] = int(src_node.get("alternative_routes_count", 1))
+            root_dist = float(state.get("root_dist_to_target", 0.0))
+            dst_dist_val = edge_payload.get("dst_dist_to_target")
+            if dst_dist_val is not None and root_dist > 0.0:
+                edge_payload["delta_from_root"] = float(np.clip((root_dist - float(dst_dist_val)) / root_dist, 0.0, 1.0))
+            else:
+                edge_payload["delta_from_root"] = 0.0
             edge_key = (
                 int(edge_payload.get("src", -1)),
                 int(edge_payload.get("dst", -1)),
@@ -754,6 +860,7 @@ class DecisionPointObservation(ObservationBuilder):
             return {"nodes": [], "edges": [], "seen_agents": []}
 
 
+        root_dist_raw = float(distance_map[handle, pos[0], pos[1], direction]) if distance_map is not None else np.inf
         state = {
             "nodes": [],
             "edges": [],
@@ -763,6 +870,7 @@ class DecisionPointObservation(ObservationBuilder):
             "node_pos_dir_map": {},
             "active_stack": {0},
             "n_nodes": 0,
+            "root_dist_to_target": float(root_dist_raw) if np.isfinite(root_dist_raw) else 0.0,
         }
 
         state["nodes"].append(
@@ -791,8 +899,23 @@ class DecisionPointObservation(ObservationBuilder):
             expansion_guard=set(),
         )
 
+        # Post-process: mark is_shortest_path_edge (per src: edge with lowest dst_dist_to_target).
+        edges_by_src: dict = {}
+        for edge in state["edges"]:
+            s = int(edge.get("src", -1))
+            if s >= 0:
+                edges_by_src.setdefault(s, []).append(edge)
+        for src_edges in edges_by_src.values():
+            valid = [(e, e["dst_dist_to_target"]) for e in src_edges if e.get("dst_dist_to_target") is not None]
+            best_edge = min(valid, key=lambda x: x[1])[0] if valid else None
+            for e in src_edges:
+                e["is_shortest_path_edge"] = 1.0 if e is best_edge else 0.0
+
         if self._obs_profile_active:
             self._obs_prof_add("local_search", time.perf_counter() - t_start)
+            self._obs_prof_add("local_search_nodes", len(state["nodes"]))
+            self._obs_prof_add("local_search_edges", len(state["edges"]))
+            self._obs_prof_add("local_search_seen_agents", len(state["seen_agents"]))
         return {
             "nodes": state["nodes"],
             "edges": state["edges"],
@@ -1224,6 +1347,8 @@ class DecisionPointObservation(ObservationBuilder):
         type(self)._get_many_call_count += 1
         if handles is None:
             handles = list(range(len(self.env.agents)))
+        if self.obs_func_profile_enabled:
+            self._obs_prof_add('get_many_handles', len(handles))
 
         self.agent_map = np.zeros((self.env.height, self.env.width), dtype=np.int32) - 1
         for agent in self.env.agents:
@@ -1246,6 +1371,8 @@ class DecisionPointObservation(ObservationBuilder):
         result = []
         all_features = []
         tree_stats = []
+        total_nodes_this_call = 0
+        total_edges_this_call = 0
         for handle in handles:
             entry = self.get(handle)
             result.append(entry)
@@ -1253,8 +1380,13 @@ class DecisionPointObservation(ObservationBuilder):
             tree = entry[2]
             n_nodes = len(tree.get("nodes", []))
             n_edges = len(tree.get("edges", []))
+            total_nodes_this_call += n_nodes
+            total_edges_this_call += n_edges
             seen_agents = tree.get("seen_agents", [])
             tree_stats.append((handle, n_nodes, n_edges, seen_agents))
+        if self.obs_func_profile_enabled:
+            self._obs_prof_add('get_many_total_nodes', total_nodes_this_call)
+            self._obs_prof_add('get_many_total_edges', total_edges_this_call)
 
         # --- Statistik der letzten 100 Episoden sammeln ---
         if len(all_features) > 0:
@@ -1385,17 +1517,35 @@ class DecisionPointObservation(ObservationBuilder):
             self._obs_prof_add('get_many', time.perf_counter() - t0_many)
             if is_end_of_episode and episode_count is not None and (episode_count + 1) % self.obs_func_profile_interval == 0:
                 g = self._obs_func_prof
-                get_mean_ms = (1000.0 * g['get']['sum'] / g['get']['count']) if g['get']['count'] > 0 else 0.0
-                gm_mean_ms = (1000.0 * g['get_many']['sum'] / g['get_many']['count']) if g['get_many']['count'] > 0 else 0.0
-                ls_mean_ms = (1000.0 * g['local_search']['sum'] / g['local_search']['count']) if g['local_search']['count'] > 0 else 0.0
-                dl_mean_ms = (1000.0 * g['deadlock_profile']['sum'] / g['deadlock_profile']['count']) if g['deadlock_profile']['count'] > 0 else 0.0
-                bf_mean_ms = (1000.0 * g['base_features']['sum'] / g['base_features']['count']) if g['base_features']['count'] > 0 else 0.0
-                bt_mean_ms = (1000.0 * g['base_transitions']['sum'] / g['base_transitions']['count']) if g['base_transitions']['count'] > 0 else 0.0
-                bs_mean_ms = (1000.0 * g['base_successors']['sum'] / g['base_successors']['count']) if g['base_successors']['count'] > 0 else 0.0
-                bp_mean_ms = (1000.0 * g['base_priority']['sum'] / g['base_priority']['count']) if g['base_priority']['count'] > 0 else 0.0
-                bfl_mean_ms = (1000.0 * g['base_flags']['sum'] / g['base_flags']['count']) if g['base_flags']['count'] > 0 else 0.0
-                bsh_mean_ms = (1000.0 * g['base_sp_hint']['sum'] / g['base_sp_hint']['count']) if g['base_sp_hint']['count'] > 0 else 0.0
-                ov_mean_ms = (1000.0 * g['debug_overlay']['sum'] / g['debug_overlay']['count']) if g['debug_overlay']['count'] > 0 else 0.0
+                get_stats = self._obs_prof_bucket_stats(g['get'])
+                gm_stats = self._obs_prof_bucket_stats(g['get_many'])
+                ls_stats = self._obs_prof_bucket_stats(g['local_search'])
+                dl_stats = self._obs_prof_bucket_stats(g['deadlock_profile'])
+                bf_stats = self._obs_prof_bucket_stats(g['base_features'])
+                bt_stats = self._obs_prof_bucket_stats(g['base_transitions'])
+                bs_stats = self._obs_prof_bucket_stats(g['base_successors'])
+                bp_stats = self._obs_prof_bucket_stats(g['base_priority'])
+                bfl_stats = self._obs_prof_bucket_stats(g['base_flags'])
+                bsh_stats = self._obs_prof_bucket_stats(g['base_sp_hint'])
+                ov_stats = self._obs_prof_bucket_stats(g['debug_overlay'])
+                lsn_stats = self._obs_prof_bucket_stats(g['local_search_nodes'])
+                lse_stats = self._obs_prof_bucket_stats(g['local_search_edges'])
+                lssa_stats = self._obs_prof_bucket_stats(g['local_search_seen_agents'])
+                gmh_stats = self._obs_prof_bucket_stats(g['get_many_handles'])
+                gmtn_stats = self._obs_prof_bucket_stats(g['get_many_total_nodes'])
+                gmte_stats = self._obs_prof_bucket_stats(g['get_many_total_edges'])
+
+                get_mean_ms = 1000.0 * get_stats['mean']
+                gm_mean_ms = 1000.0 * gm_stats['mean']
+                ls_mean_ms = 1000.0 * ls_stats['mean']
+                dl_mean_ms = 1000.0 * dl_stats['mean']
+                bf_mean_ms = 1000.0 * bf_stats['mean']
+                bt_mean_ms = 1000.0 * bt_stats['mean']
+                bs_mean_ms = 1000.0 * bs_stats['mean']
+                bp_mean_ms = 1000.0 * bp_stats['mean']
+                bfl_mean_ms = 1000.0 * bfl_stats['mean']
+                bsh_mean_ms = 1000.0 * bsh_stats['mean']
+                ov_mean_ms = 1000.0 * ov_stats['mean']
                 dl_per_ls = (float(g['deadlock_profile']['count']) / float(max(1, g['local_search']['count']))) if g['local_search']['count'] > 0 else 0.0
                 print(
                     f"[ObsFnPerf] ep={episode_count + 1} interval={self.obs_func_profile_interval} "
@@ -1409,13 +1559,44 @@ class DecisionPointObservation(ObservationBuilder):
                     f"[ObsFnPerfBase] transitions={bt_mean_ms:.3f}ms successors={bs_mean_ms:.3f}ms "
                     f"priority={bp_mean_ms:.3f}ms flags={bfl_mean_ms:.3f}ms sp_hint={bsh_mean_ms:.3f}ms"
                 )
+                print(
+                    f"[ObsFnPerfDetail] get_p50={1000.0*get_stats['p50']:.3f}ms get_p95={1000.0*get_stats['p95']:.3f}ms get_max={1000.0*get_stats['max']:.3f}ms "
+                    f"get_many_p50={1000.0*gm_stats['p50']:.3f}ms get_many_p95={1000.0*gm_stats['p95']:.3f}ms get_many_max={1000.0*gm_stats['max']:.3f}ms "
+                    f"local_search_p50={1000.0*ls_stats['p50']:.3f}ms local_search_p95={1000.0*ls_stats['p95']:.3f}ms local_search_max={1000.0*ls_stats['max']:.3f}ms"
+                )
+                print(
+                    f"[ObsFnPerfLocalSearch] nodes_mean={lsn_stats['mean']:.2f} nodes_p95={lsn_stats['p95']:.2f} "
+                    f"edges_mean={lse_stats['mean']:.2f} edges_p95={lse_stats['p95']:.2f} "
+                    f"seen_agents_mean={lssa_stats['mean']:.2f} "
+                    f"ms_per_node={(ls_mean_ms / max(1e-9, lsn_stats['mean'])):.4f} "
+                    f"handles_per_get_many={gmh_stats['mean']:.2f}"
+                )
+                print(
+                    f"[ObsFnPerfGetMany] total_nodes_mean={gmtn_stats['mean']:.2f} total_nodes_p95={gmtn_stats['p95']:.2f} "
+                    f"total_edges_mean={gmte_stats['mean']:.2f} total_edges_p95={gmte_stats['p95']:.2f}"
+                )
                 type(self)._last_obs_fn_perf_report = {
                     'episode': int(episode_count + 1),
                     'interval': int(self.obs_func_profile_interval),
                     'sample_every': int(self.obs_func_profile_sample_every),
                     'get_mean_ms': float(get_mean_ms),
+                    'get_p50_ms': float(1000.0 * get_stats['p50']),
+                    'get_p95_ms': float(1000.0 * get_stats['p95']),
+                    'get_max_ms': float(1000.0 * get_stats['max']),
                     'get_many_mean_ms': float(gm_mean_ms),
+                    'get_many_p50_ms': float(1000.0 * gm_stats['p50']),
+                    'get_many_p95_ms': float(1000.0 * gm_stats['p95']),
+                    'get_many_max_ms': float(1000.0 * gm_stats['max']),
                     'local_search_mean_ms': float(ls_mean_ms),
+                    'local_search_p50_ms': float(1000.0 * ls_stats['p50']),
+                    'local_search_p95_ms': float(1000.0 * ls_stats['p95']),
+                    'local_search_max_ms': float(1000.0 * ls_stats['max']),
+                    'local_search_nodes_mean': float(lsn_stats['mean']),
+                    'local_search_nodes_p95': float(lsn_stats['p95']),
+                    'local_search_edges_mean': float(lse_stats['mean']),
+                    'local_search_edges_p95': float(lse_stats['p95']),
+                    'local_search_seen_agents_mean': float(lssa_stats['mean']),
+                    'local_search_ms_per_node': float(ls_mean_ms / max(1e-9, lsn_stats['mean'])),
                     'deadlock_profile_mean_ms': float(dl_mean_ms),
                     'base_features_mean_ms': float(bf_mean_ms),
                     'base_transitions_mean_ms': float(bt_mean_ms),
@@ -1425,10 +1606,16 @@ class DecisionPointObservation(ObservationBuilder):
                     'base_sp_hint_mean_ms': float(bsh_mean_ms),
                     'debug_overlay_mean_ms': float(ov_mean_ms),
                     'deadlock_calls_per_local_search': float(dl_per_ls),
+                    'get_many_handles_mean': float(gmh_stats['mean']),
+                    'get_many_total_nodes_mean': float(gmtn_stats['mean']),
+                    'get_many_total_nodes_p95': float(gmtn_stats['p95']),
+                    'get_many_total_edges_mean': float(gmte_stats['mean']),
+                    'get_many_total_edges_p95': float(gmte_stats['p95']),
                 }
                 for bucket in g.values():
                     bucket['sum'] = 0.0
                     bucket['count'] = 0
+                    bucket['samples'].clear()
 
         for agent in self.env.agents:
             agent.opp_agent_handles = agent.cur_opp_agent_handles

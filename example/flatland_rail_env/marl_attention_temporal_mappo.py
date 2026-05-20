@@ -339,6 +339,13 @@ class TreePayloadEncoder(nn.Module):
             except (TypeError, ValueError):
                 return default
 
+        def _norm_dist(value: Any) -> float:
+            # Compress raw distance-map values (often >>1) into [0,1].
+            d = _safe_float(value, 1.0)
+            if d <= 1.0:
+                return float(np.clip(d, 0.0, 1.0))
+            return float(d / (d + 32.0))
+
         rel_bin = _safe_int(edge.get("rel_dir_bin", 1), 1)
         action_left = _safe_float(edge.get("action_left", 1.0 if rel_bin == 0 else 0.0), 0.0)
         action_forward = _safe_float(edge.get("action_forward", 1.0 if rel_bin == 1 else 0.0), 0.0)
@@ -348,15 +355,15 @@ class TreePayloadEncoder(nn.Module):
             agents_on_edge = edge.get("agents_on_edge", [])
             if isinstance(agents_on_edge, list):
                 agents_on_edge_count = len(agents_on_edge)
-        return np.array([
+        feat = np.array([
             action_left,
             action_forward,
             action_right,
             1.0 if agents_on_edge_count > 0 else 0.0,
             1.0 if edge.get("has_oncoming_edge", False) else 0.0,
             min(1.0, _safe_float(edge.get("edge_len_cells", 1), 1.0) / 4.0),
-            _safe_float(edge.get("src_dist_to_target", 1.0), 1.0),
-            _safe_float(edge.get("dst_dist_to_target", 1.0), 1.0),
+            _norm_dist(edge.get("src_dist_to_target", 1.0)),
+            _norm_dist(edge.get("dst_dist_to_target", 1.0)),
             _safe_float(edge.get("delta_from_root", 0.5), 0.5),
             _safe_float(edge.get("improves_over_current", 0.0), 0.0),
             1.0 if edge.get("target_on_edge", False) else 0.0,
@@ -370,6 +377,8 @@ class TreePayloadEncoder(nn.Module):
             _safe_float(edge.get("branch_choice_prob", 0.0), 0.0),
             min(1.0, _safe_float(edge.get("alternative_routes_count", 0), 0.0) / 3.0),
         ], dtype=np.float32)
+        np.clip(feat, 0.0, 1.0, out=feat)
+        return feat
 
     def _estimate_node_depths_batch(self, payload_batch: List[Dict[str, Any]], max_nodes: int) -> torch.Tensor:
         """
@@ -1700,8 +1709,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.actor_lr_recover_rate = 1.01
         self.actor_lr_min_factor = 0.35
         self.actor_lr_max_factor = 1.00
-        self.grad_norm_soft = 20.0
-        self.grad_norm_hard = 50.0
+        # Pre-clip norms are often O(1e2..1e3) in early Flatland MAPPO updates.
+        # Keep soft/hard guards aligned with this scale to avoid over-decaying LR.
+        self.grad_norm_soft = 600.0
+        self.grad_norm_hard = 900.0
         self.max_grad_norm_single = 0.40
         self.max_grad_norm_actor = 0.45
         self.max_grad_norm_critic = 0.45
@@ -2611,6 +2622,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         current_iteration = 0
         hard_spike_batches_total = 0
         hard_spike_streak = 0
+        _n_batches_update = 0
         action_hist_total = torch.zeros(self.action_size, dtype=torch.long)
         action_hist_decision_total = torch.zeros(self.action_size, dtype=torch.long)
         action_labels = ['DN', 'L', 'F', 'R', 'S'] if self.action_size == 5 else [f'A{i}' for i in range(self.action_size)]
@@ -2786,14 +2798,17 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                             + 0.5 * lr_shortfall.pow(2)
                             + 0.30 * idle_excess.pow(2)
                         )
-                deadlock_logits = torch.squeeze(self.actor_critic_model.deadlock_head(states_actor), dim=-1)
-                aux_targets = torch.clamp(batch_aux_deadlock, 0.0, 1.0)
-                pos_weight = torch.full_like(aux_targets, self.aux_deadlock_pos_weight)
-                aux_deadlock_loss_component = nn.functional.binary_cross_entropy_with_logits(
-                    deadlock_logits,
-                    aux_targets,
-                    pos_weight=pos_weight,
-                )
+                if self.weight_aux_deadlock > 0.0:
+                    deadlock_logits = torch.squeeze(self.actor_critic_model.deadlock_head(states_actor), dim=-1)
+                    aux_targets = torch.clamp(batch_aux_deadlock, 0.0, 1.0)
+                    pos_weight = torch.full_like(aux_targets, self.aux_deadlock_pos_weight)
+                    aux_deadlock_loss_component = nn.functional.binary_cross_entropy_with_logits(
+                        deadlock_logits,
+                        aux_targets,
+                        pos_weight=pos_weight,
+                    )
+                else:
+                    aux_deadlock_loss_component = torch.zeros((), device=self.device)
                 comm_loss_component = self.encoder_actor.last_comm_reg + self.encoder_critic.last_comm_reg
                 ratio_mean = ratios.mean().item()
                 approx_kl = torch.abs((batch_old_logprobs - logprobs).mean()).item()
@@ -2950,16 +2965,26 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
                 grad_norm = float(grad_norm_pre.item()) if isinstance(grad_norm_pre, torch.Tensor) else float(grad_norm_pre)
 
-                if (not np.isfinite(grad_norm)) or grad_norm > float(self.grad_norm_skip_step_hard):
+                # Only skip on true NaN/Inf — clip_grad_norm_ already bounds large norms.
+                # The old "> grad_norm_skip_step_hard" threshold blocked ALL optimizer steps
+                # at startup (pre-clip norms >400 are normal with random init + large rewards).
+                if not np.isfinite(grad_norm):
                     hard_spike_batches_total += 1
                     hard_spike_streak += 1
                     self._set_actor_lr_factor(self.actor_lr_factor * self.actor_lr_decay_on_instability)
+                    print(
+                        f"\n⚠️ Skip optimizer step: non-finite grad norm pre-clip={grad_norm:.2f} "
+                        f"(post={grad_norm_post:.2f})"
+                    )
+                    continue
+
+                if grad_norm > float(self.grad_norm_skip_step_hard):
+                    # Large but finite: log and continue training (clipping handled it).
                     if self.show_pre_train_debug_msg:
                         print(
-                            f"\n⚠️ Skip optimizer step: extreme grad norm pre-clip={grad_norm:.2f} "
-                            f"(post={grad_norm_post:.2f}, thr={self.grad_norm_skip_step_hard:.1f})"
+                            f"\n⚠️ Large grad norm pre-clip={grad_norm:.2f} "
+                            f"(post={grad_norm_post:.2f}, thr={self.grad_norm_skip_step_hard:.1f}) — clipped, continuing"
                         )
-                    continue
 
                 if grad_norm > self.grad_norm_hard:
                     hard_spike_batches_total += 1
@@ -3087,6 +3112,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 self._log_batch_metrics(batch_metrics)
                 self._stat_buf['ret_min'].append(batch_gae_returns.min().item())
                 self._stat_buf['ret_max'].append(batch_gae_returns.max().item())
+                _n_batches_update += 1
 
                 # 📊 Log metrics for this iteration
                 adv_mean = raw_adv_mean  # ⚡ RAW advantage mean (BEFORE normalization)
@@ -3164,6 +3190,28 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         if not hasattr(self, 'training_step'):
             self.training_step = 0
         self.training_step += 1
+
+        # Always-visible training summary per PPO update
+        if _n_batches_update > 0:
+            def _safe_mean_last(lst, n):
+                if n <= 0 or not lst:
+                    return 0.0
+                return float(np.mean(lst[-n:]))
+            _vl = _safe_mean_last(self._stat_buf['v_loss'], _n_batches_update)
+            _pl = _safe_mean_last(self._stat_buf['p_loss'], _n_batches_update)
+            _kl = _safe_mean_last(self._stat_buf['kl'], _n_batches_update)
+            _gn = _safe_mean_last(self._stat_buf['grad_norm'], _n_batches_update)
+            _gn_post = _safe_mean_last(self._stat_buf['grad_norm_post'], _n_batches_update)
+            _en = _safe_mean_last(self._stat_buf['entropy'], _n_batches_update)
+            _rt = _safe_mean_last(self._stat_buf['ratio'], _n_batches_update)
+            print(
+                f"[Train] ep={self.episode_count} batches={_n_batches_update} "
+                f"v_loss={_vl:.4f} p_loss={_pl:.4f} kl={_kl:.4f} "
+                f"ratio={_rt:.3f} grad_pre={_gn:.3f} grad_post={_gn_post:.3f} entropy={_en:.3f} "
+                f"lr_factor={self.actor_lr_factor:.3f}"
+            )
+        else:
+            print(f"[Train] ep={self.episode_count} — no batches executed (all skipped by guards)")
 
         if profile_enabled:
             timing['total'] = _tic() - update_t0
@@ -3375,6 +3423,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         am_m = 0.0
         as_m = 0.0
         gn_m = 0.0
+        gn_post_m = 0.0
         adg_m = 0.0
         ret_min = 0.0
         ret_max = 0.0
@@ -3395,6 +3444,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             am_m, _    = _ms('adv_mean')
             as_m, _    = _ms('adv_std')
             gn_m, gn_s = _ms('grad_norm')
+            gn_post_m, gn_post_s = _ms('grad_norm_post')
             adg_m, adg_s = _ms('action_div_gate_ratio')
             ret_min    = float(np.array(sb['ret_min']).min())
             ret_max    = float(np.array(sb['ret_max']).max())
@@ -3415,8 +3465,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
             def tr_row(lbl, val, pm, unit, lo_ok, hi_ok, note_ok, note_warn):
                 hi_alert = None
-                if lbl == "GradNorm":
-                    hi_alert = 20.0
+                if lbl == "GradNorm (pre-clip)":
+                    hi_alert = self.grad_norm_hard
+                elif lbl == "GradNorm (post-clip)":
+                    hi_alert = self.max_grad_norm_single * 1.5
                 elif lbl == "Entropy":
                     hi_alert = None
                 elif lbl == "V_Loss (critic)":
@@ -3447,9 +3499,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             tr_row("Advantage std", as_m, 0.0, "", 0.5, 5.0,
                    "signal present",
                    "signal too weak or exploding")
-            tr_row("GradNorm", gn_m, gn_s, "", 0.0, 4.0,
-                   "gradients stable",
-                   "gradient instability")
+            tr_row("GradNorm (pre-clip)", gn_m, gn_s, "", 0.0, self.grad_norm_skip_step_hard,
+                   "pre-clip gradients plausible",
+                   "large raw gradients before clipping")
+            tr_row("GradNorm (post-clip)", gn_post_m, gn_post_s, "", 0.0, self.max_grad_norm_single * 1.10,
+                   "effective gradients stable",
+                   "effective gradients unstable after clipping")
             tr_row("AuxDL loss", aux_m, 0.0, "", 0.0, 0.8,
                    "deadlock head ok",
                    "deadlock head not converging")
@@ -3496,10 +3551,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     f"Advantage std={as_m:.3f} very low: almost no gradient signal. "
                     "Critic may be over-fitting, or all returns are nearly identical "
                     "(deadlock-dominated constant negative rewards).")
-            if gn_m > 5.0:
+            if gn_post_m > self.max_grad_norm_single * 1.20:
                 issues.append(
-                    f"GradNorm={gn_m:.2f}: gradient explosion. "
-                    "Reduce LR or add gradient clipping.")
+                    f"GradNorm post-clip={gn_post_m:.3f} (> {self.max_grad_norm_single*1.20:.3f}): effective gradient instability. "
+                    "Lower LR and/or reduce reward scale.")
             if adg_m < 0.01:
                 issues.append(
                     f"Adiv gate ratio={adg_m:.3f}: diversity shaping is almost never active. "
@@ -3528,6 +3583,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 'entropy_mean': en_m,
                 'ratio_mean': rt_m,
                 'grad_norm_mean': gn_m,
+                'grad_norm_post_mean': gn_post_m,
                 'action_div_gate_ratio_mean': adg_m,
                 'forward_share_all': forward_share_all,
                 'forward_share_decision': forward_share_decision,
