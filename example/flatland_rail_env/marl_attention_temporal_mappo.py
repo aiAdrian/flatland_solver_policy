@@ -138,6 +138,7 @@ class LocalTreeEncoder(nn.Module):
         self.lstm = nn.LSTM(
             input_size=hidden_dim // 2,
             hidden_size=hidden_dim,
+            dropout=0.2,  # Add dropout in LSTM
             num_layers=1,
             batch_first=True,
         )
@@ -152,12 +153,13 @@ class LocalTreeEncoder(nn.Module):
         # Near-zero init → starts neutral, learns gradually during PPO
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0.0, 0.01)
+                nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
     def forward(self, tree_flat: torch.Tensor) -> torch.Tensor:
         """Single-agent: (MAX_NODES * NODE_DIM,) = (120,) → (hidden_dim,)"""
+        logger.info("Forward pass with input shape: %s", tree_flat.shape)
         nodes = tree_flat.view(self.max_nodes, self.node_dim)  # (15, 8)
         mask = (nodes.abs().sum(dim=-1) > 1e-6)               # (15,) bool
         n_valid = int(mask.sum().clamp(min=1).item())
@@ -263,7 +265,7 @@ class TreePayloadEncoder(nn.Module):
         # ========================================================================
         self.level_attention = nn.MultiheadAttention(
             embed_dim=hidden_dim,
-            num_heads=4,
+            num_heads=2,  # Reduced from 4 to 2 for smaller trees
             batch_first=True
         )
         
@@ -275,7 +277,7 @@ class TreePayloadEncoder(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0.0, 0.01)
+                nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
@@ -1268,12 +1270,12 @@ class TemporalLSTMEncoder(nn.Module):
             all_agents = [self_temporal_context] + opp_embeddings
             all_agents_tensor = torch.stack(all_agents, dim=0).unsqueeze(0)
             query = self_temporal_context.unsqueeze(0).unsqueeze(0)
-            spatial_output, _ = self.spatial_attention(
+            spatial_out, _ = self.spatial_attention(
                 query=query,
                 key=all_agents_tensor,
                 value=all_agents_tensor
             )
-            context = spatial_output.squeeze(0).squeeze(0) + self_temporal_context
+            context = spatial_out.squeeze(0).squeeze(0) + self_temporal_context
             context, comm_reg, gate_mean, intent_mean = self._apply_communication(context, opp_embeddings)
             self.last_comm_reg = comm_reg
             self.last_comm_gate_mean = float(gate_mean.detach().cpu().item())
@@ -1700,6 +1702,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.actor_lr_max_factor = 1.00
         self.grad_norm_soft = 20.0
         self.grad_norm_hard = 50.0
+        self.max_grad_norm_single = 0.40
+        self.max_grad_norm_actor = 0.45
+        self.max_grad_norm_critic = 0.45
+        self.grad_norm_skip_step_hard = 400.0
+        self.adv_clip_abs = 5.0
         self.gae_lambda = self.ppo_parameters.gae_lambda if self.ppo_parameters else 0.95
 
         # Reward scaling: raw per-step rewards are O(-0.5), giving discounted returns
@@ -1904,7 +1911,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self._stat_buf: dict = {
             'v_loss': [], 'p_loss': [], 'e_loss': [], 'aux_dl': [],
             'kl': [], 'ratio': [], 'entropy': [],
-            'adv_mean': [], 'adv_std': [], 'grad_norm': [],
+            'adv_mean': [], 'adv_std': [], 'grad_norm': [], 'grad_norm_post': [],
             'tree_grad_actor': [], 'tree_grad_critic': [],
             'tree_payload_grad_actor': [], 'tree_payload_grad_critic': [],
             'ret_min': [], 'ret_max': [],
@@ -1996,6 +2003,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         
         # Gradient & learning rate
         self.writer.add_scalar(f'{policy_prefix}/training_value_grad_norm', batch_metrics.get('grad_norm', 0.0), global_step)
+        self.writer.add_scalar(f'{policy_prefix}/training_value_grad_norm_post', batch_metrics.get('grad_norm_post', 0.0), global_step)
         self.writer.add_scalar(f'{policy_prefix}/training_value_lr_factor', batch_metrics.get('lr_factor', 1.0), global_step)
         
         # Communication metrics
@@ -2717,7 +2725,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 # arXiv:2006.05990 -- Empfehlung #4). Eine zusätzliche
                 # Skalierung (vorher *0.3) drosselt alle Updates und hat das
                 # Lernen in einem 60%-Lokal-Optimum gefangen gehalten.
-                advantages = advantages_normalized
+                advantages = torch.clamp(
+                    advantages_normalized,
+                    -float(self.adv_clip_abs),
+                    float(self.adv_clip_abs),
+                )
 
                 # PPO loss
                 clip_eps_eff = self._effective_clip_eps()
@@ -2736,7 +2748,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                             self._extract_action_diversity_gate_from_temporal_state(ts)
                             for ts in batch_state_tuples
                         ]
-                        adiv_gate = torch.tensor(gate_vals, dtype=probs.dtype, device=self.device)
+                        adiv_gate = torch.tensor(
+                            gate_vals,
+                            dtype=probs.dtype,
+                            device=self.device,
+                        )
                     else:
                         adiv_gate = torch.ones(probs.shape[0], dtype=probs.dtype, device=self.device)
 
@@ -2875,22 +2891,75 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 
                 loss.backward()
                 
-                # Gradient clipping (Standard PPO: max_norm=0.5..1.0 ist üblich).
-                grad_norm_actor = torch.nn.utils.clip_grad_norm_(
-                    list(self.encoder_actor.parameters()) + 
-                    list(self.actor_critic_model.actor.parameters()),
-                    max_norm=0.50
-                )
-                
-                grad_norm_critic = torch.nn.utils.clip_grad_norm_(
-                    list(self.encoder_critic.parameters()) + 
-                    list(self.actor_critic_model.critic.parameters()),
-                    max_norm=0.50
-                )
+                # Gradient clipping (returns PRE-clip norm). We track PRE and POST.
+                def _dedup_params(param_list):
+                    out = []
+                    seen = set()
+                    for p in param_list:
+                        if p is None or (not p.requires_grad):
+                            continue
+                        pid = id(p)
+                        if pid in seen:
+                            continue
+                        seen.add(pid)
+                        out.append(p)
+                    return out
+
+                def _grad_norm_params(param_list):
+                    sq = 0.0
+                    for p in param_list:
+                        if p.grad is None:
+                            continue
+                        g = p.grad.detach()
+                        if torch.isnan(g).any() or torch.isinf(g).any():
+                            continue
+                        sq += float(torch.sum(g * g).item())
+                    return float(math.sqrt(max(sq, 0.0)))
+
+                if self.optimizer_mode == 'single':
+                    all_params = []
+                    for group in self.optimizer.param_groups:
+                        all_params.extend(group['params'])
+                    all_params = _dedup_params(all_params)
+                    grad_norm_pre = torch.nn.utils.clip_grad_norm_(
+                        all_params,
+                        max_norm=float(self.max_grad_norm_single)
+                    )
+                    grad_norm_post = _grad_norm_params(all_params)
+                else:
+                    actor_params = _dedup_params(
+                        list(self.encoder_actor.parameters()) +
+                        list(self.actor_critic_model.actor.parameters())
+                    )
+                    critic_params = _dedup_params(
+                        list(self.encoder_critic.parameters()) +
+                        list(self.actor_critic_model.critic.parameters())
+                    )
+                    grad_norm_actor_pre = torch.nn.utils.clip_grad_norm_(
+                        actor_params,
+                        max_norm=float(self.max_grad_norm_actor)
+                    )
+                    grad_norm_critic_pre = torch.nn.utils.clip_grad_norm_(
+                        critic_params,
+                        max_norm=float(self.max_grad_norm_critic)
+                    )
+                    grad_norm_pre = max(float(grad_norm_actor_pre.item()), float(grad_norm_critic_pre.item()))
+                    grad_norm_post = max(_grad_norm_params(actor_params), _grad_norm_params(critic_params))
                 if profile_enabled:
                     _add_t('backward_clip', _tic() - t0)
-                
-                grad_norm = max(grad_norm_actor.item(), grad_norm_critic.item())
+
+                grad_norm = float(grad_norm_pre.item()) if isinstance(grad_norm_pre, torch.Tensor) else float(grad_norm_pre)
+
+                if (not np.isfinite(grad_norm)) or grad_norm > float(self.grad_norm_skip_step_hard):
+                    hard_spike_batches_total += 1
+                    hard_spike_streak += 1
+                    self._set_actor_lr_factor(self.actor_lr_factor * self.actor_lr_decay_on_instability)
+                    if self.show_pre_train_debug_msg:
+                        print(
+                            f"\n⚠️ Skip optimizer step: extreme grad norm pre-clip={grad_norm:.2f} "
+                            f"(post={grad_norm_post:.2f}, thr={self.grad_norm_skip_step_hard:.1f})"
+                        )
+                    continue
 
                 if grad_norm > self.grad_norm_hard:
                     hard_spike_batches_total += 1
@@ -2963,6 +3032,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 self._stat_buf['adv_mean'].append(raw_adv_mean)
                 self._stat_buf['adv_std'].append(raw_adv_std)
                 self._stat_buf['grad_norm'].append(grad_norm)
+                self._stat_buf['grad_norm_post'].append(float(grad_norm_post))
                 self._stat_buf['tree_grad_actor'].append(tree_grad_actor)
                 self._stat_buf['tree_grad_critic'].append(tree_grad_critic)
                 self._stat_buf['tree_payload_grad_actor'].append(tree_payload_grad_actor)
@@ -3001,6 +3071,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     'adv_mean': raw_adv_mean,
                     'adv_std': raw_adv_std,
                     'grad_norm': grad_norm,
+                    'grad_norm_post': float(grad_norm_post),
                     'clip': clip_eps_eff,
                     'lr_factor': self.actor_lr_factor,
                     'comm_gate': (self.encoder_actor.last_comm_gate_mean + self.encoder_critic.last_comm_gate_mean) / 2.0,
@@ -3036,7 +3107,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     print(f"| AdivMask: {action_diversity_gate_ratio:.2f}", end='')
                     print(f"| AuxDL: {aux_deadlock_loss_component.item():.4f}", end='')
                     print(f"| C_Loss: {comm_loss_component.item():.4f}", end='')
-                    print(f"| Adv: {adv_mean:.2f}±{adv_std:.2f}", end='')  # ⚡ RAW advantage (mean±std BEFORE norm)
+                    print(f"| Adv: {adv_mean:.2f}±{adv_std:.2f}", end='')
                     print(f"| Ratio: {ratio_mean:.4f}", end='')
                     print(f"| KL: {approx_kl:.4f}", end='')
                     print(f"| Gate: {(self.encoder_actor.last_comm_gate_mean + self.encoder_critic.last_comm_gate_mean)/2.0:.3f}", end='')
@@ -4038,7 +4109,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                         f"non_policy={non_policy_mean:.3f}s act_calls={act_calls_mean:.1f} step_calls={step_calls_mean:.1f}"
                     )
 
-            if self.show_pre_train_debug_msg and (self.episode_count + 1) % self._perf_log_interval == 0:
+            if self.show_pre_train_debug_msg and (self.episode_count + 1) % self._obs_stat_interval == 0:
                 win_sp_total = int(sum(self._rollout_diag_buf['sp_total']))
                 win_sp_match = int(sum(self._rollout_diag_buf['sp_match']))
                 win_sp_acc = (win_sp_match / win_sp_total) if win_sp_total > 0 else 0.0

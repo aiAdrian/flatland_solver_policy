@@ -119,12 +119,12 @@ def _env_float(name: str, default: float) -> float:
     return float(value)
 
 
-REWARD_STEP_PENALTY = _env_float('FLATLAND_REWARD_STEP_PENALTY', 0.01)
-REWARD_DONE_BONUS = _env_float('FLATLAND_REWARD_DONE_BONUS', 10.0)  # Boosted for stronger positive signal
-REWARD_ALL_DONE_BONUS = _env_float('FLATLAND_REWARD_ALL_DONE_BONUS', 100.0)
-REWARD_DEADLOCK_PENALTY = _env_float('FLATLAND_DEADLOCK_PENALTY', 8.0)   # Massiv gesenkt: 100→8, verhindert Reward-Varianz-Explosion
-REWARD_PROGRESS_BONUS = _env_float('FLATLAND_REWARD_PROGRESS_BONUS', 0.05)  # ↑ reward for progress
-FINAL_NOT_SOLVED_PENALTY = _env_float('FLATLAND_FINAL_NOT_SOLVED_PENALTY', 2.0)   # Gesenkt: 10→2, reduziert Varianz der Rückgabe
+REWARD_STEP_PENALTY = _env_float('FLATLAND_REWARD_STEP_PENALTY', -0.01)
+REWARD_DONE_BONUS = _env_float('FLATLAND_REWARD_DONE_BONUS', 1.0)  # Boosted for stronger positive signal
+REWARD_ALL_DONE_BONUS = _env_float('FLATLAND_REWARD_ALL_DONE_BONUS', 10.0)
+REWARD_DEADLOCK_PENALTY = _env_float('FLATLAND_DEADLOCK_PENALTY', -5.0)   # Massiv gesenkt: 100→8, verhindert Reward-Varianz-Explosion
+REWARD_PROGRESS_BONUS = _env_float('FLATLAND_REWARD_PROGRESS_BONUS', 0.01)  # ↑ reward for progress
+FINAL_NOT_SOLVED_PENALTY = _env_float('FLATLAND_FINAL_NOT_SOLVED_PENALTY', -2.0)   # Gesenkt: 10→2, reduziert Varianz der Rückgabe
 
 class FlatlandSparseRewardShaper:
     """Reward shaping for sparse/deadlock-heavy Flatland training.
@@ -219,18 +219,18 @@ class FlatlandSparseRewardShaper:
             if agent.state > TrainState.WAITING:
                 # Apply time pressure for every non-terminal agent so idling is costly.
                 if agent.state < TrainState.DONE:
-                    r -= self.step_penalty
+                    r = self.step_penalty
 
                     if agent.position is not None and agent.direction is not None:
                         current_dist = self._current_agent_distance(env, agent)
                         prev_dist = float(self._prev_distance.get(handle, current_dist))
                         if current_dist < prev_dist:
-                            r += self.progress_bonus
+                            r = self.progress_bonus
                         self._prev_distance[handle] = current_dist
 
                         if deadlock_check_enabled and DecisionPointUtils.is_local_deadlock(raw_env, agent, agent_map):
                             self._current_episode_deadlocks.add(int(handle))
-                            r -= self.deadlock_penalty
+                            r = self.deadlock_penalty
 
                 # +BONUS once when an agent reaches target.
                 if agent.state == TrainState.DONE and not bool(self._rewarded_done.get(handle, False)):
@@ -242,7 +242,7 @@ class FlatlandSparseRewardShaper:
                     r = self.all_done_bonus
 
                 if raw_env._elapsed_steps > (raw_env._max_episode_steps -5):
-                    r = -self.final_not_solved_penalty
+                    r = self.final_not_solved_penalty
 
             shaped[handle] = float(r)
 
@@ -748,7 +748,7 @@ def create_deadlock_avoidance_policy(environment: Environment, action_space: int
         show_debug_plot=show_debug_plot,
     )
 
-def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'multiple') -> LearningPolicy:
+def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'single') -> LearningPolicy:
     """
     Creates  PPO Policy with Temporal Transformer Encoder
     
@@ -857,7 +857,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     return policy
 
 
-def create_ma_ppo_agent_dp_dla(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'multiple') -> LearningPolicy:
+def create_ma_ppo_agent_dp_dla(observation_space: int, action_space: int, eps: float = 0.0, optimizer_mode: str = 'single') -> LearningPolicy:
     policy = create_ma_ppo_agent_dp(
         observation_space,
         action_space,
