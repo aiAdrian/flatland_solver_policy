@@ -140,7 +140,7 @@ class DecisionPointObservation(ObservationBuilder):
         # Lower default for faster smoke tests.
         self.local_search_min_search_depth = 2
 
-        self.local_search_max_nodes = 5   # kleinerer Baum fuer schnellere Observation
+        self.local_search_max_nodes = max(5, int(os.getenv("FLATLAND_LOCAL_SEARCH_MAX_NODES", "8")))
         # Debug-only render overlay. Handle 0 exports pseudo-agent cell sets:
         # 0=all node cells, 1=pre-merge, 2=switch, 3/4=even/odd corridor cells.
         # env.dev_obs_dict is used to export debug overlays without affecting the main observation payload.

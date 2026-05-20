@@ -792,8 +792,8 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     # - prioritize progress/forward flow
     # - keep stronger decision-point exploration to avoid deadlock plateaus
     # - reduce forward-only collapse while preserving throughput bias
-    policy.surrogate_eps_clip = float(np.clip(_env_float('FLATLAND_CLIP_EPS', 0.20), 0.05, 0.40))
-    policy.weight_entropy = float(np.clip(_env_float('FLATLAND_WEIGHT_ENTROPY', 0.18), 0.0, 1.0))  # ↑ mehr Exploration
+    policy.surrogate_eps_clip = float(np.clip(_env_float('FLATLAND_CLIP_EPS', 0.24), 0.05, 0.40))
+    policy.weight_entropy = float(np.clip(_env_float('FLATLAND_WEIGHT_ENTROPY', 0.20), 0.0, 1.0))  # keep action diversity pressure in stalled phases
     policy.reward_scale = float(np.clip(_env_float('FLATLAND_REWARD_SCALE', 0.08), 0.01, 0.20))
     policy.weight_loss = float(np.clip(_env_float('FLATLAND_WEIGHT_VALUE', 0.60), 0.1, 5.0))      # ↓ Critic-Druck reduziert
     policy.stability_guard_start_episode = 1200
@@ -811,17 +811,17 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.actor_lr_min_factor = 0.70
     policy.actor_lr_decay_on_instability = 0.88
     # Stärkere Exploration + Forward-Kollaps brechen
-    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.34), 0.0, 1.0))
-    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.34), 0.0, 1.0))
+    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.36), 0.0, 1.0))
+    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.36), 0.0, 1.0))
     policy.use_decision_eps_floor = str(os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
     # Forward-Kollaps aufbrechen: Diversity früher + stärker erzwingen
     policy.weight_action_diversity = 0.70  # 0.50 → 0.70: stärkere Diversity erzwingen
     policy.action_diversity_gate_threshold = 0.15  # 0.30 → 0.15: früher aktiv
-    policy.forward_prob_soft_max = 0.48   # 0.52 → 0.48: noch weniger Forward-Bias
-    policy.lr_prob_soft_min = 0.16        # 0.08 → 0.16: mehr L/R erzwingen
+    policy.forward_prob_soft_max = 0.45   # tighten forward cap to avoid early forward collapse
+    policy.lr_prob_soft_min = 0.18        # keep stronger left/right pressure at decisions
     policy.idle_prob_soft_max = 0.08
     policy.idle_logit_penalty = 1.20
-    policy.stop_logit_penalty = 0.80
+    policy.stop_logit_penalty = 1.05
     # Auxiliary deadlock supervision can help sparse/deadlock-heavy MAPPO runs
     # when weighted conservatively (PPO/MAPPO practice):
     # PPO paper:   https://arxiv.org/abs/1707.06347

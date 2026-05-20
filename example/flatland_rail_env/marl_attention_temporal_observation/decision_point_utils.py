@@ -89,14 +89,16 @@ class DecisionPointUtils:
         """Return True if simplified recursive deadlock rule is met."""
         if agent.position is None or agent.direction is None:
             return False
-        return DecisionPointUtils.is_local_head_on_deadlock(raw_env, 
+        return DecisionPointUtils._is_local_head_on_deadlock(raw_env, 
                                                             agent.handle, 
                                                             agent.position, 
                                                             agent.direction,
-                                                            agent_map)
+                                                            agent_map,
+                                                            0,
+                                                            32)
         
     @staticmethod
-    def is_local_head_on_deadlock(raw_env, handle, position, direction, agent_map, depth=0, max_depth=32) -> bool:
+    def _is_local_head_on_deadlock(raw_env, handle, position, direction, agent_map, depth, max_depth) -> bool:
         if depth > max_depth:
             return False
         
@@ -117,10 +119,11 @@ class DecisionPointUtils:
                 other_transitions = DecisionPointUtils._rail_get_transitions(raw_env, npos, other_dir)
                 if fast_count_nonzero(other_transitions) == 1:
                     return True
-        return DecisionPointUtils.is_local_head_on_deadlock(raw_env,
-                                                     npos, 
-                                                     ndir, 
-                                                     agent_map, 
-                                                     depth+1,
-                                                     max_depth)
+        return DecisionPointUtils._is_local_head_on_deadlock(raw_env,
+                                                            handle,                                                             
+                                                            npos, 
+                                                            ndir, 
+                                                            agent_map, 
+                                                            depth+1,
+                                                            max_depth)
         
