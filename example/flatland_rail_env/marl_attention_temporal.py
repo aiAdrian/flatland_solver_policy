@@ -600,7 +600,6 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         # applying policy to genuine decision points (SWITCH/MERGING).
         # ================================================================
         cell_type = self._classify_cell_type(agent, self._env.raw_env)
-        
         # FORWARD_ONLY cells: hard-coded MOVE_FORWARD (no policy choice)
         # This avoids training noise on trivial forward-only rail segments.
         if cell_type == 'FORWARD_ONLY':
