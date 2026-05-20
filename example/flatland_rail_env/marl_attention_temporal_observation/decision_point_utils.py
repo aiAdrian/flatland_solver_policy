@@ -3,17 +3,17 @@ from flatland.envs.fast_methods import fast_argmax, fast_count_nonzero
 
 
 class DecisionPointUtils:
-    """Utility functions for deadlock detection and corridor blockage analysis.
+    """Utility functions for simplified deadlock detection.
     
     Centralized deadlock-detection logic used by:
     - DecisionPointObservation (for feature [65])
     - Reward shapers (FlatlandPBRSShaper, SimpleDoneRewardShaper)
     
-    Deadlock Detection Strategy:
-    - Detect confirmed corridor blockage on mandatory track segments
-    - A corridor is "mandatory" when there's only one valid direction (no branching)
-    - If an agent is blocked by another agent in opposite direction, it's a deadlock
-    - Recursive: follow the chain of blocking agents to detect cycles
+        Deadlock Detection Strategy (simplified):
+        - Two agents facing each other on the same edge => deadlock.
+        - If the next cell is occupied by an agent moving in the same direction,
+            recursively check that lead agent.
+        - If the lead agent is deadlocked, followers are also deadlocked.
     """
 
     @staticmethod
@@ -26,6 +26,8 @@ class DecisionPointUtils:
     def _rail_get_transitions(raw_env, pos, direction):
         """Get transitions from rail. Standard signature: get_transitions(row, col, dir)"""
         p = DecisionPointUtils._pos_tuple(pos)
+        if p is None:
+            return (0, 0, 0, 0)
         d = int(direction)
         return raw_env.rail.get_transitions(p[0], p[1], d)
 
@@ -34,6 +36,8 @@ class DecisionPointUtils:
         if agent_map is None:
             return -1
         p = DecisionPointUtils._pos_tuple(pos)
+        if p is None:
+            return -1
         try:
             return int(agent_map[p])
         except Exception:
@@ -66,7 +70,7 @@ class DecisionPointUtils:
         conflict even when direction ids are not numeric opposites.
         """
         my_transitions = DecisionPointUtils._rail_get_transitions(raw_env, my_pos, my_dir)
-        if fast_count_nonzero(my_transitions) != 1:
+        if fast_count_nonzero(my_transitions) > 1:
             return False
         my_next_dir = fast_argmax(my_transitions)
         my_next_pos = get_new_position(my_pos, my_next_dir)
@@ -74,118 +78,49 @@ class DecisionPointUtils:
             return False
 
         other_transitions = DecisionPointUtils._rail_get_transitions(raw_env, other_pos, other_dir)
-        if fast_count_nonzero(other_transitions) != 1:
+        if fast_count_nonzero(other_transitions) > 1:
             return False
         other_next_dir = fast_argmax(other_transitions)
         other_next_pos = get_new_position(other_pos, other_next_dir)
-        return other_next_pos == my_pos
+        return other_next_pos == my_pos and my_next_pos == other_pos
 
     @staticmethod
     def is_local_deadlock(raw_env, agent, agent_map) -> bool:
-        """Check if an agent is in a confirmed deadlock state.
-        
-        Deadlock = confirmed corridor blockage ahead on a mandatory (single-direction) corridor.
-        
-        Args:
-            raw_env: Flatland RailEnv
-            agent: Agent to check (must have position and direction)
-            agent_map: [height, width] array mapping positions to agent handles
-            
-        Returns:
-            True if agent is deadlocked, False otherwise
-        """
+        """Return True if simplified recursive deadlock rule is met."""
         if agent.position is None or agent.direction is None:
             return False
-        return DecisionPointUtils.detect_corridor_blockage(
-            raw_env,
-            agent_map,
-            agent.handle,
-            agent.position,
-            agent.direction,
-            {agent.handle},
-            128,
-            0,
-        ) > 0
-
+        return DecisionPointUtils.is_local_head_on_deadlock(raw_env, 
+                                                            agent.handle, 
+                                                            agent.position, 
+                                                            agent.direction,
+                                                            agent_map)
+        
     @staticmethod
-    def detect_corridor_blockage(raw_env, agent_map, handle, pos, direction, seen_agents, max_steps: int, step_offset: int) -> int:
-        """Recursively detect if corridor is blocked by a cycle of agents.
+    def is_local_head_on_deadlock(raw_env, handle, position, direction, agent_map, depth=0, max_depth=32) -> bool:
+        if depth > max_depth:
+            return False
         
-        Walk forward along a mandatory corridor (single transitions only).
-        If we encounter another agent:
-        - If opposite direction → confirmed blockage (deadlock)
-        - If same direction but trapped → recursively check their corridor
-        - If already visited → cycle detected → deadlock
+        transitions = DecisionPointUtils._rail_get_transitions(raw_env, position, direction)
+        if fast_count_nonzero(transitions) > 1:
+            return False
         
-        Args:
-            raw_env: Flatland RailEnv
-            agent_map: Position→handle mapping
-            handle: Current agent handle
-            pos: Current position tuple (row, col)
-            direction: Current direction [0-3]
-            seen_agents: Set of handles already checked (prevents infinite recursion)
-            max_steps: Maximum corridor length to check (default 128)
-            step_offset: Starting step count
-            
-        Returns:
-            Positive int (step distance) = deadlock confirmed at that distance
-            0 = blocking agent has escape route
-            -1 = safe (no blockage or reached a switch)
-        """
-        s = step_offset
+        ndir = fast_argmax(transitions)
+        npos = get_new_position(position, ndir)
 
-        while s < max_steps:
-            transitions = DecisionPointUtils._rail_get_transitions(raw_env, pos, direction)
-            num_trans = fast_count_nonzero(transitions)
-            if num_trans == 0:
-                return -1
-            if num_trans > 1:
-                # A switch can still resolve the conflict; do not mark as confirmed.
-                return -1
-
-            ndir = fast_argmax(transitions)
-            if not transitions[ndir]:
-                return -1
-
-            npos = get_new_position(pos, ndir)
-            s += 1
-
-            agent_idx = DecisionPointUtils._agent_at_pos(agent_map, npos)
-            if agent_idx != -1 and agent_idx != handle:
-                other = raw_env.agents[agent_idx]
-                other_pos = other.position  
-                other_dir = other.direction  
-                if other_pos is not None:
-                    # Cyclic blocking chain on a mandatory corridor.
-                    if agent_idx in seen_agents:
-                        return s
-                     
-                    if DecisionPointUtils.is_head_on_same_edge(raw_env, pos, direction, other_pos, other_dir):
-                        pass
-                    elif DecisionPointUtils.is_opposite_direction(ndir, other_dir):
-                        other_transitions = DecisionPointUtils._rail_get_transitions(raw_env, other_pos, other_dir)
-                        if fast_count_nonzero(other_transitions) != 1:
-                            # The blocking agent still has a local escape option.
-                            return 0
-
-                    seen_next = set(seen_agents)
-                    seen_next.add(agent_idx)
-                    return DecisionPointUtils.detect_corridor_blockage(
-                        raw_env,
-                        agent_map,
-                        agent_idx,
-                        other_pos,
-                        other_dir,
-                        seen_next,
-                        max_steps,
-                        s,
-                    )
-
-            pos = npos
-            direction = ndir
-
-        # CRITICAL FIX: Timeout on max_steps does NOT mean safe!
-        # If we couldn't complete the analysis, flag as suspicious deadlock.
-        # Was: return 0 (treat as safe) ← risky on long corridors
-        # Now: return s (flag as potential deadlock at distance s)
-        return s if s >= max_steps else -1
+        other_agent_id = DecisionPointUtils._agent_at_pos(agent_map, npos)
+        if handle == other_agent_id:
+            return False 
+        
+        if other_agent_id != -1:
+            other_dir = raw_env.agents[other_agent_id].direction
+            if other_dir != ndir:
+                other_transitions = DecisionPointUtils._rail_get_transitions(raw_env, npos, other_dir)
+                if fast_count_nonzero(other_transitions) == 1:
+                    return True
+        return DecisionPointUtils.is_local_head_on_deadlock(raw_env,
+                                                     npos, 
+                                                     ndir, 
+                                                     agent_map, 
+                                                     depth+1,
+                                                     max_depth)
+        

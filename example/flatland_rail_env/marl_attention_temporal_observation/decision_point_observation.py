@@ -138,9 +138,9 @@ class DecisionPointObservation(ObservationBuilder):
         self.search_depth = max(1, int(search_depth))
         
         # Lower default for faster smoke tests.
-        self.local_search_min_search_depth = 4
+        self.local_search_min_search_depth = 2
 
-        self.local_search_max_nodes = 16   # kleinerer Baum fuer schnellere Observation
+        self.local_search_max_nodes = 5   # kleinerer Baum fuer schnellere Observation
         # Debug-only render overlay. Handle 0 exports pseudo-agent cell sets:
         # 0=all node cells, 1=pre-merge, 2=switch, 3/4=even/odd corridor cells.
         # env.dev_obs_dict is used to export debug overlays without affecting the main observation payload.
@@ -152,7 +152,7 @@ class DecisionPointObservation(ObservationBuilder):
         self.obs_func_profile_interval = 20
         self.obs_func_profile_keep_samples = 512
         self._obs_func_profile_call_idx = 0
-        
+
         self._obs_profile_active = False
         self._obs_func_prof = {}
         for key in (
@@ -1654,15 +1654,3 @@ class DecisionPointObservation(ObservationBuilder):
             best_hint[best_idx] = 1.0
         return best_hint
 
-    def _detect_deadlock(self, handle, pos, direction):
-        """Detect confirmed corridor blockage before the next switch."""
-        return DecisionPointUtils.detect_corridor_blockage(
-            self.env,
-            self.agent_map,
-            handle,
-            pos,
-            direction,
-            {handle},
-            16,
-            0,
-        )

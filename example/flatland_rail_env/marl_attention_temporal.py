@@ -201,15 +201,15 @@ class FlatlandSparseRewardShaper:
 
         shaped = dict(reward)
         agent_map = self._build_agent_map(env)
-        all_agents_done = all(agent.state == TrainState.DONE for agent in raw_env.agents) 
+        all_agents_done = all(agent.state == TrainState.DONE for agent in raw_env.agents)
+        near_step_limit = raw_env._elapsed_steps > (raw_env._max_episode_steps - 5)
         active_on_map_handles = [
             int(a.handle)
             for a in raw_env.agents
             if a.state != TrainState.DONE and a.position is not None and a.direction is not None
         ]
         deadlock_check_enabled = len(active_on_map_handles) > 1
-        if raw_env._elapsed_steps > (raw_env._max_episode_steps -5):
-            all_agents_done = False  # Don't give all-done bonus if episode ended due to step limit.    
+        give_all_done_bonus = all_agents_done and not self._all_done_bonus_given
  
         for handle in env.get_agent_handles():
             agent = raw_env.agents[handle]
@@ -219,34 +219,36 @@ class FlatlandSparseRewardShaper:
             if agent.state > TrainState.WAITING:
                 # Apply time pressure for every non-terminal agent so idling is costly.
                 if agent.state < TrainState.DONE:
-                    r = self.step_penalty
+                    r += self.step_penalty
 
                     if agent.position is not None and agent.direction is not None:
                         current_dist = self._current_agent_distance(env, agent)
                         prev_dist = float(self._prev_distance.get(handle, current_dist))
                         if current_dist < prev_dist:
-                            r = self.progress_bonus
+                            r += self.progress_bonus
                         self._prev_distance[handle] = current_dist
 
                         if deadlock_check_enabled and DecisionPointUtils.is_local_deadlock(raw_env, agent, agent_map):
                             self._current_episode_deadlocks.add(int(handle))
-                            r = self.deadlock_penalty
+                            r += self.deadlock_penalty
 
                 # +BONUS once when an agent reaches target.
                 if agent.state == TrainState.DONE and not bool(self._rewarded_done.get(handle, False)):
-                    r = self.done_bonus
+                    r += self.done_bonus
                     self._rewarded_done[handle] = True
  
                 # If all agents are done, grant one-time team bonus to each agent.
-                if all_agents_done and not self._all_done_bonus_given:
-                    r = self.all_done_bonus
+                if give_all_done_bonus:
+                    r += self.all_done_bonus
 
-                if raw_env._elapsed_steps > (raw_env._max_episode_steps -5):
-                    r = self.final_not_solved_penalty
+                # Final not solved penalty only when the episode is near step limit
+                # and not fully solved. Keep all-done bonus intact in solved episodes.
+                if near_step_limit and not all_agents_done and agent.state < TrainState.DONE:
+                    r += self.final_not_solved_penalty
 
             shaped[handle] = float(r)
 
-        if all_agents_done and not self._all_done_bonus_given:
+        if give_all_done_bonus:
             self._all_done_bonus_given = True
 
         if terminal.get('__all__', False):
@@ -719,7 +721,7 @@ default_max_batches = 8
 default_memory_episodes = 10
 
 # Recommended default: stronger PPO update to avoid near-zero policy drift.
-default_k_epochs = 2
+default_k_epochs = 5
 
 # NOTE: ppo_param will be REBUILT after CLI args parsing (in main section)
 # This version is only for non-main use (imports, testing)
@@ -809,25 +811,29 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.actor_lr_min_factor = 0.70
     policy.actor_lr_decay_on_instability = 0.88
     # Stärkere Exploration + Forward-Kollaps brechen
-    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.28), 0.0, 1.0))
-    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.28), 0.0, 1.0))
+    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.34), 0.0, 1.0))
+    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.34), 0.0, 1.0))
     policy.use_decision_eps_floor = str(os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
     # Forward-Kollaps aufbrechen: Diversity früher + stärker erzwingen
     policy.weight_action_diversity = 0.70  # 0.50 → 0.70: stärkere Diversity erzwingen
     policy.action_diversity_gate_threshold = 0.15  # 0.30 → 0.15: früher aktiv
     policy.forward_prob_soft_max = 0.48   # 0.52 → 0.48: noch weniger Forward-Bias
-    policy.lr_prob_soft_min = 0.12        # 0.08 → 0.12: mehr L/R erzwingen
+    policy.lr_prob_soft_min = 0.16        # 0.08 → 0.16: mehr L/R erzwingen
     policy.idle_prob_soft_max = 0.08
     policy.idle_logit_penalty = 1.20
     policy.stop_logit_penalty = 0.80
-    # AuxDL deaktivieren: konvergiert nicht, stört Gradienten
+    # Auxiliary deadlock supervision can help sparse/deadlock-heavy MAPPO runs
+    # when weighted conservatively (PPO/MAPPO practice):
+    # PPO paper:   https://arxiv.org/abs/1707.06347
+    # MAPPO paper: https://arxiv.org/abs/2103.01955
+    aux_w = float(np.clip(_env_float('FLATLAND_WEIGHT_AUX_DEADLOCK', 0.12), 0.0, 1.0))
     for _aux_field in ('weight_aux_deadlock', 'weight_aux_dl'):
         if hasattr(policy, _aux_field):
-            setattr(policy, _aux_field, 0.0)
+            setattr(policy, _aux_field, aux_w)
 
     # SP-Prior: für 5-agent weniger dominant, damit Policy echte Routing-Entscheidungen lernt
-    policy.sp_hint_route_prior_prob = float(np.clip(_env_float('FLATLAND_SP_HINT_ROUTE_PRIOR_PROB', 0.45), 0.0, 1.0))  # 0.65 → 0.45
-    policy.sp_hint_logit_bonus = float(np.clip(_env_float('FLATLAND_SP_HINT_LOGIT_BONUS', 0.80), 0.0, 4.0))           # 1.25 → 0.80
+    policy.sp_hint_route_prior_prob = float(np.clip(_env_float('FLATLAND_SP_HINT_ROUTE_PRIOR_PROB', 0.30), 0.0, 1.0))  # 0.65 → 0.30
+    policy.sp_hint_logit_bonus = float(np.clip(_env_float('FLATLAND_SP_HINT_LOGIT_BONUS', 0.55), 0.0, 4.0))           # 1.25 → 0.55
 
     # For single-agent core runs, prioritize fast convergence over exploration.
     if simplified_n == 1:
@@ -845,7 +851,8 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         f"use_decision_eps_floor={bool(policy.use_decision_eps_floor)}, "
         f"weight_entropy={policy.weight_entropy:.3f}, "
         f"clip_eps={policy.surrogate_eps_clip:.3f}, "
-        f"weight_value={policy.weight_loss:.3f}"
+        f"weight_value={policy.weight_loss:.3f}, "
+        f"weight_aux_deadlock={float(getattr(policy, 'weight_aux_deadlock', 0.0)):.3f}"
     )
     print(
         f"   - route_prior: sp_prob={policy.sp_hint_route_prior_prob:.2f}, "

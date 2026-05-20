@@ -1,4 +1,5 @@
 import copy
+import logging
 import math
 import os
 import time
@@ -14,6 +15,8 @@ from torch.nn.utils.rnn import pack_padded_sequence
 
 from policy.learning_policy.learning_policy import LearningPolicy
 from marl_attention_temporal_observation.decision_point_observation import DecisionPointObservation
+
+logger = logging.getLogger(__name__)
 
 
 def _load_state_dict_compatible(module: nn.Module, state_dict: Dict[str, torch.Tensor]):
@@ -387,7 +390,7 @@ class TreePayloadEncoder(nn.Module):
         
         Fallback-Strategie:
         1. Nutze depth_norm aus Node (falls vorhanden)
-        2. Fallback: Nutze depth (raw depth count)
+        2. Fallback: Nutze depth (raw depth value)
         3. Fallback: Nutze Node-Typ (INIT=0, SWITCH=1, PRE_M=2) → heuristische Tiefe
         4. Fallback: Nutze Node-Index (Node 0 = root, später = tiffer)
         
@@ -706,7 +709,7 @@ class TemporalTransformerEncoder(nn.Module):
             batch_first=True
         )
         
-        # Positional Encoding for timesteps (differentiates t-2 vs t-1 vs t)
+        # Positional Encoding for timesteps (differentiates timesteps)
         self.temporal_pe = nn.Parameter(
             torch.randn(temporal_window, hidden_dim) * 0.01
         )
@@ -1675,8 +1678,14 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 self.use_spatial_attention = False
                 print("   - CORE override: use_spatial_attention=False")
         
-        # Optional auxiliary losses (AuxDL disabled entirely: does not converge, noises gradient)
-        self.weight_aux_deadlock = 0.0
+        # Optional auxiliary losses.
+        # References:
+        #   PPO:   https://arxiv.org/abs/1707.06347
+        #   MAPPO: https://arxiv.org/abs/2103.01955
+        # Keep AuxDL configurable; in sparse/deadlock-heavy regimes it can improve
+        # representation shaping when weighted conservatively.
+        aux_default = 0.0 if self.simplified_mode > 0 else 0.12
+        self.weight_aux_deadlock = float(np.clip(float(os.getenv('FLATLAND_WEIGHT_AUX_DEADLOCK', str(aux_default))), 0.0, 1.0))
         self.weight_action_diversity = 0.0 if self.simplified_mode > 0 else 0.07
         self.weight_comm = 0.0 if self.simplified_mode > 0 else 3.0e-4
         
@@ -1925,6 +1934,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             'adv_mean': [], 'adv_std': [], 'grad_norm': [], 'grad_norm_post': [],
             'tree_grad_actor': [], 'tree_grad_critic': [],
             'tree_payload_grad_actor': [], 'tree_payload_grad_critic': [],
+            'temporal_grad_actor': [], 'temporal_grad_critic': [],
+            'spatial_grad_actor': [], 'spatial_grad_critic': [],
+            'comm_grad_actor': [], 'comm_grad_critic': [],
             'ret_min': [], 'ret_max': [],
             'comm_loss': [], 'action_div_loss': [], 'action_div_gate_ratio': [], 'total_loss': [],
             'action_hist': [],
@@ -2081,7 +2093,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # Narrow PPO trust region in late training to avoid destructive policy jumps.
         if self.episode_count < 200:
             # Early phase needs stronger actor movement to escape deadlock basins.
-            return min(0.18, float(self.surrogate_eps_clip))
+            return min(0.22, float(self.surrogate_eps_clip))
         if self.episode_count < self.stability_guard_start_episode:
             return float(self.surrogate_eps_clip)
         if self.episode_count >= self.stability_guard_hard_episode:
@@ -2089,10 +2101,13 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         return max(0.10, self.surrogate_eps_clip * 0.75)
 
     def _effective_k_epochs(self) -> int:
+        # MAPPO/PPO implementations typically benefit from modest sample reuse
+        # (multiple minibatch epochs) in cooperative settings:
+        # https://arxiv.org/abs/2103.01955 and https://arxiv.org/abs/1707.06347
         if self.episode_count < 200:
-            return min(2, int(self.K_epoch))
+            return min(3, int(self.K_epoch))
         if self.episode_count < 300:
-            return min(2, int(self.K_epoch))
+            return min(3, int(self.K_epoch))
         if self.episode_count >= self.stability_guard_hard_episode:
             return 1
         if self.episode_count >= self.stability_guard_start_episode:
@@ -2809,9 +2824,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     )
                 else:
                     aux_deadlock_loss_component = torch.zeros((), device=self.device)
+                    aux_targets = torch.zeros_like(batch_aux_deadlock)
                 comm_loss_component = self.encoder_actor.last_comm_reg + self.encoder_critic.last_comm_reg
                 ratio_mean = ratios.mean().item()
                 approx_kl = torch.abs((batch_old_logprobs - logprobs).mean()).item()
+                aux_target_mean = float(aux_targets.mean().detach().item()) if aux_targets.numel() > 0 else 0.0
 
                 # ========================================================================
                 # WEIGHT SCHEDULING: In SIMPLIFIED_MODE, use fixed weights only
@@ -2822,11 +2839,22 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     value_weight_eff = self.weight_loss
                     entropy_weight_eff = self.weight_entropy
                     comm_weight_eff = 0.0
+                    aux_weight_eff = float(self.weight_aux_deadlock)
                 else:
                     # COMPLEX MODE: Dynamic weights based on KL, ratio, entropy
                     gate_mean = (self.encoder_actor.last_comm_gate_mean + self.encoder_critic.last_comm_gate_mean) / 2.0
                     comm_boost = max(0.0, (gate_mean - self.comm_gate_target) / max(self.comm_gate_target, 1e-6))
                     comm_weight_eff = self.weight_comm * comm_progress * (1.0 + min(comm_boost, 2.0))
+                    aux_weight_eff = float(self.weight_aux_deadlock)
+
+                    # Auxiliary deadlock target can be noisy in early training.
+                    # Ramp it in smoothly and auto-dampen when BCE remains high.
+                    if self.episode_count < 120:
+                        aux_weight_eff *= 0.35
+                    elif self.episode_count < 220:
+                        aux_weight_eff *= 0.65
+                    if float(aux_deadlock_loss_component.detach().item()) > 1.20:
+                        aux_weight_eff *= 0.50
 
                     policy_weight_eff = self.weight_policy
                     entropy_weight_eff = self.weight_entropy
@@ -2886,7 +2914,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     + value_weight_eff * value_loss_component \
                     + entropy_weight_eff * entropy_loss_component \
                     + self.weight_action_diversity * action_diversity_loss_component \
-                    + self.weight_aux_deadlock * aux_deadlock_loss_component \
+                    + aux_weight_eff * aux_deadlock_loss_component \
                     + comm_weight_eff * comm_loss_component
                 if profile_enabled:
                     _add_t('forward_loss', _tic() - t0)
@@ -3004,10 +3032,29 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                         sq += float(torch.sum(g * g).item())
                     return float(math.sqrt(max(sq, 0.0)))
 
+                def _named_grad_norm(module: nn.Module, prefixes: Tuple[str, ...]) -> float:
+                    sq = 0.0
+                    for name, p in module.named_parameters():
+                        if not any(name.startswith(pref) for pref in prefixes):
+                            continue
+                        if p.grad is None:
+                            continue
+                        g = p.grad.detach()
+                        if torch.isnan(g).any() or torch.isinf(g).any():
+                            continue
+                        sq += float(torch.sum(g * g).item())
+                    return float(math.sqrt(max(sq, 0.0)))
+
                 tree_grad_actor = 0.0
                 tree_grad_critic = 0.0
                 tree_payload_grad_actor = 0.0
                 tree_payload_grad_critic = 0.0
+                temporal_grad_actor = 0.0
+                temporal_grad_critic = 0.0
+                spatial_grad_actor = 0.0
+                spatial_grad_critic = 0.0
+                comm_grad_actor = 0.0
+                comm_grad_critic = 0.0
                 if hasattr(self.encoder_actor, 'tree_encoder'):
                     tree_grad_actor = _module_grad_norm(self.encoder_actor.tree_encoder)
                 if hasattr(self.encoder_critic, 'tree_encoder'):
@@ -3016,6 +3063,18 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     tree_payload_grad_actor = _module_grad_norm(self.encoder_actor.tree_payload_encoder)
                 if hasattr(self.encoder_critic, 'tree_payload_encoder'):
                     tree_payload_grad_critic = _module_grad_norm(self.encoder_critic.tree_payload_encoder)
+                temporal_grad_actor = _named_grad_norm(self.encoder_actor, ('temporal_attention', 'temporal_lstm', 'temporal_pe'))
+                temporal_grad_critic = _named_grad_norm(self.encoder_critic, ('temporal_attention', 'temporal_lstm', 'temporal_pe'))
+                spatial_grad_actor = _named_grad_norm(self.encoder_actor, ('spatial_attention',))
+                spatial_grad_critic = _named_grad_norm(self.encoder_critic, ('spatial_attention',))
+                comm_grad_actor = _named_grad_norm(self.encoder_actor, (
+                    'comm_msg_proj', 'comm_sender_gate', 'comm_sender_key',
+                    'comm_receiver_query', 'comm_intent_head', 'comm_intent_embedding', 'comm_norm'
+                ))
+                comm_grad_critic = _named_grad_norm(self.encoder_critic, (
+                    'comm_msg_proj', 'comm_sender_gate', 'comm_sender_key',
+                    'comm_receiver_query', 'comm_intent_head', 'comm_intent_embedding', 'comm_norm'
+                ))
                 
                 # Check for NaN in gradients after clipping
                 has_nan_grad = False
@@ -3062,6 +3121,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 self._stat_buf['tree_grad_critic'].append(tree_grad_critic)
                 self._stat_buf['tree_payload_grad_actor'].append(tree_payload_grad_actor)
                 self._stat_buf['tree_payload_grad_critic'].append(tree_payload_grad_critic)
+                self._stat_buf['temporal_grad_actor'].append(temporal_grad_actor)
+                self._stat_buf['temporal_grad_critic'].append(temporal_grad_critic)
+                self._stat_buf['spatial_grad_actor'].append(spatial_grad_actor)
+                self._stat_buf['spatial_grad_critic'].append(spatial_grad_critic)
+                self._stat_buf['comm_grad_actor'].append(comm_grad_actor)
+                self._stat_buf['comm_grad_critic'].append(comm_grad_critic)
                 self._stat_buf['comm_loss'].append(comm_loss_component.item())
                 self._stat_buf['action_div_loss'].append(action_diversity_loss_component.item())
                 self._stat_buf['action_div_gate_ratio'].append(action_diversity_gate_ratio)
@@ -3105,6 +3170,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     'intent_yellow': yield_mean if valid_cnt > 0 else 0.0,
                     'comm_dropout': self.encoder_actor.comm_dropout.p,
                     'comm_weight': comm_weight_eff,
+                    'aux_weight_eff': aux_weight_eff,
+                    'aux_target_mean': aux_target_mean,
                     'policy_weight': policy_weight_eff,
                     'action_hist': batch_action_hist.numpy() if hasattr(batch_action_hist, 'numpy') else np.array(batch_action_hist),
                     'action_hist_decision': batch_action_hist_decision.numpy() if hasattr(batch_action_hist_decision, 'numpy') else np.array(batch_action_hist_decision),
@@ -3698,6 +3765,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         tg_c = float(np.mean(sb['tree_grad_critic'])) if sb['tree_grad_critic'] else 0.0
         tpg_a = float(np.mean(sb['tree_payload_grad_actor'])) if sb['tree_payload_grad_actor'] else 0.0
         tpg_c = float(np.mean(sb['tree_payload_grad_critic'])) if sb['tree_payload_grad_critic'] else 0.0
+        tmp_a = float(np.mean(sb['temporal_grad_actor'])) if sb.get('temporal_grad_actor') else 0.0
+        tmp_c = float(np.mean(sb['temporal_grad_critic'])) if sb.get('temporal_grad_critic') else 0.0
+        sp_a = float(np.mean(sb['spatial_grad_actor'])) if sb.get('spatial_grad_actor') else 0.0
+        sp_c = float(np.mean(sb['spatial_grad_critic'])) if sb.get('spatial_grad_critic') else 0.0
+        cm_a = float(np.mean(sb['comm_grad_actor'])) if sb.get('comm_grad_actor') else 0.0
+        cm_c = float(np.mean(sb['comm_grad_critic'])) if sb.get('comm_grad_critic') else 0.0
 
         tree_rows = [
             (
@@ -3736,6 +3809,18 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
              "learning signal" if tpg_a > 1e-8 else "near-zero updates"),
             ("Critic payload grad-norm", tpg_c, "", "OK" if tpg_c > 1e-8 else "WARN",
              "learning signal" if tpg_c > 1e-8 else "near-zero updates"),
+              ("Actor temporal grad-norm", tmp_a, "", "OK" if tmp_a > 1e-8 else "WARN",
+               "learning signal" if tmp_a > 1e-8 else "near-zero updates"),
+              ("Critic temporal grad-norm", tmp_c, "", "OK" if tmp_c > 1e-8 else "WARN",
+               "learning signal" if tmp_c > 1e-8 else "near-zero updates"),
+              ("Actor spatial grad-norm", sp_a, "", "OK" if (not bool(getattr(self, 'use_spatial_attention', True)) or sp_a > 1e-8) else "WARN",
+               "spatial disabled" if not bool(getattr(self, 'use_spatial_attention', True)) else ("learning signal" if sp_a > 1e-8 else "near-zero updates")),
+              ("Critic spatial grad-norm", sp_c, "", "OK" if (not bool(getattr(self, 'use_spatial_attention', True)) or sp_c > 1e-8) else "WARN",
+               "spatial disabled" if not bool(getattr(self, 'use_spatial_attention', True)) else ("learning signal" if sp_c > 1e-8 else "near-zero updates")),
+              ("Actor comm grad-norm", cm_a, "", "OK" if (not bool(getattr(self, 'use_spatial_attention', True)) or cm_a > 1e-8) else "WARN",
+               "comm effectively off" if not bool(getattr(self, 'use_spatial_attention', True)) else ("learning signal" if cm_a > 1e-8 else "near-zero updates")),
+              ("Critic comm grad-norm", cm_c, "", "OK" if (not bool(getattr(self, 'use_spatial_attention', True)) or cm_c > 1e-8) else "WARN",
+               "comm effectively off" if not bool(getattr(self, 'use_spatial_attention', True)) else ("learning signal" if cm_c > 1e-8 else "near-zero updates")),
         ]
 
         print(f"  +{'─'*28}+{'─'*14}+{'─'*8}+{'─'*6}+{'─'*26}+")
@@ -3847,6 +3932,16 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     node_mean,
                     node_std,
                 )
+                dead_node = [
+                    TreePayloadEncoder.NODE_FEATURE_NAMES[i]
+                    for i in range(TreePayloadEncoder.NODE_DIM)
+                    if float(node_std[i]) < 1e-6
+                ]
+                if dead_node:
+                    tree_issues.append(
+                        f"Node features with ~zero variance: {', '.join(dead_node[:8])}"
+                        f"{' ...' if len(dead_node) > 8 else ''}"
+                    )
             else:
                 print("\n  Encoded TREE NODE feature stats: no valid node features observed.")
 
@@ -3860,6 +3955,16 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     edge_mean,
                     edge_std,
                 )
+                dead_edge = [
+                    TreePayloadEncoder.EDGE_FEATURE_NAMES[i]
+                    for i in range(TreePayloadEncoder.EDGE_DIM)
+                    if float(edge_std[i]) < 1e-6
+                ]
+                if dead_edge:
+                    tree_issues.append(
+                        f"Edge features with ~zero variance: {', '.join(dead_edge[:8])}"
+                        f"{' ...' if len(dead_edge) > 8 else ''}"
+                    )
             else:
                 print("\n  Encoded TREE EDGE feature stats: no valid edge features observed.")
 
@@ -4053,8 +4158,6 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             suggestions.append("2. Entropie-Kollaps: Idle/Stop weniger hart bestrafen und Exploration offen halten")
         if gn_m > 5.0:
             suggestions.append("3. Gradienten zu hoch: `learning_rate * 0.75` und `reward_scale -0.01`")
-        if vl_m > 0.80:
-            suggestions.append("4. Critic zu hoch: Reward-Skala klein halten und frischen Neustart statt Continue bevorzugen")
         if not suggestions:
             suggestions.append("1. Keine akute Anpassung noetig, weitertrainieren und DONE/Deadlocks beobachten")
 
