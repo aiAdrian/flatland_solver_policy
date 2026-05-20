@@ -751,7 +751,7 @@ default_max_batches = 10
 default_memory_episodes = 50
 
 # Recommended default: stronger PPO update to avoid near-zero policy drift.
-default_k_epochs = 5
+default_k_epochs = 3
 
 # NOTE: ppo_param will be REBUILT after CLI args parsing (in main section)
 # This version is only for non-main use (imports, testing)
@@ -810,7 +810,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     if use_scalable_simple:
         effective_ppo_param = ppo_param._replace(encoder_shared=True, use_spatial_attention=False)
 
-    train_frequency_default = int(np.clip(_env_int('FLATLAND_TRAIN_FREQUENCY', 4), 1, 100))
+    train_frequency_default = int(np.clip(_env_int('FLATLAND_TRAIN_FREQUENCY', 10), 1, 100))
 
     policy = MARL_ATT_DecisionPointPolicy(
         observation_space,
