@@ -31,6 +31,12 @@
 #     execution.
 # [7] Ng, Harada, Russell (1999). "Policy Invariance Under Reward
 #     Transformations" (PBRS). ICML.
+# [8] MAPPO official GitHub repository (reference implementation):
+#     https://github.com/marlbenchmark/on-policy
+# [9] CleanRL GitHub repository (PPO implementation details and baselines):
+#     https://github.com/vwxyzjn/cleanrl
+# [10] Flatland-RL GitHub repository (environment and task domain codebase):
+#      https://github.com/flatland-association/flatland-rl
 # =============================================================================
 # USAGE INSTRUCTIONS
 # =============================================================================
@@ -219,32 +225,32 @@ class FlatlandSparseRewardShaper:
             if agent.state > TrainState.WAITING:
                 # Apply time pressure for every non-terminal agent so idling is costly.
                 if agent.state < TrainState.DONE:
-                    r += self.step_penalty
+                    r = self.step_penalty
 
                     if agent.position is not None and agent.direction is not None:
                         current_dist = self._current_agent_distance(env, agent)
                         prev_dist = float(self._prev_distance.get(handle, current_dist))
                         if current_dist < prev_dist:
-                            r += self.progress_bonus
+                            r = self.progress_bonus
                         self._prev_distance[handle] = current_dist
 
                         if deadlock_check_enabled and DecisionPointUtils.is_local_deadlock(raw_env, agent, agent_map):
                             self._current_episode_deadlocks.add(int(handle))
-                            r += self.deadlock_penalty
+                            r = self.deadlock_penalty
 
                 # +BONUS once when an agent reaches target.
                 if agent.state == TrainState.DONE and not bool(self._rewarded_done.get(handle, False)):
-                    r += self.done_bonus
+                    r = self.done_bonus
                     self._rewarded_done[handle] = True
  
                 # If all agents are done, grant one-time team bonus to each agent.
                 if give_all_done_bonus:
-                    r += self.all_done_bonus
+                    r = self.all_done_bonus
 
                 # Final not solved penalty only when the episode is near step limit
                 # and not fully solved. Keep all-done bonus intact in solved episodes.
                 if near_step_limit and not all_agents_done and agent.state < TrainState.DONE:
-                    r += self.final_not_solved_penalty
+                    r = self.final_not_solved_penalty
 
             shaped[handle] = float(r)
 
@@ -297,12 +303,12 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         # (sp_left/sp_forward/sp_right). This keeps navigation simple and
         # stable while still allowing PPO exploration around merges/switches.
         self.sp_hint_route_prior_prob = float(np.clip(
-            _env_float('FLATLAND_SP_HINT_ROUTE_PRIOR_PROB', 0.65),
+            _env_float('FLATLAND_SP_HINT_ROUTE_PRIOR_PROB', 0.35),
             0.0,
             1.0,
         ))
         self.sp_hint_logit_bonus = float(np.clip(
-            _env_float('FLATLAND_SP_HINT_LOGIT_BONUS', 1.25),
+            _env_float('FLATLAND_SP_HINT_LOGIT_BONUS', 0.35),
             0.0,
             4.0,
         ))
@@ -313,8 +319,16 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         return self.__class__.__name__
 
 
-    def step(self, handle, state, action, reward, next_state, done):
-        super(MARL_ATT_DecisionPointPolicy, self).step(handle, state, action, reward, next_state, done)
+    def step(self, handle, state, action, reward, next_state, done, agent_finished=None):
+        super(MARL_ATT_DecisionPointPolicy, self).step(
+            handle,
+            state,
+            action,
+            reward,
+            next_state,
+            done,
+            agent_finished=agent_finished,
+        )
         if self.use_deadlock_avoidance_policy and self.deadlock_avoidance_policy is not None:
             self.deadlock_avoidance_policy.step(handle, state, action, reward, next_state, done)
 
@@ -622,10 +636,10 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 # =============================================================================
 
 # Temporal context configuration.
-# Learning-first default: temporal context is disabled unless explicitly enabled.
-# Set FLATLAND_DISABLE_TEMPORAL_ATTENTION=0 to enable temporal context again.
+# Full baseline default: temporal context enabled (window from env, default 3).
+# Set FLATLAND_DISABLE_TEMPORAL_ATTENTION=1 to force stateless mode.
 _DISABLE_TEMPORAL_ATTENTION = str(
-    os.getenv('FLATLAND_DISABLE_TEMPORAL_ATTENTION', '1')
+    os.getenv('FLATLAND_DISABLE_TEMPORAL_ATTENTION', '0')
 ).strip().lower() in ('1', 'true', 'yes', 'on')
 
 TEMPORAL_WINDOW = 1 if _DISABLE_TEMPORAL_ATTENTION else max(
@@ -639,16 +653,17 @@ TEMPORAL_WINDOW = 1 if _DISABLE_TEMPORAL_ATTENTION else max(
 # ========================================================================
 # DYNAMIC AGENT COUNT CONFIG: Override via FLATLAND_SIMPLIFIED_MAPPO env var
 # ========================================================================
-# FLATLAND_SIMPLIFIED_MAPPO=0           → Full Mode (standard 5-agent config)
-# FLATLAND_SIMPLIFIED_MAPPO=N           → Core PPO with N agents
-# FLATLAND_SIMPLIFIED_MAPPO=1,5,10,100  → Core PPO sweep in one run
+# FLATLAND_SIMPLIFIED_MAPPO=0           → standard 5-agent config
+# FLATLAND_SIMPLIFIED_MAPPO=N           → fixed N-agent config
+# FLATLAND_SIMPLIFIED_MAPPO=1,5,10,100  → agent-count sweep in one run
+# NOTE: Core/Full mode is configured separately via FLATLAND_CORE_PPO_MODE.
 # ========================================================================
 simplified_agent_count = os.getenv('FLATLAND_SIMPLIFIED_MAPPO', '0').strip()
 try:
     _simplified_n = int(simplified_agent_count)
     if _simplified_n > 0:
         PURE_MARL_AGENT_COUNTS = [_simplified_n]
-        print(f"[Config] CORE PPO MODE: {_simplified_n} agent(s) (from FLATLAND_SIMPLIFIED_MAPPO)")
+        print(f"[Config] AGENT COUNT OVERRIDE: {_simplified_n} agent(s) (from FLATLAND_SIMPLIFIED_MAPPO)")
     else:
         PURE_MARL_AGENT_COUNTS = [5]  # Default full mode
 except ValueError:
@@ -663,7 +678,7 @@ except ValueError:
             continue
     if parsed:
         PURE_MARL_AGENT_COUNTS = sorted(set(parsed))
-        print(f"[Config] CORE PPO SWEEP MODE: agents={PURE_MARL_AGENT_COUNTS} (from FLATLAND_SIMPLIFIED_MAPPO)")
+        print(f"[Config] AGENT COUNT SWEEP: agents={PURE_MARL_AGENT_COUNTS} (from FLATLAND_SIMPLIFIED_MAPPO)")
     else:
         PURE_MARL_AGENT_COUNTS = [5]  # Default full mode
 
@@ -722,12 +737,18 @@ def create_temporal_obs_builder_object(debug: bool = False):
     return obs
 
 
+
 # Central speed profiles
 default_hidden_size = 64
-default_batch_size = 256
-default_batch_fraction = 0.8
-default_max_batches = 8
-default_memory_episodes = 10
+# PPO update budget: `batch_size * max_batches_per_training`.
+# This keeps replay sampling independent of total buffer size.
+# References: PPO (https://arxiv.org/abs/1707.06347), MAPPO (https://arxiv.org/abs/2103.01955),
+# and implementation guidance (https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/).
+default_batch_size = 128
+default_batch_fraction = 1.0
+default_max_batches = 10
+# Smaller on-policy window keeps updates fresher in sparse-done phases.
+default_memory_episodes = 50
 
 # Recommended default: stronger PPO update to avoid near-zero policy drift.
 default_k_epochs = 5
@@ -782,10 +803,14 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     try:
         simplified_n = int(simplified_val)
     except ValueError:
-        simplified_n = 1 if simplified_val.lower() in ('1', 'true', 'yes', 'on') else 0
-    use_scalable_simple = simplified_n > 0 and str(os.getenv('FLATLAND_SCALABLE_SIMPLE_PROFILE', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+        simplified_n = 0
+
+    core_mode_enabled = str(os.getenv('FLATLAND_CORE_PPO_MODE', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
+    use_scalable_simple = core_mode_enabled and str(os.getenv('FLATLAND_SCALABLE_SIMPLE_PROFILE', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
     if use_scalable_simple:
         effective_ppo_param = ppo_param._replace(encoder_shared=True, use_spatial_attention=False)
+
+    train_frequency_default = int(np.clip(_env_int('FLATLAND_TRAIN_FREQUENCY', 4), 1, 100))
 
     policy = MARL_ATT_DecisionPointPolicy(
         observation_space,
@@ -793,59 +818,72 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         effective_ppo_param,
         show_pre_train_debug_msg=True,
         show_progress_bar=True,
-        train_frequency=10,
+        train_frequency=train_frequency_default,
         optimizer_mode=optimizer_mode,
         use_action_masking=str(os.getenv('FLATLAND_USE_ACTION_MASKING', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
     )
-    # Offensive baseline (default):
-    # - prioritize progress/forward flow
-    # - keep stronger decision-point exploration to avoid deadlock plateaus
-    # - reduce forward-only collapse while preserving throughput bias
-    policy.surrogate_eps_clip = float(np.clip(_env_float('FLATLAND_CLIP_EPS', 0.26), 0.05, 0.40))
-    policy.weight_entropy = float(np.clip(_env_float('FLATLAND_WEIGHT_ENTROPY', 0.24), 0.0, 1.0))
-    policy.reward_scale = float(np.clip(_env_float('FLATLAND_REWARD_SCALE', 0.06), 0.01, 0.20))
-    policy.weight_loss = float(np.clip(_env_float('FLATLAND_WEIGHT_VALUE', 0.60), 0.1, 5.0))      # ↓ Critic-Druck reduziert
-    policy.stability_guard_start_episode = 1200
-    policy.stability_guard_hard_episode = 2600
-    policy.ppo_target_kl = 0.040
-    policy.ppo_max_kl = 0.080
-    policy.ppo_emergency_kl = 0.16
-    policy.ppo_emergency_kl_hard = 0.24
-    policy.ratio_guard_soft = 1.14
-    policy.ratio_guard_soft_low = 0.86
+    # Full baseline (MAPPO/PPO-aligned) with references:
+    # - PPO:   https://arxiv.org/abs/1707.06347
+    # - MAPPO: https://arxiv.org/abs/2103.01955
+    # - Impl details: https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
+    # - MAPPO code: https://github.com/marlbenchmark/on-policy
+    # - CleanRL PPO code: https://github.com/vwxyzjn/cleanrl
+    #
+    # Design intent:
+    # - Keep PPO update signal dominant (reduce auxiliary over-coupling).
+    # - Encourage exploration at decision points without forcing high route prior.
+    # - Avoid over-aggressive heuristic/offensive defaults in early curriculum.
+    policy.surrogate_eps_clip = float(np.clip(_env_float('FLATLAND_CLIP_EPS', 0.20), 0.05, 0.40))
+    policy.weight_entropy = float(np.clip(_env_float('FLATLAND_WEIGHT_ENTROPY', 0.02), 0.0, 1.0))
+    policy.reward_scale = float(np.clip(_env_float('FLATLAND_REWARD_SCALE', 0.12), 0.01, 0.25))
+    policy.weight_loss = float(np.clip(_env_float('FLATLAND_WEIGHT_VALUE', 1.00), 0.1, 5.0))
+    policy.stability_guard_start_episode = 900
+    policy.stability_guard_hard_episode = 1800
+    policy.ppo_target_kl = 0.020
+    policy.ppo_max_kl = 0.050
+    policy.ppo_emergency_kl = 0.12
+    policy.ppo_emergency_kl_hard = 0.25
+    policy.ratio_guard_soft = 1.15
+    policy.ratio_guard_soft_low = 0.85
     policy.ratio_guard_hard = 1.22
-    policy.ratio_guard_hard_low = 0.78
+    policy.ratio_guard_hard_low = 0.75
     policy.max_hard_batches_before_lr_decay = 4
     policy.hard_spike_streak_limit = 4
     policy.actor_lr_min_factor = 0.70
     policy.actor_lr_decay_on_instability = 0.88
-    # Stärkere Exploration + Forward-Kollaps brechen
-    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.45), 0.0, 1.0))
-    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.45), 0.0, 1.0))
+    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.10), 0.0, 1.0))
+    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.08), 0.0, 1.0))
     policy.use_decision_eps_floor = str(os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
-    # Forward-Kollaps aufbrechen: Diversity früher + stärker erzwingen
-    policy.weight_action_diversity = 0.70  # 0.50 → 0.70: stärkere Diversity erzwingen
-    policy.action_diversity_gate_threshold = 0.15  # 0.30 → 0.15: früher aktiv
-    policy.forward_prob_soft_max = float(np.clip(_env_float('FLATLAND_FORWARD_PROB_SOFT_MAX', 0.42), 0.20, 0.80))
-    policy.lr_prob_soft_min = float(np.clip(_env_float('FLATLAND_LR_PROB_SOFT_MIN', 0.20), 0.05, 0.40))
-    policy.idle_prob_soft_max = float(np.clip(_env_float('FLATLAND_IDLE_PROB_SOFT_MAX', 0.06), 0.0, 0.20))
+    # Keep Full-mode defaults unchanged; Core defaults to diversity OFF.
+    adiv_default = 0.0 if core_mode_enabled else 0.12
+    policy.weight_action_diversity = float(np.clip(_env_float('FLATLAND_WEIGHT_ACTION_DIVERSITY', adiv_default), 0.0, 2.0))
+    policy.action_diversity_gate_threshold = float(np.clip(_env_float('FLATLAND_ACTION_DIVERSITY_GATE_THRESHOLD', 0.50), 0.0, 1.0))
+    policy.forward_prob_soft_max = float(np.clip(_env_float('FLATLAND_FORWARD_PROB_SOFT_MAX', 0.60), 0.20, 0.80))
+    policy.lr_prob_soft_min = float(np.clip(_env_float('FLATLAND_LR_PROB_SOFT_MIN', 0.14), 0.05, 0.40))
+    policy.idle_prob_soft_max = float(np.clip(_env_float('FLATLAND_IDLE_PROB_SOFT_MAX', 0.17), 0.0, 0.40))
     policy.idle_logit_penalty = float(np.clip(_env_float('FLATLAND_IDLE_LOGIT_PENALTY', 1.35), 0.0, 4.0))
     policy.stop_logit_penalty = float(np.clip(_env_float('FLATLAND_STOP_LOGIT_PENALTY', 1.20), 0.0, 4.0))
     # Auxiliary deadlock supervision can help sparse/deadlock-heavy MAPPO runs
     # when weighted conservatively (PPO/MAPPO practice):
     # PPO paper:   https://arxiv.org/abs/1707.06347
     # MAPPO paper: https://arxiv.org/abs/2103.01955
-    aux_w = float(np.clip(_env_float('FLATLAND_WEIGHT_AUX_DEADLOCK', 0.12), 0.0, 1.0))
+    aux_default = 0.0 if core_mode_enabled else 0.04
+    aux_w = float(np.clip(_env_float('FLATLAND_WEIGHT_AUX_DEADLOCK', aux_default), 0.0, 1.0))
     for _aux_field in ('weight_aux_deadlock', 'weight_aux_dl'):
         if hasattr(policy, _aux_field):
             setattr(policy, _aux_field, aux_w)
+    if hasattr(policy, 'aux_deadlock_pos_weight'):
+        policy.aux_deadlock_pos_weight = float(np.clip(_env_float('FLATLAND_AUX_DEADLOCK_POS_WEIGHT', 1.5), 1.0, 8.0))
+    if hasattr(policy, 'weight_comm'):
+        comm_default = 0.0 if core_mode_enabled else 1.5e-4
+        policy.weight_comm = float(np.clip(_env_float('FLATLAND_WEIGHT_COMM', comm_default), 0.0, 1.0))
 
     # SP-Prior: für 5-agent weniger dominant, damit Policy echte Routing-Entscheidungen lernt
     policy.sp_hint_route_prior_prob = float(np.clip(_env_float('FLATLAND_SP_HINT_ROUTE_PRIOR_PROB', 0.20), 0.0, 1.0))
-    policy.sp_hint_logit_bonus = float(np.clip(_env_float('FLATLAND_SP_HINT_LOGIT_BONUS', 0.55), 0.0, 4.0))           # 1.25 → 0.55
+    policy.sp_hint_logit_bonus = float(np.clip(_env_float('FLATLAND_SP_HINT_LOGIT_BONUS', 0.20), 0.0, 4.0))
 
     # For single-agent core runs, prioritize fast convergence over exploration.
-    if simplified_n == 1:
+    if core_mode_enabled and simplified_n == 1:
         policy.use_decision_eps_floor = str(os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
         policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.00), 0.0, 1.0))
         policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.05), 0.0, 1.0))
@@ -857,11 +895,15 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     print(
         f"   - exploration: decision_eps_floor={policy.decision_eps_floor:.3f}, "
         f"max_eps_random={policy.max_eps_random:.3f}, "
+        f"train_frequency={int(policy.train_frequency)}, "
         f"use_decision_eps_floor={bool(policy.use_decision_eps_floor)}, "
+        f"core_mode={bool(core_mode_enabled)}, "
         f"weight_entropy={policy.weight_entropy:.3f}, "
         f"clip_eps={policy.surrogate_eps_clip:.3f}, "
         f"weight_value={policy.weight_loss:.3f}, "
-        f"weight_aux_deadlock={float(getattr(policy, 'weight_aux_deadlock', 0.0)):.3f}"
+        f"weight_aux_deadlock={float(getattr(policy, 'weight_aux_deadlock', 0.0)):.3f}, "
+        f"weight_action_diversity={float(getattr(policy, 'weight_action_diversity', 0.0)):.3f}, "
+        f"weight_comm={float(getattr(policy, 'weight_comm', 0.0)):.5f}"
     )
     print(
         f"   - route_prior: sp_prob={policy.sp_hint_route_prior_prob:.2f}, "
@@ -869,7 +911,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     )
     if use_scalable_simple:
         print('   - scalable_simple_profile: encoder_shared=True, use_spatial_attention=False')
-    print('   - profile: OFFENSIVE_BASELINE_V2 (anti-deadlock tuned)')
+    print('   - profile: BASELINE_STABLE_V1 (PPO/MAPPO reference-aligned)')
     return policy
 
 

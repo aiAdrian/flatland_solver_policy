@@ -79,7 +79,18 @@ class BaseSolver:
             tot_terminal += terminal[handle]
             tot_reward += reward[handle]
 
-            policy.step(handle, state, action, reward[handle], state_next, terminal[handle])
+            try:
+                policy.step(
+                    handle,
+                    state,
+                    action,
+                    reward[handle],
+                    state_next,
+                    terminal[handle],
+                    agent_finished=bool(terminal[handle]),
+                )
+            except TypeError:
+                policy.step(handle, state, action, reward[handle], state_next, terminal[handle])
         tot_terminal /= max(1.0, len(self.env.get_agent_handles()))
 
         policy.end_step(train=training_mode)

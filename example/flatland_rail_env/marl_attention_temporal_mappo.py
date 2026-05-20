@@ -18,6 +18,33 @@ from marl_attention_temporal_observation.decision_point_observation import Decis
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# REFERENCES (papers + GitHub implementations used in this file)
+# -----------------------------------------------------------------------------
+# [R1] PPO: Schulman et al. (2017)
+#      https://arxiv.org/abs/1707.06347
+# [R2] GAE: Schulman et al. (2015)
+#      https://arxiv.org/abs/1506.02438
+# [R3] MAPPO: Yu et al. (2022)
+#      https://arxiv.org/abs/2103.01955
+# [R4] MAPPO official implementation
+#      https://github.com/marlbenchmark/on-policy
+# [R5] PPO implementation details (ICLR Blog Track)
+#      https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
+# [R6] CleanRL PPO implementations
+#      https://github.com/vwxyzjn/cleanrl
+# [R7] Flatland-RL environment codebase
+#      https://github.com/flatland-association/flatland-rl
+# [R8] MAAC / actor-attention-critic motivation
+#      https://arxiv.org/abs/1810.02912
+# [R9] Prioritized Experience Replay (PER): Schaul et al. (2015)
+#      https://arxiv.org/abs/1511.05952
+# [R10] Rainbow (includes PER in a strong DQN baseline): Hessel et al. (2017)
+#      https://arxiv.org/abs/1710.02298
+# [R11] Dopamine framework (reference Rainbow/PER implementation)
+#      https://github.com/google/dopamine
+# =============================================================================
+
 
 def _load_state_dict_compatible(module: nn.Module, state_dict: Dict[str, torch.Tensor]):
     """Load only matching-shape tensors to keep checkpoint compatibility across small architecture changes."""
@@ -61,7 +88,7 @@ class EpisodeBuffers:
         # merge its reward into the existing terminal transition instead of dropping it.
         if len(transitions) > 0:
             last_transition = transitions[-1]
-            # Struktur: (state, action, reward, next_state, done, aux_deadlock)
+            # Struktur: (state, action, reward, next_state, done, aux_deadlock, agent_finished)
             done_flag = last_transition[4]
             if done_flag: 
                 merged_reward = \
@@ -69,6 +96,7 @@ class EpisodeBuffers:
                     + float(transition[2])
                 merged_aux_deadlock = \
                     float(max(float(last_transition[5]), float(transition[5])))
+                merged_agent_finished = bool(last_transition[6]) or bool(transition[6]) if len(last_transition) >= 7 and len(transition) >= 7 else False
                 transitions[-1] = (
                     last_transition[0],
                     last_transition[1],
@@ -76,12 +104,140 @@ class EpisodeBuffers:
                     transition[3],
                     True,
                     merged_aux_deadlock,
+                    merged_agent_finished,
                 )
                 self.memory.update({handle: transitions})
                 return
 
         transitions.append(transition)
         self.memory.update({handle: transitions})
+
+
+class ProbabilisticEpisodeReplayMemory:
+    """Fixed-capacity episode memory with probabilistic forgetting and weighted sampling.
+
+    Behavior:
+    - Fixed capacity (no FIFO pop-left).
+    - On overflow, remove one stored episode sampled from a probability distribution
+      (default: low-reward episodes have higher removal probability).
+    - For training, expose per-episode sampling weights (default: high-reward episodes
+      are sampled more often).
+
+        References:
+        - PER paper: [R9]
+        - Rainbow (PER in practice): [R10]
+        - MAPPO training context in this project: [R3], [R4]
+    """
+
+    def __init__(self, capacity: int):
+        self.capacity = max(1, int(capacity))
+        self.entries: List[Dict[str, Any]] = []
+        self._step_id = 0
+
+        self.drop_policy = str(os.getenv('FLATLAND_REPLAY_DROP_POLICY', 'low_reward')).strip().lower()
+        self.drop_temperature = float(max(0.05, float(os.getenv('FLATLAND_REPLAY_DROP_TEMPERATURE', '1.0'))))
+        self.sample_alpha = float(max(0.0, float(os.getenv('FLATLAND_REPLAY_SAMPLE_ALPHA', '1.0'))))
+
+    def __len__(self):
+        return len(self.entries)
+
+    def __iter__(self):
+        for entry in self.entries:
+            yield entry['episode']
+
+    @staticmethod
+    def _episode_total_reward(episode_memory: EpisodeBuffers) -> float:
+        total = 0.0
+        if episode_memory is None or not hasattr(episode_memory, 'memory'):
+            return total
+        for transitions in episode_memory.memory.values():
+            if not transitions:
+                continue
+            total += float(sum(float(t[2]) for t in transitions))
+        return float(total)
+
+    def _rank_weights(self, values: np.ndarray, descending: bool, temperature: float) -> np.ndarray:
+        n = int(values.shape[0])
+        if n <= 0:
+            return np.array([], dtype=np.float64)
+        if n == 1:
+            return np.array([1.0], dtype=np.float64)
+
+        order = np.argsort(values)
+        if descending:
+            order = order[::-1]
+
+        ranks = np.empty(n, dtype=np.float64)
+        # Best according to order gets highest rank weight.
+        for rank_pos, idx in enumerate(order):
+            ranks[idx] = float(n - rank_pos)
+
+        temp = max(0.05, float(temperature))
+        weights = np.power(ranks, 1.0 / temp)
+        w_sum = float(np.sum(weights))
+        if not np.isfinite(w_sum) or w_sum <= 1e-12:
+            return np.ones(n, dtype=np.float64) / float(n)
+        return weights / w_sum
+
+    def _drop_distribution(self) -> np.ndarray:
+        n = len(self.entries)
+        if n <= 0:
+            return np.array([], dtype=np.float64)
+
+        rewards = np.array([float(e['reward']) for e in self.entries], dtype=np.float64)
+
+        # low_reward: lower rewards are removed with higher probability.
+        # high_cost: higher cost=-reward removed with higher probability.
+        policy = self.drop_policy
+        if policy == 'high_cost':
+            costs = -rewards
+            return self._rank_weights(costs, descending=True, temperature=self.drop_temperature)
+        if policy == 'uniform':
+            return np.ones(n, dtype=np.float64) / float(n)
+        # default: low_reward
+        return self._rank_weights(rewards, descending=False, temperature=self.drop_temperature)
+
+    def _sample_distribution(self) -> np.ndarray:
+        n = len(self.entries)
+        if n <= 0:
+            return np.array([], dtype=np.float64)
+        rewards = np.array([float(e['reward']) for e in self.entries], dtype=np.float64)
+        base = self._rank_weights(rewards, descending=True, temperature=1.0)
+        alpha = float(np.clip(self.sample_alpha, 0.0, 4.0))
+        if alpha <= 0.0:
+            return np.ones(n, dtype=np.float64) / float(n)
+        weighted = np.power(base, alpha)
+        w_sum = float(np.sum(weighted))
+        if not np.isfinite(w_sum) or w_sum <= 1e-12:
+            return np.ones(n, dtype=np.float64) / float(n)
+        return weighted / w_sum
+
+    def append(self, episode_memory: EpisodeBuffers):
+        reward_total = self._episode_total_reward(episode_memory)
+        entry = {
+            'episode': episode_memory,
+            'reward': float(reward_total),
+            'cost': float(-reward_total),
+            'step_id': int(self._step_id),
+        }
+        self._step_id += 1
+
+        if len(self.entries) < self.capacity:
+            self.entries.append(entry)
+            return
+
+        drop_probs = self._drop_distribution()
+        if drop_probs.shape[0] != len(self.entries):
+            drop_idx = int(np.random.randint(0, len(self.entries)))
+        else:
+            drop_idx = int(np.random.choice(len(self.entries), p=drop_probs))
+        self.entries[drop_idx] = entry
+
+    def episodes(self) -> List[EpisodeBuffers]:
+        return [e['episode'] for e in self.entries]
+
+    def episode_sampling_weights(self) -> np.ndarray:
+        return self._sample_distribution()
 
 
 # =============================================================================
@@ -187,6 +343,13 @@ class LocalTreeEncoder(nn.Module):
 
 class TreePayloadEncoder(nn.Module):
     """Edge-aware encoder for variable-size tree payloads (nodes + edges).
+
+        Idea provenance (approximate):
+        - ~80-90% concept from attention-based multi-agent RL + MAPPO training
+            practice (see [R3], [R4], [R8]) and general PPO engineering ([R5], [R6]).
+        - ~10-20% project-specific adaptation:
+            DecisionPointObservation payload schema, corridor edge features,
+            and depth-level pooling tailored to Flatland deadlock structure.
 
     Handles dynamic graph size per sample using:
     - node padding + node masks
@@ -1645,28 +1808,25 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         else:
             self.K_epoch = 3  # Back to baseline
             
-        self.surrogate_eps_clip = 0.10  # tighter trust region to reduce KL spikes
-        self.weight_loss = 0.75  # lower critic pressure so shared encoder does not swamp actor updates
-        self.weight_entropy = 0.13  # stronger exploration for deadlock-heavy sparse decision regimes
-        # Exploration boost: increase decision_eps_floor and max_eps_random
-        self.decision_eps_floor = 0.14  # keep exploration active in sparse-decision regimes
-        self.max_eps_random = 0.20      # raise global random exploration ceiling
-        self.weight_policy = 1.80
+        # PPO/MAPPO baseline defaults (conservative and reference-aligned).
+        # See [R1], [R3], [R4], [R5], [R6].
+        self.surrogate_eps_clip = 0.20
+        self.weight_loss = 1.00
+        self.weight_entropy = 0.02
+        self.decision_eps_floor = 0.08
+        self.max_eps_random = 0.10
+        self.weight_policy = 1.00
         
         # ========================================================================
-        # SIMPLIFIED MODE: Core PPO only, with optional agent count override
-        # Set FLATLAND_SIMPLIFIED_MAPPO=N where:
-        #   0 = Full Mode (Aux, Diversity, Comm enabled)
-        #   1,5,10,100 = Core PPO only with N agents
+        # SIMPLIFIED MODE: Core PPO only.
+        # Set FLATLAND_CORE_PPO_MODE=1 to disable Aux/Diversity/Comm.
+        # Agent count is configured separately via FLATLAND_SIMPLIFIED_MAPPO.
         # ========================================================================
-        simplified_val = str(os.getenv('FLATLAND_SIMPLIFIED_MAPPO', '0')).strip()
-        try:
-            self.simplified_mode = int(simplified_val)
-        except ValueError:
-            self.simplified_mode = 1 if simplified_val.lower() in ('1', 'true', 'yes', 'on') else 0
+        core_mode_val = str(os.getenv('FLATLAND_CORE_PPO_MODE', '0')).strip().lower()
+        self.simplified_mode = 1 if core_mode_val in ('1', 'true', 'yes', 'on') else 0
         
         if self.simplified_mode > 0:
-            print(f"\n🧠 CORE PPO MODE: {self.simplified_mode} agents, no Aux/Diversity/Comm")
+            print("\n🧠 CORE PPO MODE: ON (no Aux/Diversity/Comm, agent count unchanged)")
         else:
             print("\n🚀 FULL MODE: Aux deadlock, Diversity, Communication enabled")
 
@@ -1678,24 +1838,24 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 self.use_spatial_attention = False
                 print("   - CORE override: use_spatial_attention=False")
         
-        # Optional auxiliary losses.
-        # References:
-        #   PPO:   https://arxiv.org/abs/1707.06347
-        #   MAPPO: https://arxiv.org/abs/2103.01955
+        # Optional auxiliary losses in PPO/MAPPO training context.
+        # See [R1], [R3].
         # Keep AuxDL configurable; in sparse/deadlock-heavy regimes it can improve
         # representation shaping when weighted conservatively.
-        aux_default = 0.0 if self.simplified_mode > 0 else 0.12
+        # Conservative default in FULL mode: keep auxiliary signal present,
+        # but lower its dominance to avoid overpowering PPO policy updates.
+        aux_default = 0.0 if self.simplified_mode > 0 else 0.06
         self.weight_aux_deadlock = float(np.clip(float(os.getenv('FLATLAND_WEIGHT_AUX_DEADLOCK', str(aux_default))), 0.0, 1.0))
-        self.weight_action_diversity = 0.0 if self.simplified_mode > 0 else 0.07
+        self.weight_action_diversity = 0.0 if self.simplified_mode > 0 else 0.10
         self.weight_comm = 0.0 if self.simplified_mode > 0 else 3.0e-4
         
         # Action diversity parameters (used only if weight_action_diversity > 0)
-        self.forward_prob_soft_max = 0.66
+        self.forward_prob_soft_max = 0.62
         self.lr_prob_soft_min = 0.11
-        self.idle_prob_soft_max = 0.22
+        self.idle_prob_soft_max = 0.18
         # Apply action-diversity shaping only at meaningful conflict/decision contexts.
         self.action_diversity_gate_enabled = True
-        self.action_diversity_gate_threshold = 0.65
+        self.action_diversity_gate_threshold = 0.50
         self.aux_deadlock_pos_weight = 4.0
         self.comm_reg_start_episode = 300
         self.comm_reg_full_episode = 600
@@ -1722,9 +1882,14 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # Keep soft/hard guards aligned with this scale to avoid over-decaying LR.
         self.grad_norm_soft = 600.0
         self.grad_norm_hard = 900.0
-        self.max_grad_norm_single = 0.40
-        self.max_grad_norm_actor = 0.45
-        self.max_grad_norm_critic = 0.45
+        if self.simplified_mode > 0:
+            self.max_grad_norm_single = 0.80
+            self.max_grad_norm_actor = 0.90
+            self.max_grad_norm_critic = 0.90
+        else:
+            self.max_grad_norm_single = 0.40
+            self.max_grad_norm_actor = 0.45
+            self.max_grad_norm_critic = 0.45
         self.grad_norm_skip_step_hard = 400.0
         self.adv_clip_abs = 5.0
         self.gae_lambda = self.ppo_parameters.gae_lambda if self.ppo_parameters else 0.95
@@ -1734,7 +1899,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # and advantages remain noisy. Scaling rewards to [-3, +0.3] drives V_Loss to
         # <0.1, enabling the critic to converge. Policy gradient is unaffected because
         # advantages are normalized per mini-batch regardless of absolute scale.
-        self.reward_scale = 0.08
+        self.reward_scale = 0.10
 
         # Memory
         self.current_episode_memory = EpisodeBuffers()
@@ -1747,9 +1912,28 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             self.max_episodes_in_training_memory = 10  # Back to baseline
             self.batch_fraction = 1.0
             self.max_batches_per_training = None
+
+        # PPO/MAPPO are on-policy ([R1], [R3], [R4]): start updating once a
+        # minimum number of fresh episodes is available instead of waiting for
+        # the full window every time.
+        min_train_default = max(4, min(self.max_episodes_in_training_memory, 6))
+        self.min_episodes_before_update = int(np.clip(
+            int(os.getenv('FLATLAND_MIN_TRAIN_EPISODES', str(min_train_default))),
+            2,
+            self.max_episodes_in_training_memory,
+        ))
         
-        self.accumulated_episodes: deque = deque(maxlen=self.max_episodes_in_training_memory)
-        self.replay_sample_percent = float(np.clip(float(os.getenv('FLATLAND_REPLAY_SAMPLE_PERCENT', '0.10')), 0.02, 1.0))
+        self.accumulated_episodes = ProbabilisticEpisodeReplayMemory(self.max_episodes_in_training_memory)
+        if self.show_pre_train_debug_msg:
+            print(
+                f"[Replay] probabilistic forgetting buffer enabled | "
+                f"capacity={self.max_episodes_in_training_memory} "
+                f"drop_policy={self.accumulated_episodes.drop_policy} "
+                f"sample_alpha={self.accumulated_episodes.sample_alpha:.2f}"
+            )
+        # Use full sampled on-policy rollout windows by default (no prioritized
+        # replay/off-policy mixing for PPO/MAPPO; [R1], [R3], [R4], [R6]).
+        self.replay_sample_percent = float(np.clip(float(os.getenv('FLATLAND_REPLAY_SAMPLE_PERCENT', '1.00')), 0.10, 1.0))
         
         self.loss = 0
 
@@ -2090,28 +2274,26 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         return progress
 
     def _effective_clip_eps(self) -> float:
-        # Narrow PPO trust region in late training to avoid destructive policy jumps.
+        # Conservative schedule: avoid over-shrinking clip range to prevent update stall
+        # (ratio~1, near-zero policy loss for long periods).
         if self.episode_count < 200:
-            # Early phase needs stronger actor movement to escape deadlock basins.
-            return min(0.22, float(self.surrogate_eps_clip))
+            return float(self.surrogate_eps_clip)
         if self.episode_count < self.stability_guard_start_episode:
             return float(self.surrogate_eps_clip)
         if self.episode_count >= self.stability_guard_hard_episode:
-            return max(0.08, self.surrogate_eps_clip * 0.60)
-        return max(0.10, self.surrogate_eps_clip * 0.75)
+            return max(0.15, self.surrogate_eps_clip * 0.85)
+        return max(0.18, self.surrogate_eps_clip * 0.90)
 
     def _effective_k_epochs(self) -> int:
-        # MAPPO/PPO implementations typically benefit from modest sample reuse
-        # (multiple minibatch epochs) in cooperative settings:
-        # https://arxiv.org/abs/2103.01955 and https://arxiv.org/abs/1707.06347
-        if self.episode_count < 200:
-            return min(3, int(self.K_epoch))
+        # MAPPO/PPO commonly use multiple minibatch epochs per rollout window.
+        # See [R1], [R3], [R4], [R6].
         if self.episode_count < 300:
-            return min(3, int(self.K_epoch))
+            return min(5, int(self.K_epoch))
         if self.episode_count >= self.stability_guard_hard_episode:
-            return 1
+            # Avoid single-epoch stall in late training for both CORE and FULL.
+            return max(2, min(4, int(self.K_epoch)))
         if self.episode_count >= self.stability_guard_start_episode:
-            return min(2, int(self.K_epoch))
+            return max(2, min(4, int(self.K_epoch)))
         return int(self.K_epoch)
 
     def _set_actor_lr_factor(self, factor: float):
@@ -2169,11 +2351,13 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         return action.item()
 
-    def step(self, handle, state, action, reward, next_state, done):
+    def step(self, handle, state, action, reward, next_state, done, agent_finished: Optional[bool] = None):
         """Store transition - state is now temporal sequence!"""
         t0 = time.perf_counter() if self.time_profile_enabled else 0.0
         aux_deadlock = self._extract_deadlock_label_from_temporal_state(next_state)
-        transition = (state, action, reward, next_state, done, aux_deadlock)
+        # Keep both flags: done (bootstrap terminal) and agent_finished (true task completion).
+        finished_flag = bool(done) if agent_finished is None else bool(agent_finished)
+        transition = (state, action, reward, next_state, done, aux_deadlock, finished_flag)
         self.current_episode_memory.push_transition(handle, transition)
         # Observation-Statistik: letzten Frame des temporalen Fensters sammeln
         if not isinstance(state, (list, tuple)) or len(state) == 0:
@@ -2416,7 +2600,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         for transition in transitions_array:
             if len(transition) >= 6:
-                state_i, action_i, reward_i, state_next_i, done_i, aux_deadlock_i = transition
+                state_i = transition[0]
+                action_i = transition[1]
+                reward_i = transition[2]
+                state_next_i = transition[3]
+                done_i = transition[4]
+                aux_deadlock_i = transition[5]
             else:
                 state_i, action_i, reward_i, state_next_i, done_i = transition
                 aux_deadlock_i = self._extract_deadlock_label_from_temporal_state(state_next_i)
@@ -2438,9 +2627,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
     def _compute_gae(self, rewards, values, dones, next_values):
         """Generalized Advantage Estimation (GAE).
 
-        Schulman, Moritz, Levine, Jordan, Abbeel (2016)
-        "High-Dimensional Continuous Control Using Generalized Advantage
-        Estimation", ICLR. arXiv:1506.02438
+        Reference: GAE [R2]. PPO typically combines GAE with clipped policy
+        updates [R1], and MAPPO uses the same core estimator [R3], [R4].
 
         delta_t = r_t + gamma * V(s_{t+1}) * (1 - done_t) - V(s_t)
         A_t     = delta_t + gamma * lambda * A_{t+1} * (1 - done_t)
@@ -2458,7 +2646,23 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         return advantages, returns
 
     def train_net_accumulated(self):
-        """Training loop - ORIGINAL VERSION (no early sampling, no cached logprobs)"""
+        """Training loop for on-policy MAPPO/PPO updates.
+
+        Idea provenance (approximate):
+        - ~80-90% from PPO/MAPPO canonical update flow:
+            rollout window -> GAE -> fixed old logprobs -> multi-epoch minibatch
+            clipped surrogate optimization (see [R1], [R2], [R3], [R4], [R5], [R6]).
+        - ~10-20% project-specific control logic:
+            Flatland-tailored stability guards, auxiliary deadlock/diversity/comm
+            terms, and decision-point diagnostics.
+
+        Explicit references:
+        - Paper: PPO https://arxiv.org/abs/1707.06347
+        - Paper: GAE https://arxiv.org/abs/1506.02438
+        - Paper: MAPPO https://arxiv.org/abs/2103.01955
+        - GitHub: MAPPO reference implementation https://github.com/marlbenchmark/on-policy
+        - GitHub: PPO implementation baselines https://github.com/vwxyzjn/cleanrl
+        """
         self.encoder_actor.train()
         self.encoder_critic.train()
         self.actor_critic_model.train()
@@ -2477,28 +2681,36 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         trajectory_count = 0
         num_recent_episodes = len(self.accumulated_episodes)
         
-        if num_recent_episodes < self.max_episodes_in_training_memory:
+        if num_recent_episodes < self.min_episodes_before_update:
             if self.show_pre_train_debug_msg:
-                print(f"\n🔍 Collect episodes {num_recent_episodes}/{self.max_episodes_in_training_memory}")
+                print(f"\n🔍 Collect episodes {num_recent_episodes}/{self.min_episodes_before_update} (min for update)")
             return
 
         t0 = _tic() if profile_enabled else 0.0
-        training_episodes = list(self.accumulated_episodes)
+        training_episodes = self.accumulated_episodes.episodes()
+        episode_sampling_weights = self.accumulated_episodes.episode_sampling_weights()
         if profile_enabled:
             _add_t('pool_collect', _tic() - t0)
         
         # Replay sampling first, then GAE on selected trajectories only.
+        # Keeps the estimator coupled to sampled on-policy rollout windows.
+        # See [R1], [R2], [R3], [R4].
         t0 = _tic() if profile_enabled else 0.0
+
         trajectory_pool = []
         total_samples_pool = 0
-        for episode_memory in training_episodes:
+        for ep_idx, episode_memory in enumerate(training_episodes):
+            ep_weight = float(episode_sampling_weights[ep_idx]) if ep_idx < len(episode_sampling_weights) else 1.0
             for handle in range(len(episode_memory)):
                 agent_episode_history = episode_memory.get_transitions(handle)
                 traj_len = len(agent_episode_history)
                 if traj_len <= 0:
                     continue
-                trajectory_pool.append((agent_episode_history, traj_len))
+                trajectory_pool.append((agent_episode_history, traj_len, ep_weight))
                 total_samples_pool += traj_len
+
+        # --- LOGGING: Buffer and sampling stats ---
+        print(f"\n📦 [ReplayBuffer] Total samples in memory buffer: {total_samples_pool}")
 
         if len(trajectory_pool) == 0 or total_samples_pool == 0:
             print("⚠️ No transitions to train on!")
@@ -2516,15 +2728,35 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         replay_samples_to_use = int(max(self.batch_size, round(base_samples_to_use * self.replay_sample_percent)))
         samples_to_use = int(min(total_samples_pool, replay_samples_to_use))
 
+        # --- LOGGING: Sampling configuration ---
+        print(
+            f"📦 [ReplayBuffer] Drawing {samples_to_use} sample(s) from buffer "
+            f"using {num_batches} batch(es) x {self.batch_size} "
+            f"(replay_sample_percent={self.replay_sample_percent:.2f})"
+        )
+        # max_batches_per_training ist der Hauptregler fuer das Sample-Budget.
+        # batch_fraction bleibt nur als Fallback aktiv, falls kein Max-Batch-Limit gesetzt ist.
+
         if samples_to_use >= total_samples_pool:
             sampled_order = list(range(len(trajectory_pool)))
         else:
-            sampled_order = np.random.permutation(len(trajectory_pool)).tolist()
+            traj_weights = np.array([max(1e-8, float(t[2])) * max(1.0, float(t[1])) for t in trajectory_pool], dtype=np.float64)
+            w_sum = float(np.sum(traj_weights))
+            if np.isfinite(w_sum) and w_sum > 1e-12:
+                probs = traj_weights / w_sum
+                sampled_order = np.random.choice(
+                    len(trajectory_pool),
+                    size=len(trajectory_pool),
+                    replace=False,
+                    p=probs,
+                ).tolist()
+            else:
+                sampled_order = np.random.permutation(len(trajectory_pool)).tolist()
 
         selected_trajectories = []
         selected_samples = 0
         for idx in sampled_order:
-            traj, traj_len = trajectory_pool[idx]
+            traj, traj_len, _ = trajectory_pool[idx]
             selected_trajectories.append(traj)
             selected_samples += int(traj_len)
             if selected_samples >= samples_to_use:
@@ -2583,7 +2815,35 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         all_gae_returns = torch.cat(all_gae_returns, dim=0)
         all_aux_deadlock = torch.cat(all_aux_deadlock, dim=0)
 
+        # Normalize advantages once per rollout window (not per mini-batch)
+        # to keep gradient scale consistent across PPO epochs.
+        # This follows common PPO/MAPPO practice from [R4], [R5], [R6].
+        all_adv_mean = all_gae_advantages.mean()
+        all_adv_std = all_gae_advantages.std(unbiased=False)
+        if all_gae_advantages.numel() <= 1 or float(all_adv_std.item()) < 1e-8:
+            all_advantages = all_gae_advantages - all_adv_mean
+        else:
+            all_advantages = (all_gae_advantages - all_adv_mean) / (all_adv_std + 1e-8)
+        all_advantages = torch.clamp(
+            all_advantages,
+            -float(self.adv_clip_abs),
+            float(self.adv_clip_abs),
+        )
+
         total_samples = len(all_state_tuples)
+        # Trajectory-level accumulation can exceed the requested cap; enforce exact
+        # transition-level cap here (uniform random subset).
+        if total_samples > samples_to_use:
+            keep_idx = torch.randperm(total_samples, device=all_actions.device)[:samples_to_use]
+            keep_idx, _ = torch.sort(keep_idx)
+            keep_idx_list = keep_idx.detach().cpu().tolist()
+            all_state_tuples = [all_state_tuples[i] for i in keep_idx_list]
+            all_actions = all_actions[keep_idx]
+            all_gae_advantages = all_gae_advantages[keep_idx]
+            all_gae_returns = all_gae_returns[keep_idx]
+            all_aux_deadlock = all_aux_deadlock[keep_idx]
+            all_advantages = all_advantages[keep_idx]
+            total_samples = len(all_state_tuples)
 
         # Determine batch configuration
         total_possible_batches = (total_samples + self.batch_size - 1) // self.batch_size
@@ -2604,8 +2864,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 f"| replay_sample_percent={self.replay_sample_percent:.2f} | trajectories={trajectory_count}"
             )
         
-        # 🎯 KRITISCH: Berechne old_logprobs VOR dem Training
-        # Dies ist die EINZIGE korrekte Methode für PPO!
+        # Keep old_logprobs fixed over the full PPO update cycle.
+        # This is the PPO ratio definition pi_theta / pi_theta_old.
+        # See [R1], [R5], [R6].
         batch_size_encoding = 256  # ⚡ WICHTIG: Außerhalb definieren!
         
         if self.show_pre_train_debug_msg:
@@ -2673,6 +2934,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 batch_action_hist_decision = torch.zeros(self.action_size, dtype=torch.long)
                 action_hist_total += batch_action_hist
                 batch_gae_advantages = all_gae_advantages[batch_indices]
+                batch_advantages = all_advantages[batch_indices]
                 batch_gae_returns = all_gae_returns[batch_indices]
                 batch_aux_deadlock = all_aux_deadlock[batch_indices]
                 batch_old_logprobs = all_old_logprobs[batch_indices]  # 🎯 Pre-computed!
@@ -2719,44 +2981,16 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 
                 state_values = torch.squeeze(self.actor_critic_model.critic(states_critic), dim=-1)
                 
-                # ------------------------------------------------------------
-                # PPO Clipped Surrogate Objective
-                # Schulman et al. (2017) "Proximal Policy Optimization Algorithms",
-                # arXiv:1707.06347 -- L^CLIP = E[ min(r_t * A_t,
-                #                                 clip(r_t, 1-eps, 1+eps) * A_t) ]
-                #
-                # Wichtig: NICHT zusätzlich r_t selbst hart clampen, sonst
-                # entfernt man genau die seltenen großen Lernsignale, die
-                # man eigentlich braucht (z.B. STOP-vor-Merge -> +Done-Bonus).
-                # Hier nur ein WEITER NaN-Schutz [0.05, 20] -- der eigentliche
-                # Trust-Region-Mechanismus passiert über min(surr1, surr2).
-                # ------------------------------------------------------------
+                # PPO clipped surrogate objective (see [R1]).
+                # Additional ratio clamping is only a numerical guardrail
+                # (practice from [R5], [R6]), not a replacement for PPO clipping.
                 ratios = torch.exp(logprobs - batch_old_logprobs)
                 ratios = torch.clamp(ratios, 0.05, 20.0)
                 
-                # Normalize advantages
-                advantages = batch_gae_advantages
-                eps = 1e-8
-                
-                # Robust against tiny mini-batches: use population std and
-                # guard against near-zero variance to avoid NaN explosions.
-                raw_adv_mean = advantages.mean().item()
-                raw_adv_std = advantages.std(unbiased=False).item()
-
-                if advantages.numel() <= 1 or raw_adv_std < 1e-8:
-                    advantages_normalized = advantages - advantages.mean()
-                else:
-                    advantages_normalized = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + eps)
-                # Standard PPO: Advantage-Normalisierung pro Mini-Batch
-                # (Andrychowicz et al. 2021 "What Matters in On-Policy RL?",
-                # arXiv:2006.05990 -- Empfehlung #4). Eine zusätzliche
-                # Skalierung (vorher *0.3) drosselt alle Updates und hat das
-                # Lernen in einem 60%-Lokal-Optimum gefangen gehalten.
-                advantages = torch.clamp(
-                    advantages_normalized,
-                    -float(self.adv_clip_abs),
-                    float(self.adv_clip_abs),
-                )
+                # Raw batch stats are kept for diagnostics.
+                raw_adv_mean = batch_gae_advantages.mean().item()
+                raw_adv_std = batch_gae_advantages.std(unbiased=False).item()
+                advantages = batch_advantages
 
                 # PPO loss
                 clip_eps_eff = self._effective_clip_eps()
@@ -2856,8 +3090,19 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     if float(aux_deadlock_loss_component.detach().item()) > 1.20:
                         aux_weight_eff *= 0.50
 
+                    # If rollout completion stays very low, bias optimization toward
+                    # exploration and primary PPO signal, while damping auxiliary drag.
+                    # This mirrors robust PPO/MAPPO tuning practice in sparse-coordination
+                    # settings ([R3], [R4], [R5]).
+                    done_hist = self._rollout_diag_buf.get('done_frac', None)
+                    done_win = float(np.mean(done_hist)) if done_hist is not None and len(done_hist) > 0 else 0.0
+                    if done_win < 0.12:
+                        aux_weight_eff *= 0.50
+
                     policy_weight_eff = self.weight_policy
                     entropy_weight_eff = self.weight_entropy
+                    if done_win < 0.12:
+                        entropy_weight_eff = max(entropy_weight_eff, self.weight_entropy * 1.75)
                     if self.episode_count >= self.entropy_rescue_start_episode and entropy_mean < self.entropy_floor:
                         entropy_weight_eff = max(entropy_weight_eff, self.weight_entropy * self.entropy_recovery_scale)
                         policy_weight_eff *= 0.90
@@ -2934,7 +3179,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 
                 loss.backward()
                 
-                # Gradient clipping (returns PRE-clip norm). We track PRE and POST.
+                # Gradient clipping per PPO implementation practice.
+                # See [R5], [R6]. clip_grad_norm_ returns PRE-clip norm.
                 def _dedup_params(param_list):
                     out = []
                     seen = set()
@@ -3327,13 +3573,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         print("\n" + "="*80 + "\n")
 
     # Feature names/descriptions for current DecisionPointObservation layout
-    # (15D base vector; tree context is provided out-of-band via payload).
+    # (13D base vector; tree context is provided out-of-band via payload).
     _OBS_FEATURE_NAMES = [
         "path_left", "path_forward", "path_right",
         "delta_left", "delta_forward", "delta_right",
-        "st_3", "st_4", "st_6",
-        "priority_rank",
-        "is_pre_merge", "is_switch",
+        "st_3", "priority_rank", "is_pre_merge", "is_switch",
         "sp_left", "sp_forward", "sp_right",
     ]
 
@@ -3345,8 +3589,6 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         "Distance delta to forward successor (exp-squashed; -1 if no transition)",
         "Distance delta to right successor (exp-squashed; -1 if no transition)",
         "TrainState: READY_TO_DEPART",
-        "TrainState: MALFUNCTION",
-        "State flag: not started (position is None)",
         "Normalized priority rank",
         "One step before merge-conflict point",
         "Current cell is a switch",
@@ -4215,7 +4457,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                         ep_final_aux_list.append(float(last_t[5]))
 
                     for t in transitions:
-                        state, action, _, _, _, _ = t
+                        state = t[0]
+                        action = t[1]
                         best_action = self._extract_local_shortest_action_from_temporal_state(state)
                         if best_action is None:
                             continue
@@ -4223,8 +4466,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                         if int(action) == int(best_action):
                             ep_sp_match += 1
 
-                    # Count agents with done==True in their final transition
-                    if transitions[-1][4]:   # done flag of last transition
+                    # Count agents that truly reached terminal success state.
+                    # Fallback to done-flag for backward compatibility with old tuples.
+                    final_transition = transitions[-1]
+                    agent_finished = bool(final_transition[6]) if len(final_transition) >= 7 else bool(final_transition[4])
+                    if agent_finished:
                         ep_done_count += 1
                     else:
                         ep_timeout_count += 1

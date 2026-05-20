@@ -106,9 +106,19 @@ class MultiAgentBaseSolver(BaseSolver):
         for handle in self.env.get_agent_handles():
             if update_values[handle] or terminal_all:
                 agent_done = bool(terminal[handle] or terminal_all)
-                policy.step(handle,
-                            state[handle],
-                            actions[handle],
-                            reward[handle],
-                            state_next[handle],
-                            agent_done)
+                agent_finished = bool(terminal[handle])
+                try:
+                    policy.step(handle,
+                                state[handle],
+                                actions[handle],
+                                reward[handle],
+                                state_next[handle],
+                                agent_done,
+                                agent_finished=agent_finished)
+                except TypeError:
+                    policy.step(handle,
+                                state[handle],
+                                actions[handle],
+                                reward[handle],
+                                state_next[handle],
+                                agent_done)

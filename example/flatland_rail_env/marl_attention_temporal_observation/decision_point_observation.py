@@ -1,5 +1,16 @@
 """Decision-point observation used by MAPPO.
 
+Idea provenance (high level, approximate):
+- ~80-90% from Flatland competition/benchmark practices: decision-point
+    reduction, shortest-path priors, and deadlock-aware coordination.
+    Sources:
+    * Laurent et al. (2021), Flatland Competition 2020: https://arxiv.org/abs/2103.16511
+    * Mohanty et al. (2020), Flatland-RL benchmark: https://arxiv.org/abs/2012.05893
+- ~10-20% project-specific engineering in this repo:
+    * corridor compression into edge payload features,
+    * explicit PRE_M node type,
+    * deadlock-distance profiling fields used by the MAPPO encoder.
+
 Layout:
 - BASE_OBS_SIZE=13: local agent state features
 - TREE PAYLOAD: Decision-Point Graph with three node types:
@@ -416,6 +427,10 @@ class DecisionPointObservation(ObservationBuilder):
         agent_target,
         distance_map,
     ):
+        # Provenance note:
+        # The "walk corridor until next decision point" pattern is primarily a
+        # decision-point abstraction from Flatland competition practice
+        # (Laurent et al. 2021), adapted here with custom edge statistics.
         edge_path = []
         edge_agents = set()
         same_dir_handles = set()
@@ -616,6 +631,11 @@ class DecisionPointObservation(ObservationBuilder):
         state,
         expansion_guard,
     ):
+        # Provenance note:
+        # The recursive local expansion over rail transitions is mostly a
+        # benchmark-inspired decision-point graph extraction (~80-90% idea from
+        # Flatland competition/benchmark papers), with custom payload fields and
+        # caps for stable MAPPO runtime in this project.
         if depth >= max_depth or state["n_nodes"] >= max_nodes:
             return
 

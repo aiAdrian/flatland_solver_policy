@@ -53,14 +53,14 @@ class FlatlandSolver(MultiAgentBaseSolver):
         
         for handle in self.env.get_agent_handles():
             should_train = False
-            if self.env.raw_env._elapsed_steps > (self.env.raw_env._max_episode_steps - 1):
+            agent_done = bool(terminal[handle] or terminal_all)
+            if self.env.raw_env._elapsed_steps > (self.env.raw_env._max_episode_steps - 5):
                 # State-machine filtering: only train on cell-type transitions
                 should_train = True
-                agent_done =True
+                agent_done = True
                 update_values[handle] = True
 
-            if update_values[handle] or terminal_all:
-                agent_done = bool(terminal[handle] or terminal_all)
+            if update_values[handle] or terminal_all or agent_done:
                 
                 if has_cell_classification and not agent_done:
                     try:
@@ -82,13 +82,23 @@ class FlatlandSolver(MultiAgentBaseSolver):
                         print(f"[Warning] Cell-type classification failed for agent {handle}: {e}")
                 
                 # Only call policy.step() if transition is meaningful
-                if should_train:
-                    policy.step(handle,
-                                state[handle],
-                                actions[handle],
-                                reward[handle],
-                                state_next[handle],
-                                agent_done)
+                if should_train or agent_done:
+                    agent_finished = bool(terminal[handle])
+                    try:
+                        policy.step(handle,
+                                    state[handle],
+                                    actions[handle],
+                                    reward[handle],
+                                    state_next[handle],
+                                    agent_done,
+                                    agent_finished=agent_finished)
+                    except TypeError:
+                        policy.step(handle,
+                                    state[handle],
+                                    actions[handle],
+                                    reward[handle],
+                                    state_next[handle],
+                                    agent_done)
                 
                 # Clear pre-step cache on terminal
                 if agent_done:

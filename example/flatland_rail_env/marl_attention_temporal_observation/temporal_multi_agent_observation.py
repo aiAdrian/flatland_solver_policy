@@ -24,6 +24,10 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         super().__init__()
         self.temporal_window = temporal_window
         self.max_opponents = max(0, int(max_opponents))
+        # Local->global fallback candidate sweep (sparse/partial observation).
+        # This augments base_obs-provided opponent handles with nearby agents.
+        self.extra_candidate_radius = max(1, int(os.getenv('FLATLAND_EXTRA_OPP_RADIUS', '8')))
+        self.extra_candidate_cap = max(0, int(os.getenv('FLATLAND_EXTRA_OPP_CAP', '16')))
         if base_obs is None:
             self.base_obs = DecisionPointObservation()
         elif isinstance(base_obs, ObservationBuilder):
@@ -62,8 +66,10 @@ class TemporalMultiAgentObservation(ObservationBuilder):
         """Score opponent relevance from base features + raw local-tree payload.
 
         Base vector contribution:
-        - [6:13] TrainState one-hot (activity signal)
-        - [13]   priority rank (distance-based urgency)
+        - [7]   priority rank (distance-based urgency)
+        - [8]   pre-merge indicator
+        - [9]   switch indicator
+        - [10:13] shortest-path hint one-hot
 
         Tree payload contribution:
         - max deadlock risk over nodes
@@ -74,27 +80,61 @@ class TemporalMultiAgentObservation(ObservationBuilder):
             return 0.0
 
         v = np.asarray(obs_vec, dtype=np.float32).reshape(-1)
-        state_activity = float(np.sum(v[6:13])) if v.shape[0] >= 13 else 0.0
-        priority = float(v[13]) if v.shape[0] > 13 else 0.0
+        priority = float(v[7]) if v.shape[0] > 7 else 0.0
+        is_pre_merge = float(v[8]) if v.shape[0] > 8 else 0.0
+        is_switch = float(v[9]) if v.shape[0] > 9 else 0.0
+        sp_hint_mass = float(np.sum(v[10:13])) if v.shape[0] >= 13 else 0.0
 
         payload = tree_payload if isinstance(tree_payload, dict) else {}
         nodes = payload.get("nodes", []) if isinstance(payload.get("nodes", []), list) else []
+        edges = payload.get("edges", []) if isinstance(payload.get("edges", []), list) else []
 
         max_deadlock = 0.0
         oncoming_ratio = 0.0
         branching_ratio = 0.0
+        merge_pressure = 0.0
         if len(nodes) > 0:
             max_deadlock = float(max(float(n.get("deadlock_risk", 0.0)) for n in nodes))
             oncoming_ratio = float(sum(1 for n in nodes if n.get("has_oncoming", False))) / float(len(nodes))
             branching_ratio = float(sum(1 for n in nodes if int(n.get("num_transitions", 0)) > 1)) / float(len(nodes))
+        if len(edges) > 0:
+            merge_pressure = float(sum(1 for e in edges if bool(e.get('has_oncoming_edge', False)))) / float(len(edges))
 
         return (
-            0.25 * state_activity
-            + 0.35 * priority
+            0.40 * priority
+            + 0.35 * is_pre_merge
+            + 0.30 * is_switch
+            + 0.20 * sp_hint_mass
             + 1.20 * max_deadlock
             + 0.90 * oncoming_ratio
             + 0.70 * branching_ratio
+            + 0.80 * merge_pressure
         )
+
+    def _collect_extra_candidates(self, self_handle: int, self_pos) -> List[int]:
+        """Fallback local->global candidate set from nearby agents.
+
+        Base observations can be very sparse (e.g. only DFS-seen agents). This
+        function adds a bounded local neighborhood sweep to preserve important
+        interaction partners under partial observability.
+        """
+        if self.env is None or self_pos is None or self.extra_candidate_cap <= 0:
+            return []
+
+        candidates = []
+        r = int(self.extra_candidate_radius)
+        for other in self.env.agents:
+            if int(other.handle) == int(self_handle):
+                continue
+            opos = other.position if other.position is not None else other.initial_position
+            if opos is None:
+                continue
+            manhattan = abs(int(opos[0]) - int(self_pos[0])) + abs(int(opos[1]) - int(self_pos[1]))
+            if manhattan <= r:
+                candidates.append((manhattan, int(other.handle)))
+
+        candidates.sort(key=lambda x: x[0])
+        return [h for _, h in candidates[:self.extra_candidate_cap]]
 
     @staticmethod
     def getObservationSize() -> int:
@@ -173,14 +213,25 @@ class TemporalMultiAgentObservation(ObservationBuilder):
             obs_self, obs_others, tree_payload = _unpack_base_obs(obs_entry, handle)
             obs_fixed_size = obs_self[:obs_size]
 
+            self_agent = self.env.agents[handle]
+            self_pos = self_agent.position if self_agent.position is not None else self_agent.initial_position
+            extra_others = self._collect_extra_candidates(handle, self_pos)
+
+            candidate_handles = []
+            seen = set()
+            for h in list(obs_others) + list(extra_others):
+                if h == handle or h in seen:
+                    continue
+                seen.add(h)
+                candidate_handles.append(h)
+
             scored_opponents = []
-            for opp_handle in obs_others:
+            for opp_handle in candidate_handles:
                 opp_entry = handle_to_obs.get(opp_handle, None)
                 if opp_entry is None:
                     continue
-                opp_base, _, _ = _unpack_base_obs(opp_entry, opp_handle)
+                opp_base, _, opp_payload = _unpack_base_obs(opp_entry, opp_handle)
                 opp_base = opp_base[:obs_size]
-                _, _, opp_payload = _unpack_base_obs(opp_entry, opp_handle)
                 score = self._opponent_relevance_score(opp_base, opp_payload)
                 scored_opponents.append((score, opp_base))
 
