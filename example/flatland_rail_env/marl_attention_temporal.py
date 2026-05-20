@@ -716,7 +716,7 @@ default_hidden_size = 64
 default_batch_size = 256
 default_batch_fraction = 0.8
 default_max_batches = 8
-default_memory_episodes = 20
+default_memory_episodes = 10
 
 # Recommended default: stronger PPO update to avoid near-zero policy drift.
 default_k_epochs = 2
