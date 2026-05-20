@@ -118,6 +118,11 @@ class DecisionPointObservation(ObservationBuilder):
             'local_search': {'sum': 0.0, 'count': 0},
             'deadlock_profile': {'sum': 0.0, 'count': 0},
             'base_features': {'sum': 0.0, 'count': 0},
+            'base_transitions': {'sum': 0.0, 'count': 0},
+            'base_successors': {'sum': 0.0, 'count': 0},
+            'base_priority': {'sum': 0.0, 'count': 0},
+            'base_flags': {'sum': 0.0, 'count': 0},
+            'base_sp_hint': {'sum': 0.0, 'count': 0},
             'debug_overlay': {'sum': 0.0, 'count': 0},
         }
         self.env = None
@@ -1051,6 +1056,7 @@ class DecisionPointObservation(ObservationBuilder):
 
         raw_features = np.zeros(self.BASE_OBS_SIZE, dtype=np.float32)
 
+        t_seg = time.perf_counter() if prof_active else 0.0
         transitions = self._rail_get_transitions(pos, direction)
         left_dir = (int(direction) - 1) % 4
         fwd_dir = int(direction) % 4
@@ -1059,7 +1065,10 @@ class DecisionPointObservation(ObservationBuilder):
         raw_features[0] = 1.0 if transitions[left_dir] else 0.0
         raw_features[1] = 1.0 if transitions[fwd_dir] else 0.0
         raw_features[2] = 1.0 if transitions[right_dir] else 0.0
+        if prof_active:
+            self._obs_prof_add('base_transitions', time.perf_counter() - t_seg)
 
+        t_seg = time.perf_counter() if prof_active else 0.0
         successor_dist = {}
         for ndir in (left_dir, fwd_dir, right_dir):
             if transitions[ndir]:
@@ -1082,7 +1091,10 @@ class DecisionPointObservation(ObservationBuilder):
                 # Mark unavailable/unreachable branches as clearly worse than
                 # the best local successor to avoid conflicting with SP hints.
                 raw_features[feat_idx] = -1.0
+        if prof_active:
+            self._obs_prof_add('base_successors', time.perf_counter() - t_seg)
 
+        t_seg = time.perf_counter() if prof_active else 0.0
         all_distance = []
         self_distance = np.inf
         for idx, a in enumerate(self.env.agents):
@@ -1112,15 +1124,21 @@ class DecisionPointObservation(ObservationBuilder):
             # fall back to normalized remaining distance so the feature remains informative.
             fallback_max = max(1.0, float(self.env.width + self.env.height))
             priority_rank = self._distance_to_unit(self_distance, fallback_max)
+        if prof_active:
+            self._obs_prof_add('base_priority', time.perf_counter() - t_seg)
  
         # Export selected lifecycle flags used by the current 13D contract.
         # st_3=READY_TO_DEPART (st_4=MALFUNCTION and st_6=done removed as dead constants).
+        t_seg = time.perf_counter() if prof_active else 0.0
         raw_features[6] = 1.0 if agent.state == TrainState.READY_TO_DEPART else 0.0  # st_3 (READY_TO_DEPART)
         raw_features[7] = priority_rank
 
         raw_features[8] = 1.0 if self._is_pre_merge_one_exit(pos, direction, transitions) else 0.0
         raw_features[9] = 1.0 if self._is_switch_at_current_cell(pos, direction) else 0.0
+        if prof_active:
+            self._obs_prof_add('base_flags', time.perf_counter() - t_seg)
 
+        t_seg = time.perf_counter() if prof_active else 0.0
         sp_left, sp_fwd, sp_right = self._shortest_path_action_hint(
             handle=handle,
             pos=pos,
@@ -1131,6 +1149,8 @@ class DecisionPointObservation(ObservationBuilder):
         raw_features[10] = float(sp_left)
         raw_features[11] = float(sp_fwd)
         raw_features[12] = float(sp_right)
+        if prof_active:
+            self._obs_prof_add('base_sp_hint', time.perf_counter() - t_seg)
 
         if prof_active:
             self._obs_prof_add('base_features', time.perf_counter() - t0)
@@ -1370,6 +1390,11 @@ class DecisionPointObservation(ObservationBuilder):
                 ls_mean_ms = (1000.0 * g['local_search']['sum'] / g['local_search']['count']) if g['local_search']['count'] > 0 else 0.0
                 dl_mean_ms = (1000.0 * g['deadlock_profile']['sum'] / g['deadlock_profile']['count']) if g['deadlock_profile']['count'] > 0 else 0.0
                 bf_mean_ms = (1000.0 * g['base_features']['sum'] / g['base_features']['count']) if g['base_features']['count'] > 0 else 0.0
+                bt_mean_ms = (1000.0 * g['base_transitions']['sum'] / g['base_transitions']['count']) if g['base_transitions']['count'] > 0 else 0.0
+                bs_mean_ms = (1000.0 * g['base_successors']['sum'] / g['base_successors']['count']) if g['base_successors']['count'] > 0 else 0.0
+                bp_mean_ms = (1000.0 * g['base_priority']['sum'] / g['base_priority']['count']) if g['base_priority']['count'] > 0 else 0.0
+                bfl_mean_ms = (1000.0 * g['base_flags']['sum'] / g['base_flags']['count']) if g['base_flags']['count'] > 0 else 0.0
+                bsh_mean_ms = (1000.0 * g['base_sp_hint']['sum'] / g['base_sp_hint']['count']) if g['base_sp_hint']['count'] > 0 else 0.0
                 ov_mean_ms = (1000.0 * g['debug_overlay']['sum'] / g['debug_overlay']['count']) if g['debug_overlay']['count'] > 0 else 0.0
                 dl_per_ls = (float(g['deadlock_profile']['count']) / float(max(1, g['local_search']['count']))) if g['local_search']['count'] > 0 else 0.0
                 print(
@@ -1380,6 +1405,10 @@ class DecisionPointObservation(ObservationBuilder):
                     f"base_features={bf_mean_ms:.3f}ms debug_overlay={ov_mean_ms:.3f}ms "
                     f"deadlock_calls_per_local_search={dl_per_ls:.2f}"
                 )
+                print(
+                    f"[ObsFnPerfBase] transitions={bt_mean_ms:.3f}ms successors={bs_mean_ms:.3f}ms "
+                    f"priority={bp_mean_ms:.3f}ms flags={bfl_mean_ms:.3f}ms sp_hint={bsh_mean_ms:.3f}ms"
+                )
                 type(self)._last_obs_fn_perf_report = {
                     'episode': int(episode_count + 1),
                     'interval': int(self.obs_func_profile_interval),
@@ -1389,6 +1418,11 @@ class DecisionPointObservation(ObservationBuilder):
                     'local_search_mean_ms': float(ls_mean_ms),
                     'deadlock_profile_mean_ms': float(dl_mean_ms),
                     'base_features_mean_ms': float(bf_mean_ms),
+                    'base_transitions_mean_ms': float(bt_mean_ms),
+                    'base_successors_mean_ms': float(bs_mean_ms),
+                    'base_priority_mean_ms': float(bp_mean_ms),
+                    'base_flags_mean_ms': float(bfl_mean_ms),
+                    'base_sp_hint_mean_ms': float(bsh_mean_ms),
                     'debug_overlay_mean_ms': float(ov_mean_ms),
                     'deadlock_calls_per_local_search': float(dl_per_ls),
                 }
