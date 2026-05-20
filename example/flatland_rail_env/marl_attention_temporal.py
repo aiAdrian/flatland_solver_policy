@@ -624,7 +624,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
             action = super(MARL_ATT_DecisionPointPolicy, self).act(handle, state, eps)  # without masking
 
         if self.use_deadlock_avoidance_policy and self.deadlock_avoidance_policy is not None:
-            if agent.state.is_on_map_state() and action == RailEnvActions.MOVE_FORWARD:
+            if cell_type == 'MERGING' and action == RailEnvActions.MOVE_FORWARD:
                 return self.deadlock_avoidance_policy.act(handle, state, eps)
 
         return action
@@ -745,7 +745,7 @@ default_hidden_size = 64
 # and implementation guidance (https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/).
 default_batch_size = 128
 default_batch_fraction = 1.0
-default_max_batches = 10
+default_max_batches = 5
 # Smaller on-policy window keeps updates fresher in sparse-done phases.
 default_memory_episodes = 50
 
@@ -819,7 +819,8 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         show_progress_bar=True,
         train_frequency=train_frequency_default,
         optimizer_mode=optimizer_mode,
-        use_action_masking=str(os.getenv('FLATLAND_USE_ACTION_MASKING', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+        use_action_masking=str(os.getenv('FLATLAND_USE_ACTION_MASKING', '1')).strip().lower() in ('1', 'true', 'yes', 'on'),
+        use_deadlock_avoidance_policy=True
     )
     # Full baseline (MAPPO/PPO-aligned) with references:
     # - PPO:   https://arxiv.org/abs/1707.06347
