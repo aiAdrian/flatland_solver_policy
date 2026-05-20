@@ -52,11 +52,17 @@ class FlatlandSolver(MultiAgentBaseSolver):
         has_cell_classification = hasattr(policy, '_classify_cell_type')
         
         for handle in self.env.get_agent_handles():
-            if update_values[handle] or terminal_all:
+            should_train = False
+            if self.env.raw_env._elapsed_steps > (self.env.raw_env._max_episode_steps - 1):
                 # State-machine filtering: only train on cell-type transitions
                 should_train = True
+                agent_done =True
+                update_values[handle] = True
+
+            if update_values[handle] or terminal_all:
+                agent_done = bool(terminal[handle] or terminal_all)
                 
-                if has_cell_classification and not terminal[handle]:
+                if has_cell_classification and not agent_done:
                     try:
                         raw_env = self.env.raw_env
                         agent = raw_env.agents[handle]
@@ -82,8 +88,8 @@ class FlatlandSolver(MultiAgentBaseSolver):
                                 actions[handle],
                                 reward[handle],
                                 state_next[handle],
-                                terminal[handle])
+                                agent_done)
                 
                 # Clear pre-step cache on terminal
-                if terminal[handle]:
+                if agent_done:
                     self._pre_step_cell_types.pop(handle, None)

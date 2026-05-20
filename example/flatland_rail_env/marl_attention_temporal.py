@@ -621,8 +621,17 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
 # ENVIRONMENT & TRAINING SETUP
 # =============================================================================
 
-# Globale Variable für die temporale Fenstergröße
-TEMPORAL_WINDOW = 3  # 3 Frames -> Bewegung/Velocity wird durch Temporal-Attention nutzbar
+# Temporal context configuration.
+# Learning-first default: temporal context is disabled unless explicitly enabled.
+# Set FLATLAND_DISABLE_TEMPORAL_ATTENTION=0 to enable temporal context again.
+_DISABLE_TEMPORAL_ATTENTION = str(
+    os.getenv('FLATLAND_DISABLE_TEMPORAL_ATTENTION', '1')
+).strip().lower() in ('1', 'true', 'yes', 'on')
+
+TEMPORAL_WINDOW = 1 if _DISABLE_TEMPORAL_ATTENTION else max(
+    1,
+    _env_int('FLATLAND_TEMPORAL_WINDOW', 3),
+)
 
 
 
@@ -728,7 +737,7 @@ default_k_epochs = 5
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     hidden_size=_env_int('FLATLAND_HIDDEN_SIZE', default_hidden_size),
     batch_size=max(32, _env_int('FLATLAND_BATCH_SIZE', default_batch_size)),
-    learning_rate=_env_float('FLATLAND_LR', 1.35e-5),
+    learning_rate=_env_float('FLATLAND_LR', 1.0e-5),
     discount=_env_float('FLATLAND_DISCOUNT', 0.99),
     gae_lambda=_env_float('FLATLAND_GAE_LAMBDA', 0.92),  # ↓ 0.95→0.92: sharper advantage signal
     use_gpu=USE_GPU_EFFECTIVE,
@@ -792,9 +801,9 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     # - prioritize progress/forward flow
     # - keep stronger decision-point exploration to avoid deadlock plateaus
     # - reduce forward-only collapse while preserving throughput bias
-    policy.surrogate_eps_clip = float(np.clip(_env_float('FLATLAND_CLIP_EPS', 0.24), 0.05, 0.40))
-    policy.weight_entropy = float(np.clip(_env_float('FLATLAND_WEIGHT_ENTROPY', 0.20), 0.0, 1.0))  # keep action diversity pressure in stalled phases
-    policy.reward_scale = float(np.clip(_env_float('FLATLAND_REWARD_SCALE', 0.08), 0.01, 0.20))
+    policy.surrogate_eps_clip = float(np.clip(_env_float('FLATLAND_CLIP_EPS', 0.26), 0.05, 0.40))
+    policy.weight_entropy = float(np.clip(_env_float('FLATLAND_WEIGHT_ENTROPY', 0.24), 0.0, 1.0))
+    policy.reward_scale = float(np.clip(_env_float('FLATLAND_REWARD_SCALE', 0.06), 0.01, 0.20))
     policy.weight_loss = float(np.clip(_env_float('FLATLAND_WEIGHT_VALUE', 0.60), 0.1, 5.0))      # ↓ Critic-Druck reduziert
     policy.stability_guard_start_episode = 1200
     policy.stability_guard_hard_episode = 2600
@@ -811,17 +820,17 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.actor_lr_min_factor = 0.70
     policy.actor_lr_decay_on_instability = 0.88
     # Stärkere Exploration + Forward-Kollaps brechen
-    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.36), 0.0, 1.0))
-    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.36), 0.0, 1.0))
+    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.45), 0.0, 1.0))
+    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.45), 0.0, 1.0))
     policy.use_decision_eps_floor = str(os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
     # Forward-Kollaps aufbrechen: Diversity früher + stärker erzwingen
     policy.weight_action_diversity = 0.70  # 0.50 → 0.70: stärkere Diversity erzwingen
     policy.action_diversity_gate_threshold = 0.15  # 0.30 → 0.15: früher aktiv
-    policy.forward_prob_soft_max = 0.45   # tighten forward cap to avoid early forward collapse
-    policy.lr_prob_soft_min = 0.18        # keep stronger left/right pressure at decisions
-    policy.idle_prob_soft_max = 0.08
-    policy.idle_logit_penalty = 1.20
-    policy.stop_logit_penalty = 1.05
+    policy.forward_prob_soft_max = float(np.clip(_env_float('FLATLAND_FORWARD_PROB_SOFT_MAX', 0.42), 0.20, 0.80))
+    policy.lr_prob_soft_min = float(np.clip(_env_float('FLATLAND_LR_PROB_SOFT_MIN', 0.20), 0.05, 0.40))
+    policy.idle_prob_soft_max = float(np.clip(_env_float('FLATLAND_IDLE_PROB_SOFT_MAX', 0.06), 0.0, 0.20))
+    policy.idle_logit_penalty = float(np.clip(_env_float('FLATLAND_IDLE_LOGIT_PENALTY', 1.35), 0.0, 4.0))
+    policy.stop_logit_penalty = float(np.clip(_env_float('FLATLAND_STOP_LOGIT_PENALTY', 1.20), 0.0, 4.0))
     # Auxiliary deadlock supervision can help sparse/deadlock-heavy MAPPO runs
     # when weighted conservatively (PPO/MAPPO practice):
     # PPO paper:   https://arxiv.org/abs/1707.06347
@@ -832,7 +841,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
             setattr(policy, _aux_field, aux_w)
 
     # SP-Prior: für 5-agent weniger dominant, damit Policy echte Routing-Entscheidungen lernt
-    policy.sp_hint_route_prior_prob = float(np.clip(_env_float('FLATLAND_SP_HINT_ROUTE_PRIOR_PROB', 0.30), 0.0, 1.0))  # 0.65 → 0.30
+    policy.sp_hint_route_prior_prob = float(np.clip(_env_float('FLATLAND_SP_HINT_ROUTE_PRIOR_PROB', 0.20), 0.0, 1.0))
     policy.sp_hint_logit_bonus = float(np.clip(_env_float('FLATLAND_SP_HINT_LOGIT_BONUS', 0.55), 0.0, 4.0))           # 1.25 → 0.55
 
     # For single-agent core runs, prioritize fast convergence over exploration.
@@ -899,7 +908,7 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 QUICK START EXAMPLES:
-  # Default (robust + balanced speed): separate encoders, spatial attention enabled
+    # Default (fast + robust): shared encoder, spatial attention enabled
   python marl_attention_temporal.py final --eps 0.0
   
   # Optimized for CPU (fast + robust): shared encoder, spatial attention enabled  
@@ -915,16 +924,15 @@ QUICK START EXAMPLES:
   python marl_attention_temporal.py --eval --encoder-shared
 
   #simplified single-agent test (debugging, architecture ablation, etc.) 
-  FLATLAND_SIMPLIFIED_MAPPO=o python marl_attention_temporal.py new --DEBUG # off
+    FLATLAND_SIMPLIFIED_MAPPO=0 python marl_attention_temporal.py new --DEBUG # off
   FLATLAND_SIMPLIFIED_MAPPO=1 python marl_attention_temporal.py new --DEBUG # 1 agent
   FLATLAND_SIMPLIFIED_MAPPO=5 python marl_attention_temporal.py new --DEBUG # 5 agents (full mode)
   FLATLAND_SIMPLIFIED_MAPPO=10 python marl_attention_temporal.py new --DEBUG # 10 agents (stress test)
   
 ARCHITECTURE CONFIGURATION:
-  Default: encoder_shared=False, use_spatial_attention=True
-    ✅ Full model capacity (best for complex coordination)
-    ✅ Multi-agent spatial attention (MAAC-style)
-    ⚡ Medium speed (2× encoder forward passes)
+    Default: encoder_shared=True, use_spatial_attention=True
+        ✅ Robust with spatial coordination (MAAC-style)
+        ⚡ Faster than separate-encoder setup
     
   Recommended for CPU: --encoder-shared
     ✅ Keeps spatial attention (multi-agent learning)
@@ -934,7 +942,7 @@ ARCHITECTURE CONFIGURATION:
     ⚡ 70% faster overall
     ⚠️  Loses agent-agent attention (temporal-only)
     
-  For GPU: Keep defaults (separate encoders, spatial attention)
+    For GPU: defaults are also usually a good starting point
 
 LEGACY EXAMPLES (still supported):
   python marl_attention_temporal.py --train --fresh-start
@@ -1045,17 +1053,22 @@ LEGACY EXAMPLES (still supported):
     # ====================================================================
     # ARCHITECTURE OPTIMIZATION FLAGS
     # ====================================================================
-    # DEFAULT STRATEGY: encoder_shared=False, use_spatial_attention=True
-    # ✅ Robust: Full model capacity per head
-    # ✅ Scalable: Multi-agent coordination learned via spatial attention
-    # ⚡ Optimize with --encoder-shared for CPU-bound training (50% faster)
-    # ⚡ Optimize with --no-spatial-attention for single-agent or temporal-only (20% faster)
+    # DEFAULT STRATEGY: encoder_shared=True, use_spatial_attention=True
+    # ✅ Robust and scalable via spatial attention
+    # ⚡ Shared encoder reduces compute overhead
+    # ⚡ Optimize further with --no-spatial-attention for temporal-only setup
     parser.add_argument(
         '--encoder-shared',
         action='store_true',
         dest='encoder_shared',
-        default=True,
-        help='Share single encoder between actor+critic (~50% faster, -50% params). Default: True (shared encoder for speed).'
+        default=None,
+        help='Share single encoder between actor+critic (~50% faster, -50% params). Default: enabled unless --no-encoder-shared or FLATLAND_ENCODER_SHARED=false.'
+    )
+    parser.add_argument(
+        '--no-encoder-shared',
+        action='store_false',
+        dest='encoder_shared',
+        help='Disable shared encoder and use separate actor/critic encoders.'
     )
     parser.add_argument(
         '--no-spatial-attention',
@@ -1085,7 +1098,10 @@ LEGACY EXAMPLES (still supported):
     # ====================================================================
     # ARCHITECTURE FLAGS from CLI
     # ====================================================================
-    encoder_shared_cli = True  # Default: True (shared encoder for speed)
+    if args.encoder_shared is None:
+        encoder_shared_cli = str(os.getenv('FLATLAND_ENCODER_SHARED', 'true')).strip().lower() in ('1', 'true', 'yes', 'on')
+    else:
+        encoder_shared_cli = bool(args.encoder_shared)
     use_spatial_attention_cli = not bool(args.no_spatial_attention)  # Default: True (spatial attention enabled)
     
     do_training = mode != 'eval'
@@ -1100,7 +1116,7 @@ LEGACY EXAMPLES (still supported):
     ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
         hidden_size=_env_int('FLATLAND_HIDDEN_SIZE', default_hidden_size),
         batch_size=max(32, _env_int('FLATLAND_BATCH_SIZE', default_batch_size)),  # Use mode-aware default (FAST:128, else:256)
-        learning_rate=_env_float('FLATLAND_LR', 1.8e-5),
+        learning_rate=_env_float('FLATLAND_LR', 1.0e-5),
         discount=_env_float('FLATLAND_DISCOUNT', 0.99),
         gae_lambda=_env_float('FLATLAND_GAE_LAMBDA', 0.95),
         use_gpu=USE_GPU_EFFECTIVE,
@@ -1110,7 +1126,7 @@ LEGACY EXAMPLES (still supported):
         max_batches_per_training=max(1, _env_int('FLATLAND_MAX_BATCHES', default_max_batches)),
         temporal_window=TEMPORAL_WINDOW,
         encoder_type=os.getenv('FLATLAND_ENCODER_TYPE', 'lstm'),
-        encoder_shared=True,  # Immer shared encoder für Speed
+        encoder_shared=encoder_shared_cli,
         use_spatial_attention=use_spatial_attention_cli  # Spatial Attention bleibt steuerbar
     )
     
@@ -1141,13 +1157,32 @@ LEGACY EXAMPLES (still supported):
     if do_training and min_eps > eps:
         eps = float(min_eps)
 
+    action_masking_enabled = str(os.getenv('FLATLAND_USE_ACTION_MASKING', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+    temporal_attention_enabled = not _DISABLE_TEMPORAL_ATTENTION
+
     print(
         f"\n[Config] mode={mode}, eps={eps:.4f}, optimizer_mode={optimizer_mode}, "
         f"encoder_shared={encoder_shared_cli}, use_spatial_attention={use_spatial_attention_cli}, "
         f"policy_mode={policy_mode}, debug={debug_mode}"
     )
+    if _DISABLE_TEMPORAL_ATTENTION:
+        print("[Config] temporal_attention=OFF (FLATLAND_DISABLE_TEMPORAL_ATTENTION=1, temporal_window=1)")
+    else:
+        print(f"[Config] temporal_attention=ON (temporal_window={TEMPORAL_WINDOW})")
     if USE_CURRICULUM_PHASES:
         print(f"[Config] curriculum_start_phase_index={start_from_phase} ({CURRICULUM_PHASES[start_from_phase]['name']})")
+
+    print("\n[SETTINGS] (easy overview)")
+    print(f"  mode                : {mode}")
+    print(f"  policy              : {policy_mode}")
+    print(f"  optimizer           : {optimizer_mode.lower()}")
+    print(f"  eps / min_eps       : {eps:.4f} / {min_eps:.4f}")
+    print(f"  encoder_shared      : {'YES' if encoder_shared_cli else 'NO'}")
+    print(f"  action_masking      : {'ON' if action_masking_enabled else 'OFF'}")
+    print(f"  spatial_attention   : {'ON' if use_spatial_attention_cli else 'OFF'}")
+    print(f"  temporal_attention  : {'ON' if temporal_attention_enabled else 'OFF'}")
+    print(f"  temporal_window     : {TEMPORAL_WINDOW}")
+    print(f"  device              : {'GPU' if USE_GPU_EFFECTIVE else 'CPU'}")
 
     environment = RailEnvironmentPersistable(
         obs_builder_object_creator=lambda: create_temporal_obs_builder_object(

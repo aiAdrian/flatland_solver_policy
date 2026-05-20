@@ -80,6 +80,11 @@ class MultiAgentBaseSolver(BaseSolver):
             terminal_all &= terminal[handle]
             tot_reward += reward[handle]
             tot_terminal += int(terminal[handle])
+
+        # Flatland can end an episode with terminal['__all__']=True while some
+        # per-agent terminal flags stay False (e.g., timeout/not reached target).
+        # For replay/GAE we must treat episode end as terminal for all agents.
+        terminal_all = bool(terminal.get('__all__', terminal_all))
         tot_terminal /= max(1.0, len(self.env.get_agent_handles()))
 
         # delegate a policy update (if required)
@@ -100,9 +105,10 @@ class MultiAgentBaseSolver(BaseSolver):
     def run_policy_step(self, actions, policy, reward, state, state_next, terminal, terminal_all, update_values):
         for handle in self.env.get_agent_handles():
             if update_values[handle] or terminal_all:
+                agent_done = bool(terminal[handle] or terminal_all)
                 policy.step(handle,
                             state[handle],
                             actions[handle],
                             reward[handle],
                             state_next[handle],
-                            terminal[handle])
+                            agent_done)
