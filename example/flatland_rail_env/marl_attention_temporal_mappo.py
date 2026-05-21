@@ -1722,9 +1722,17 @@ class ActorCriticModel(nn.Module):
                 nn.LayerNorm(state_size),
                 nn.LeakyReLU(0.1),
             ).to(self.device)
-            # sigmoid(-5) ≈ 0.0067 -> initial Einfluss quasi 0
+            # 2026-05-21 P1: Init -5.0 -> 0.0 angehoben.
+            # Vorher: sigmoid(-5)=0.0067 -> Global-State quasi aus, Gate musste
+            # via Critic-Loss-Gradient "selbst entdecken" dass globale Info
+            # hilft. Mit V_Loss seit 2000 Ep auf 0.33 plateau -> nie geoeffnet.
+            # Jetzt sigmoid(0.0)=0.5 -> 50% Einfluss von Start an, Gate kann
+            # sowohl runter (wenn schaedlich) als auch hoch (wenn hilfreich).
+            # Yu et al. 2022 (MAPPO arXiv:2103.01955 §4.2 "Agent-Specific
+            # Global State AS") nutzt sogar ungegateten hard-concat; 0.5 als
+            # Mittelweg vermeidet Init-Schock fuer geladene Checkpoints.
             self.global_state_gate = nn.Parameter(
-                torch.tensor(-5.0, device=self.device)
+                torch.tensor(0.0, device=self.device)
             )
         else:
             self.global_state_proj = None
@@ -2453,7 +2461,33 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         
         # Aggregate gradient metric
         self.writer.add_scalar(f'{policy_prefix}/training_smoothed_grad_norm', episode_metrics.get('grad_norm_mean', 0.0), ep_num)
-        
+
+        # 2026-05-21 P1: CTDE Global-State-Gate logging.
+        # sigmoid(gate) = effektiver Mischfaktor zwischen per-agent state und
+        # mean-pool(opponents.base_obs). Wenn dieser Wert nach mehreren 100 Ep
+        # nahe 0 bleibt -> Critic ignoriert globale Info -> CTDE faktisch aus.
+        # Wenn nahe 1 -> globaler State dominiert (kann auch overshooten sein).
+        try:
+            if (self.actor_critic_model is not None
+                    and self.actor_critic_model.global_state_gate is not None):
+                gate_sig = float(torch.sigmoid(
+                    self.actor_critic_model.global_state_gate.detach()
+                ).item())
+                self.writer.add_scalar(
+                    f'{policy_prefix}/critic_global_gate_sigmoid', gate_sig, ep_num,
+                )
+                # P1-Schritt3: Datenqualität des Globalen States.
+                _rate = float(getattr(self, '_global_state_nonempty_rate', 0.0))
+                _norm = float(getattr(self, '_global_state_norm_mean', 0.0))
+                self.writer.add_scalar(
+                    f'{policy_prefix}/critic_global_state_nonempty_rate', _rate, ep_num,
+                )
+                self.writer.add_scalar(
+                    f'{policy_prefix}/critic_global_state_norm_mean', _norm, ep_num,
+                )
+        except Exception:
+            pass
+
         # Episode performance (from reward shaper)
         self.writer.add_scalar(f'{policy_prefix}/training_smoothed_reward', episode_metrics.get('reward_mean', 0.0), ep_num)
         self.writer.add_scalar(f'{policy_prefix}/training_smoothed_done', episode_metrics.get('done_frac', 0.0), ep_num)
@@ -2803,6 +2837,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         base_dim = int(self.state_size)
         bsz = len(state_tuples)
         out = torch.zeros(bsz, base_dim, device=self.device, dtype=torch.float32)
+        # 2026-05-21 P1-Schritt3: Validierungs-Zähler. Wenn nonempty_rate < 0.2
+        # ist mean-pool fast immer 0 -> Gate lernt zurecht zu schliessen.
+        _nonempty = 0
         for i, ts in enumerate(state_tuples):
             if not isinstance(ts, (list, tuple)) or len(ts) == 0:
                 continue
@@ -2821,6 +2858,20 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 continue
             stk = torch.stack(stacks, dim=0).to(device=self.device, dtype=torch.float32)
             out[i] = stk.mean(dim=0)
+            _nonempty += 1
+        # EMA-Statistiken (decay 0.95) für Diagnose.
+        _rate = float(_nonempty) / float(max(1, bsz))
+        _norm_nonempty = 0.0
+        if _nonempty > 0:
+            with torch.no_grad():
+                _norms = out.norm(dim=1)
+                _mask = _norms > 1e-8
+                if _mask.any():
+                    _norm_nonempty = float(_norms[_mask].mean().item())
+        prev_r = float(getattr(self, '_global_state_nonempty_rate', _rate))
+        prev_n = float(getattr(self, '_global_state_norm_mean', _norm_nonempty))
+        self._global_state_nonempty_rate = 0.95 * prev_r + 0.05 * _rate
+        self._global_state_norm_mean = 0.95 * prev_n + 0.05 * _norm_nonempty
         return out
 
     def _convert_transitions_to_torch_tensors(self, transitions_array):
@@ -4311,6 +4362,39 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                    "decision-point action balance plausible",
                    "forward bias too high at decision contexts")
             print(row("Returns range", f"{ret_min:+.2f}…{ret_max:+.2f}", "", "", "") + " |")
+            # 2026-05-21 P1: CTDE Global-State-Gate diagnostic.
+            # sigmoid(gate) = wieviel der Critic vom mean-pool(opponents) nutzt.
+            # <0.05 -> CTDE faktisch aus (per-agent); 0.20-0.80 = aktiv genutzt.
+            try:
+                if (self.actor_critic_model is not None
+                        and self.actor_critic_model.global_state_gate is not None):
+                    _gv = float(torch.sigmoid(
+                        self.actor_critic_model.global_state_gate.detach()
+                    ).item())
+                    if _gv < 0.05:
+                        _gnote = "CTDE faktisch aus (per-agent Critic)"
+                    elif _gv < 0.20:
+                        _gnote = "schwach"
+                    elif _gv < 0.80:
+                        _gnote = "aktiv (CTDE wirkt)"
+                    else:
+                        _gnote = "dominant (globaler State uebersteuert)"
+                    print(row("CTDE gate sigmoid", f"{_gv:.4f}", "", "", "") + f" | {_gnote}")
+                    # P1-Schritt3: Daten-Qualität. Wenn nonempty_rate niedrig
+                    # ist, lernt das Gate aus Rauschen -> CTDE-Bug.
+                    _r = float(getattr(self, '_global_state_nonempty_rate', -1.0))
+                    _n = float(getattr(self, '_global_state_norm_mean', -1.0))
+                    if _r >= 0.0:
+                        if _r < 0.20:
+                            _dnote = "FAST NUR NULL-ZEILEN -> mean-pool faktisch leer"
+                        elif _r < 0.60:
+                            _dnote = "viele Null-Zeilen"
+                        else:
+                            _dnote = "ok"
+                        print(row("CTDE global nonempty rate", f"{_r:.3f}", "", "", "") + f" | {_dnote}")
+                        print(row("CTDE global mean L2 norm", f"{_n:.3f}", "", "", "") + " |")
+            except Exception:
+                pass
             end_table()
 
             # Diagnose
@@ -5053,9 +5137,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         return True
 
     def _reset_critic_optimizer(self):
-        """Recreate critic-head optimizer after architecture changes."""
+        """Recreate critic-head optimizer after architecture changes.
+        2026-05-21 P1: nutzt critic_full_params() inkl. global_state_proj/gate,
+        damit CTDE-Module mit trainiert werden (Bug L26)."""
         self.optimizer_critic_head = optim.AdamW(
-            self.actor_critic_model.critic.parameters(),
+            self.actor_critic_model.critic_full_params(),
             lr=self.base_lr_critic_head
         )
         self.optimizer_critic = self.optimizer_critic_head
@@ -5065,7 +5151,17 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         self.encoder_actor.load(filename + "_actor")
         self.encoder_critic.load(filename + "_critic")
         self.optimizer_actor = self._load(self.optimizer_actor, filename + ".optimizer_actor")
-        self.optimizer_critic = self._load(self.optimizer_critic, filename + ".optimizer_critic")
+        # 2026-05-21 P1: Robust gegen Param-Group-Mismatch nach CTDE-Aenderung.
+        # Wenn der gespeicherte Critic-Optimizer eine andere Anzahl Params
+        # als die aktuelle Architektur hat (z.B. global_state_proj/gate
+        # hinzugekommen oder entfernt), lade nicht hart -> reset stattdessen.
+        critic_opt_file = filename + ".optimizer_critic"
+        if os.path.exists(critic_opt_file):
+            try:
+                self.optimizer_critic = self._load(self.optimizer_critic, critic_opt_file)
+            except (ValueError, KeyError, RuntimeError) as e:
+                print(f" >> critic optimizer load failed ({type(e).__name__}: {e}); reinitializing")
+                self._reset_critic_optimizer()
         self.optimizer_actor_head = self.optimizer_actor
         self.optimizer_critic_head = self.optimizer_critic
         if not self._optimizer_state_compatible(self.optimizer_critic_head):
