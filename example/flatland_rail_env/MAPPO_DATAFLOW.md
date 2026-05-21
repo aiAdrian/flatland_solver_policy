@@ -175,7 +175,190 @@ $$
 
 ---
 
-## 9. Visualisierung — Stufen-Pipeline
+## 9. Datenfluss für Agent i — Schritt für Schritt
+
+### 9.0 Übersicht: 5 Schichten, ein Forward-Pass
+
+```
+SCHICHT 0  ──  Env liefert rohe Obs pro Agent
+SCHICHT 1  ──  Wrapper sammelt zentral + reicht Nachbar-Obs durch
+SCHICHT 2  ──  Policy-Netz (Φ₁ Temporal → Φ₂ Tree → Φ₃ Spatial → Φ₄ Comm)
+SCHICHT 3  ──  Heads (Actor π, Critic V)
+SCHICHT 4  ──  Sampling + Action-Masking
+```
+
+---
+
+### SCHICHT 0 — Was das Env liefert
+
+Konkret für Agent `i` (z.B. `handle=0`):
+
+```
+base_i        = [0.5, 1.0, 0.0, -0.8, -0.2, ...]      (13 Werte)
+seen_agents_i = [1, 3]                                  (Agents 1 und 3 sind sichtbar)
+tree_i        = {nodes: [...], edges: [...]}            (Baum von Agent i's Position aus)
+```
+
+---
+
+### SCHICHT 1 — Wrapper holt auch die Obs der Nachbarn
+
+> **Wichtig:** Agent `i` sieht nicht direkt Agent `j`. Aber der Observation-Wrapper
+> sammelt zentral *alle* Obs und reicht `i` die rohen Obs der sichtbaren Nachbarn mit.
+
+```
+Wrapper-Output für Agent i:
+
+  (base_i,  [obs_j, obs_k, obs_l],  tree_i)
+     │              │                  │
+     │              │                  └─ nur Self
+     │              └─ Top-3 Nachbarn (max_opponents=3)
+     └─ 13D Self-Feature
+```
+
+Plus: das Gleiche wird für **3 Zeitschritte** zurückgegeben (Temporal-Window):
+
+```
+  seq_i = [Wrap_{t-2},  Wrap_{t-1},  Wrap_t]
+              │             │            │
+              │             │            └─ aktueller Step
+              │             └─ vorletzter Step
+              └─ vor-vorletzter Step
+```
+
+---
+
+### SCHICHT 2 — Policy-Netz, intern in 4 Stufen
+
+#### Stufe A (Φ₁) — Temporal Self-Attention (nur Self, über Zeit)
+
+```
+base_i^{t-2} ──► obs_encoder ──► [128]  ┐
+base_i^{t-1} ──► obs_encoder ──► [128]  ├─► +PE ─► Temporal-Attention ─► h_temp [128]
+base_i^{t}   ──► obs_encoder ──► [128]  ┘                                  (nimm last token)
+```
+
+#### Stufe B (Φ₂) — Tree-Fusion (Self + Tree, additiv)
+
+```
+tree_i ──► tree_payload_encoder ──► tree_emb [128]
+                                          │
+h_temp ───────────────────────────────────┤
+                                          ▼
+                                   LayerNorm(h_temp + tree_emb)  ──►  h_self [128]
+```
+
+#### Stufe C (Φ₃) — Spatial Attention (Self ↔ Opponents)
+
+```
+obs_j ──► obs_encoder ──► W_proj ──► e_j [128]  ┐
+obs_k ──► obs_encoder ──► W_proj ──► e_k [128]  ├─► Cross-Attention
+obs_l ──► obs_encoder ──► W_proj ──► e_l [128]  │       Q   = e_self
+                                                │       K,V = [e_self, e_j, e_k, e_l]
+h_self ──────────► W_proj ──► e_self [128] ────┘                          │
+                                                                          ▼
+                                              c = Attn(...) + h_self  ──► c [128]
+```
+
+> Hier sieht `i` die Nachbarn als **kontextuelle Embeddings** — was sie *sind*.
+
+#### Stufe D (Φ₄) — Communication (gerichtete Messages mit Intent)
+
+```
+Für jeden Nachbar j ∈ {j, k, l}:
+
+  e_j ──► W_msg ────────────────────────────────► msg_j  [128]  ┐
+       │                                                          │
+       └► W_intent ─► softmax ─► [W,G,Y] ─► · E_intent ─► add ───┤
+                                                                  ▼
+                                                       tanh(msg_j + intent_j) = m_j
+
+  e_j ──► W_gate  ──► σ  ──► g_j  ∈ [0,1]            (Sender will senden?)
+  e_j ──► W_K     ──► k_j                            (Sender-Key)
+  c   ──► W_Q     ──► q_i                            (Receiver-Query)
+
+  α_j = softmax_j( <k_j, q_i> / √H )                 (Receiver-Addressing)
+  w_j = (α_j · g_j) / Σ_j' (α_j' · g_j')
+
+  comm_i = Σ_j  w_j · m_j
+
+  z = LayerNorm(c + comm_i)  ──►  W_out  ──►  z* [128]
+```
+
+> Hier kommt explizite **Absicht** dazu — was die Nachbarn *vorhaben* (WAIT/GO/YIELD).
+
+---
+
+### SCHICHT 3 — Heads
+
+```
+z* ──► W_actor  ──► logits [5]
+                      │
+                      ├─ + β · 𝟙[a = shortest_path]      (SP-Boost)
+                      ├─ + Action-Mask (-∞ für illegal)
+                      ▼
+                   softmax  ──► π(a|s)
+                                  │
+                                  ▼
+                              a ~ π(·|s)
+
+z* ──► W_critic ──► V(s) ∈ ℝ
+```
+
+---
+
+### Zusammenfassung in einem Bild
+
+```
+                            ┌────────── 5 Agents zentral ──────────┐
+ENV ────────────────────────►   {(base_i, seen_i, tree_i)}_{i=1..5}
+                            └──────────────┬───────────────────────┘
+                                           │  Wrapper picks Top-3
+                                           ▼
+                  ┌─────── für Agent i: (base_i, [obs_j, obs_k, obs_l], tree_i) × 3 Steps ───────┐
+                  │                                                                              │
+                  ▼                                                                              │
+       ┌──────────────────────┐                                                                  │
+       │  Φ₁ TEMPORAL          │  base_i über t-2,t-1,t  ──►  h_temp                             │
+       └──────────┬───────────┘                                                                  │
+                  ▼                                                                              │
+       ┌──────────────────────┐  tree_i wird draufaddiert                                        │
+       │  Φ₂ TREE              │  h_temp + φ_tree(tree_i)  ──►  h_self                           │
+       └──────────┬───────────┘                                                                  │
+                  ▼                                                                              │
+       ┌──────────────────────┐  Self ↔ Nachbarn als rohe Embeddings                             │
+       │  Φ₃ SPATIAL           │  Q=h_self, K,V=[h_self, e_j, e_k, e_l]  ──►  c                  │
+       └──────────┬───────────┘                                                                  │
+                  ▼                                                                              │
+       ┌──────────────────────┐  gerichtete Messages mit Intent + Gate                           │
+       │  Φ₄ COMM              │  z = LN(c + Σ w_j · m_j)  ──►  z*                               │
+       └──────────┬───────────┘                                                                  │
+                  ▼                                                                              │
+       ┌──────────────────────┐                                                                  │
+       │  HEADS                │  π(a|s) ,  V(s)  ──►  Sample + Mask  ──►  action                │
+       └──────────────────────┘                                                                  │
+                                                                                                 │
+                  ──── derselbe Netz-Pass läuft parallel für jeden Agent (shared weights) ───────┘
+```
+
+---
+
+### Was du dir merken solltest
+
+| Frage | Antwort |
+|---|---|
+| Wo kommt die Nachbar-Info rein? | **Φ₃ (Spatial)** als rohe Obs, **Φ₄ (Comm)** als gelernte Messages |
+| Was sieht ein Nachbar von `j` wirklich? | Nur `obs_j` (13D), wird bei `i` im *gleichen* Encoder durchgejagt → wird zu `e_j` |
+| Wo wird der Tree benutzt? | **Φ₂**, nur für Self. Nicht für Nachbarn. |
+| Hat ein Nachbar einen eigenen Hidden State? | **Nein.** `i` berechnet `encoder(obs_j)` neu. Das ist eine Abkürzung, kein echtes DIAL. |
+| Warum zweimal Mixing (Spatial + Comm)? | Spatial = *„kontextuelles Verstehen"*. Comm = *„explizite Absicht (WAIT/GO/YIELD)"*. Beides addiert sich. |
+| Wer entscheidet, wem `i` zuhört? | `softmax(k_j · q_i) · σ(gate_j)` — Mischung aus *„i interessiert sich für j"* und *„j will senden"* |
+| Sind Actor und Critic identisch? | Gleiche Architektur, **getrennte Parameter** (`encoder_actor`, `encoder_critic`). |
+| Was unterscheidet `c` von `z`? | `c` = Spatial-Kontext, `z` = `c` + gelernte Intent-Messages (LN-normalisiert). |
+
+---
+
+## 10. Visualisierung — Stufen-Pipeline (kompakt)
 
 ```
 ENV
@@ -225,7 +408,7 @@ ENV
 
 ---
 
-## 10. Code-Referenzen
+## 11. Code-Referenzen
 
 | Stufe | Methode / Klasse | Datei |
 |---|---|---|
@@ -239,7 +422,7 @@ ENV
 
 ---
 
-## 11. Referenzen
+## 12. Paper-Referenzen
 
 - TarMAC: Das et al. 2019 — *Targeted Multi-Agent Communication* (arXiv:1810.11187)
 - DIAL: Foerster et al. 2016 — *Learning to Communicate with Deep MARL* (arXiv:1605.06676)
