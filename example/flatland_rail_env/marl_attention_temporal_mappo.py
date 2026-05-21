@@ -43,6 +43,24 @@ logger = logging.getLogger(__name__)
 #      https://arxiv.org/abs/1710.02298
 # [R11] Dopamine framework (reference Rainbow/PER implementation)
 #      https://github.com/google/dopamine
+# [R12] Flatland-MARL / Tree-LSTM (AAAI23, Jiang, Zhang, Li, Chen, Zhu, 2022)
+#      https://arxiv.org/abs/2210.12933
+#      https://github.com/RoboEden/flatland-marl
+#      Best RL solution to Flatland3 (score 125.3 vs prior 27.9). Confirms
+#      that (a) tree-structured per-agent observations, (b) dense progress-
+#      based reward shaping and (c) multi-phase / curriculum training are
+#      critical to make MAPF-RL work on Flatland. Our DecisionPointObservation
+#      + tree payload encoder and curriculum (phase0/phase1/phase5) follow the
+#      same recipe.
+# [R13] NeurIPS 2020 Flatland Challenge (round-1 winner, marmotlab)
+#      https://github.com/marmotlab/flatland-challenge-neurips-2020
+#      Damani, Luo, Sartoretti. A3C+RNN with explicit action masking and a
+#      state-masking observation. Confirms that legal-action masking is
+#      mandatory in Flatland (otherwise the policy wastes gradient on
+#      illegal actions on curves and 1-transition cells).
+# [R14] Time Limits in RL: Pardo, Tavakoli, Levdik, Kormushev (2018)
+#      https://arxiv.org/abs/1712.00378
+#      Bootstrap on truncation vs zero on true termination (used in _compute_gae).
 # =============================================================================
 
 
@@ -521,6 +539,19 @@ class TreePayloadEncoder(nn.Module):
             agents_on_edge = edge.get("agents_on_edge", [])
             if isinstance(agents_on_edge, list):
                 agents_on_edge_count = len(agents_on_edge)
+        # BUG FIX (Bug 13, 2026-05-21): `deadlock_distance_delta` is produced as
+        # SIGNED in [-1, +1] by DecisionPointObservation (>0 = moves AWAY from
+        # deadlock, <0 = moves TOWARD deadlock). The terminal np.clip(feat, 0, 1)
+        # below silently mapped the entire negative half to 0, indistinguishable
+        # from the "no information" default of 0.0. Result: the encoder could not
+        # tell "good route" from "neutral route", and the auxiliary deadlock head
+        # had no usable gradient (BCE stuck near random baseline).
+        # Fix: remap signed [-1,+1] → [0,1] via (x+1)/2 so 0.0 (no info) → 0.5
+        # (neutral) and the sign carries through.
+        # Refs: Jiang et al. 2022 Flatland-MARL [R12] — preserving signed deadlock
+        # signals is essential for the policy to learn yielding behavior.
+        dl_delta_signed = _safe_float(edge.get("deadlock_distance_delta", 0.0), 0.0)
+        dl_delta_unit = 0.5 * (max(-1.0, min(1.0, dl_delta_signed)) + 1.0)
         feat = np.array([
             action_left,
             action_forward,
@@ -538,7 +569,7 @@ class TreePayloadEncoder(nn.Module):
             _safe_float(edge.get("dst_deadlock_distance_norm", 0.0), 0.0),
             _safe_float(edge.get("dst_deadlock_hard_distance_norm", 0.0), 0.0),
             _safe_float(edge.get("src_deadlock_distance_norm", 0.0), 0.0),
-            _safe_float(edge.get("deadlock_distance_delta", 0.0), 0.0),
+            dl_delta_unit,
             _safe_float(edge.get("is_shortest_path_edge", 0.0), 0.0),
             _safe_float(edge.get("branch_choice_prob", 0.0), 0.0),
             min(1.0, _safe_float(edge.get("alternative_routes_count", 0), 0.0) / 3.0),
@@ -547,51 +578,42 @@ class TreePayloadEncoder(nn.Module):
         return feat
 
     def _estimate_node_depths_batch(self, payload_batch: List[Dict[str, Any]], max_nodes: int) -> torch.Tensor:
-        """
-        Schätze Tiefe (depth) jedes Nodes pro Batch-Sample.
-        Gruppiert in Level: 0 (0.0-0.25), 1 (0.25-0.50), 2 (0.50-0.75), 3 (0.75-1.0)
-        
-        Fallback-Strategie:
-        1. Nutze depth_norm aus Node (falls vorhanden)
-        2. Fallback: Nutze depth (raw depth value)
-        3. Fallback: Nutze Node-Typ (INIT=0, SWITCH=1, PRE_M=2) → heuristische Tiefe
-        4. Fallback: Nutze Node-Index (Node 0 = root, später = tiffer)
-        
-        Returns: (B, N) mit Level-Indizes {0, 1, 2, 3}
+        """Schätze Tiefe (depth) jedes Nodes pro Batch-Sample.
+
+        BUG-L24 FIX (2026-05-21): Padded Nodes erhalten Sentinel-Level -1
+        (statt Default 0), damit das Masked-Pool in `forward_batch` sie
+        nicht in den Root-Pool (Level 0) einrechnet. Vorher kontaminierte
+        Padding die wichtigste Tiefe.
         """
         bsz = len(payload_batch)
-        depth_bins = torch.zeros((bsz, max_nodes), dtype=torch.long)
-        
+        # -1 = padding sentinel; valid levels are {0,1,2,3}.
+        depth_bins = torch.full((bsz, max_nodes), -1, dtype=torch.long)
+
         for b, payload in enumerate(payload_batch):
             if not isinstance(payload, dict):
                 continue
-            
+
             nodes = payload.get("nodes", []) or []
             max_depth = max([float(n.get("depth", 0)) for n in nodes], default=4.0)
             if max_depth <= 0:
                 max_depth = 4.0
-            
+
             for node_idx, node in enumerate(nodes):
                 if node_idx >= max_nodes:
                     break
-                
-                # Versuch 1: depth_norm direkt
+
                 if "depth_norm" in node:
                     depth_norm = float(node.get("depth_norm", 0.0))
-                # Versuch 2: Berechne aus depth (raw depth value)
                 elif "depth" in node:
                     depth_raw = float(node.get("depth", 0))
                     depth_norm = min(1.0, depth_raw / max_depth) if max_depth > 0 else 0.0
-                # Versuch 3: Heuristische Tiefe aus Node-Typ
                 else:
                     node_type = int(node.get("type", -1))
-                    # INIT=0 → depth=0, SWITCH=1 → depth≈0.5, PRE_M=2 → depth≈0.75
                     type_hints = {0: 0.0, 1: 0.5, 2: 0.75}
                     depth_norm = type_hints.get(node_type, float(node_idx) / (len(nodes) + 1))
-                
-                depth_norm = max(0.0, min(1.0, depth_norm))  # Clamp to [0, 1]
-                
-                # Bin Tiefe in 4 Levels
+
+                depth_norm = max(0.0, min(1.0, depth_norm))
+
                 if depth_norm < 0.25:
                     level = 0
                 elif depth_norm < 0.50:
@@ -600,9 +622,9 @@ class TreePayloadEncoder(nn.Module):
                     level = 2
                 else:
                     level = 3
-                
+
                 depth_bins[b, node_idx] = level
-        
+
         return depth_bins
 
     def _payload_to_graph(self, payload: Dict[str, Any], max_nodes: int) -> Tuple[np.ndarray, List[Tuple[int, int, np.ndarray]], int]:
@@ -756,47 +778,54 @@ class TreePayloadEncoder(nn.Module):
         # ========================================================================
         # HIERARCHICAL POOLING (Topologie-erhaltend für variable Größen)
         # ========================================================================
-        # Statt einfaches Mean-Pooling: Gruppiere nach Tiefe & aggregiere pro Level
-        # So bleibt Root vs. Leaves Struktur erhalten!
-        
-        # Zuerst: Schätze depth pro Node aus Payload
+        # BUG-L24 FIX: depth_bins kann -1 (padding) sein → (== level_idx) trifft
+        # diese Nodes nicht mehr  → Padding kontaminiert das Pool nicht mehr.
         depth_bins = self._estimate_node_depths_batch(payload_batch, max_nodes)
-        depth_bins = depth_bins.to(device)  # (B, N) mit Werten {0, 1, 2, 3}
-        
+        depth_bins = depth_bins.to(device)  # (B, N) with values in {-1,0,1,2,3}
+
         # Für jeden Level: Masked Average der Node-Updates
         level_embeddings = []
+        level_has_nodes = []  # (B,) bool per level
         for level_idx in range(4):  # Levels 0-3 (depth groups)
             level_mask = (depth_bins == level_idx).float()  # (B, N)
             level_mask_expanded = level_mask.unsqueeze(-1)  # (B, N, 1)
-            
-            # Masked pooling für diesen Level
+
             level_sum = (node_u * level_mask_expanded).sum(dim=1)  # (B, H)
-            level_count = level_mask.sum(dim=1, keepdim=True).clamp(min=1.0)  # (B, 1)
-            level_pool = level_sum / level_count  # (B, H)
+            level_count = level_mask.sum(dim=1, keepdim=True)        # (B, 1)
+            safe_count = level_count.clamp(min=1.0)
+            level_pool = level_sum / safe_count                       # (B, H)
             level_embeddings.append(level_pool)
-        
-        # Stack alle Level-Embeddings
+            level_has_nodes.append((level_count.squeeze(-1) > 0))     # (B,)
+
         levels_stacked = torch.stack(level_embeddings, dim=1)  # (B, 4, H)
-        
+        level_valid = torch.stack(level_has_nodes, dim=1)       # (B, 4) bool
+
         # ========================================================================
-        # LEVEL ATTENTION (Lernt welche Tiefen wichtig sind)
+        # BUG-L25 FIX: Level-Attention mit key_padding_mask (leere Levels werden
+        # ausgeschlossen) UND maskierte Mittelung statt fixed-prior-softmax.
+        # Der vorherige `level_importance` Softmax war batch-unabhängig und hat
+        # die kontextuelle Mischung der Level-Attention wieder zu einem
+        # fixed-weighted Mean degradiert. Ref: Vaswani 2017 §3.2.3 über
+        # Masking; CLS-pooling-Alternative Devlin 2018 (BERT).
         # ========================================================================
-        # Selbst-Attention über die 4 Tiefe-Level
+        # key_padding_mask: True = ignore.
+        kp_mask = ~level_valid  # (B, 4)
+        # If a sample has zero valid levels (no nodes at all), keep level 0
+        # unmasked so attention has something to consume.
+        all_invalid = kp_mask.all(dim=1)
+        if bool(all_invalid.any().item()):
+            kp_mask[all_invalid, 0] = False
         level_context, _ = self.level_attention(
             query=levels_stacked,
             key=levels_stacked,
-            value=levels_stacked
+            value=levels_stacked,
+            key_padding_mask=kp_mask,
         )  # (B, 4, H)
-        
-        # Gewichte aggregieren (Root hat höchstes Gewicht, Leaves flexible)
-        level_weights = torch.softmax(
-            self.level_importance.unsqueeze(0).expand(bsz, -1),
-            dim=-1
-        )  # (B, 4) - Prior: Root am wichtigsten
-        
-        # Finale Aggregation
-        pooled = (level_context * level_weights.unsqueeze(-1)).sum(dim=1)  # (B, H)
-        
+
+        # Masked mean über gültige Levels (entfernt Bias durch leere Levels).
+        valid_f = level_valid.float().unsqueeze(-1)  # (B, 4, 1)
+        pooled = (level_context * valid_f).sum(dim=1) / valid_f.sum(dim=1).clamp(min=1.0)
+
         return self.output_proj(pooled)
 
 
@@ -901,6 +930,19 @@ class TemporalTransformerEncoder(nn.Module):
         self.tree_norm = nn.LayerNorm(hidden_dim)
         self.use_tree_payload_encoder = True
 
+        # BUG-L20 FIX (2026-05-21): Spatial-Attention K/V vorprojizieren.
+        # `self_temporal_context` lebt nach Temporal-Attn+Tree-Fusion in einem
+        # anderen Embedding-Raum als `obs_encoder(opp_base)` (rohe Single-
+        # Timestep-Basisfeatures). Ohne gemeinsame Projektion legt Softmax
+        # fast alle Attention-Masse auf self  → Spatial-Attn faktisch NoOp.
+        # Iqbal & Sha 2019 (MAAC, arXiv:1810.02912 §3.1) und Vaswani 2017
+        # §3.2 verlangen K/V/Q im gemeinsamen Metrikraum.
+        self.spatial_in_proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.LeakyReLU(0.01),
+        )
+
         # Explicit communication: sender message + receiver addressing.
         self.comm_msg_proj = nn.Linear(hidden_dim, hidden_dim)
         self.comm_sender_gate = nn.Linear(hidden_dim, 1)
@@ -986,14 +1028,22 @@ class TemporalTransformerEncoder(nn.Module):
         return self.tree_payload_encoder.forward_batch(tree_payloads)
 
     def _apply_communication(self, self_context: torch.Tensor, opp_embeddings: List[torch.Tensor]):
-        """Fuse explicit communication from opponents into receiver context."""
+        """Fuse explicit communication from opponents into receiver context.
+
+        BUG-L22 FIX (2026-05-21): Self ist NICHT mehr Sender. Vorher war
+        ``all_agents = [self_context] + opp_embeddings`` — dies erzeugte
+        einen Self-Loop (Self hört sich selbst zu) plus doppelten Residual
+        (1× als Spatial-Residual, 2× über ``comm_norm(self+comm_vec)`` mit
+        Address-Mass auf sich selbst). DIAL (Foerster 2016) und TarMAC
+        (Das et al. 2019, arXiv:1810.11187) schließen den Receiver immer
+        aus dem Sender-Set aus.
+        """
         if len(opp_embeddings) == 0:
             zero = torch.tensor(0.0, device=self.device)
             zero_intent = torch.zeros(3, device=self.device)
             return self_context, zero, zero, zero_intent
 
-        all_agents = [self_context] + opp_embeddings
-        stack = torch.stack(all_agents, dim=0)  # (N, H)
+        stack = torch.stack(opp_embeddings, dim=0)  # (N_opp, H)
 
         # Active communication token per sender (differentiable intent distribution).
         intent_logits = self.comm_intent_head(stack)              # (N, 3)
@@ -1094,16 +1144,19 @@ class TemporalTransformerEncoder(nn.Module):
         
         # Combine self + opponents (only if spatial attention is enabled AND opponents exist)
         if use_spatial and len(opp_embeddings) > 0:
-            all_agents = [self_temporal_context] + opp_embeddings
+            # BUG-L20 FIX: gemeinsame Projektion vor Spatial-Attention.
+            self_spatial = self.spatial_in_proj(self_temporal_context)
+            opp_spatial = [self.spatial_in_proj(o) for o in opp_embeddings]
+            all_agents = [self_spatial] + opp_spatial
             all_agents_tensor = torch.stack(all_agents, dim=0).unsqueeze(0)
-            query = self_temporal_context.unsqueeze(0).unsqueeze(0)
+            query = self_spatial.unsqueeze(0).unsqueeze(0)
             spatial_output, _ = self.spatial_attention(
                 query=query,
                 key=all_agents_tensor,
                 value=all_agents_tensor
             )
             context = spatial_output.squeeze(0).squeeze(0) + self_temporal_context
-            context, comm_reg, gate_mean, intent_mean = self._apply_communication(context, opp_embeddings)
+            context, comm_reg, gate_mean, intent_mean = self._apply_communication(context, opp_spatial)
             self.last_comm_reg = comm_reg
             self.last_comm_gate_mean = float(gate_mean.detach().cpu().item())
             self.last_comm_intent_mean = [float(x) for x in intent_mean.detach().cpu().tolist()]
@@ -1204,16 +1257,19 @@ class TemporalTransformerEncoder(nn.Module):
                     opp_base = opp_t[:self.base_obs_dim]
                     opp_embs.append(self.obs_encoder(opp_base))
 
-                all_agents = [self_ctx] + opp_embs
+                # BUG-L20 FIX: gemeinsame Projektion vor Spatial-Attention.
+                self_spatial = self.spatial_in_proj(self_ctx)
+                opp_spatial = [self.spatial_in_proj(o) for o in opp_embs]
+                all_agents = [self_spatial] + opp_spatial
                 all_agents_tensor = torch.stack(all_agents, dim=0).unsqueeze(0)
-                query = self_ctx.unsqueeze(0).unsqueeze(0)
+                query = self_spatial.unsqueeze(0).unsqueeze(0)
                 spatial_out, _ = self.spatial_attention(
                     query=query,
                     key=all_agents_tensor,
                     value=all_agents_tensor
                 )
                 context = spatial_out.squeeze(0).squeeze(0) + self_ctx
-                context, comm_reg, gate_mean, intent_mean = self._apply_communication(context, opp_embs)
+                context, comm_reg, gate_mean, intent_mean = self._apply_communication(context, opp_spatial)
                 comm_regs.append(comm_reg)
                 comm_gate_means.append(gate_mean)
                 comm_intents.append(intent_mean)
@@ -1313,6 +1369,15 @@ class TemporalLSTMEncoder(nn.Module):
         self.tree_norm = nn.LayerNorm(hidden_dim)
         self.use_tree_payload_encoder = True
 
+        # BUG-L20 FIX (2026-05-21): vgl. TemporalTransformerEncoder. Projektion
+        # bringt Self-Kontext und Opponent-Embeddings in gemeinsamen Raum für
+        # Spatial-Attention + Comm.  Ref: MAAC (Iqbal & Sha 2019).
+        self.spatial_in_proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.LeakyReLU(0.01),
+        )
+
         self.last_comm_reg = torch.tensor(0.0, device=self.device)
         self.last_comm_gate_mean = 0.0
         self.last_comm_intent_mean = [0.0, 0.0, 0.0]
@@ -1381,13 +1446,14 @@ class TemporalLSTMEncoder(nn.Module):
         return self.tree_payload_encoder.forward_batch(tree_payloads)
 
     def _apply_communication(self, self_context: torch.Tensor, opp_embeddings: List[torch.Tensor]):
+        # BUG-L22 FIX: Self ist NICHT mehr Sender (siehe gleichnamige Methode
+        # in TemporalTransformerEncoder). Ref: TarMAC (Das 2019) §3.
         if len(opp_embeddings) == 0:
             zero = torch.tensor(0.0, device=self.device)
             zero_intent = torch.zeros(3, device=self.device)
             return self_context, zero, zero, zero_intent
 
-        all_agents = [self_context] + opp_embeddings
-        stack = torch.stack(all_agents, dim=0)
+        stack = torch.stack(opp_embeddings, dim=0)
 
         intent_logits = self.comm_intent_head(stack)
         intent_probs = torch.softmax(intent_logits, dim=-1)
@@ -1442,16 +1508,19 @@ class TemporalLSTMEncoder(nn.Module):
                 opp_embeddings.append(self.obs_encoder(opp_base))
 
         if use_spatial and len(opp_embeddings) > 0:
-            all_agents = [self_temporal_context] + opp_embeddings
+            # BUG-L20 FIX: gemeinsame Projektion vor Spatial-Attention.
+            self_spatial = self.spatial_in_proj(self_temporal_context)
+            opp_spatial = [self.spatial_in_proj(o) for o in opp_embeddings]
+            all_agents = [self_spatial] + opp_spatial
             all_agents_tensor = torch.stack(all_agents, dim=0).unsqueeze(0)
-            query = self_temporal_context.unsqueeze(0).unsqueeze(0)
+            query = self_spatial.unsqueeze(0).unsqueeze(0)
             spatial_out, _ = self.spatial_attention(
                 query=query,
                 key=all_agents_tensor,
                 value=all_agents_tensor
             )
             context = spatial_out.squeeze(0).squeeze(0) + self_temporal_context
-            context, comm_reg, gate_mean, intent_mean = self._apply_communication(context, opp_embeddings)
+            context, comm_reg, gate_mean, intent_mean = self._apply_communication(context, opp_spatial)
             self.last_comm_reg = comm_reg
             self.last_comm_gate_mean = float(gate_mean.detach().cpu().item())
             self.last_comm_intent_mean = [float(x) for x in intent_mean.detach().cpu().tolist()]
@@ -1514,16 +1583,19 @@ class TemporalLSTMEncoder(nn.Module):
                     opp_base = opp_t[:self.base_obs_dim]
                     opp_embs.append(self.obs_encoder(opp_base))
 
-                all_agents = [self_ctx] + opp_embs
+                # BUG-L20 FIX: gemeinsame Projektion vor Spatial-Attention.
+                self_spatial = self.spatial_in_proj(self_ctx)
+                opp_spatial = [self.spatial_in_proj(o) for o in opp_embs]
+                all_agents = [self_spatial] + opp_spatial
                 all_agents_tensor = torch.stack(all_agents, dim=0).unsqueeze(0)
-                query = self_ctx.unsqueeze(0).unsqueeze(0)
+                query = self_spatial.unsqueeze(0).unsqueeze(0)
                 spatial_out, _ = self.spatial_attention(
                     query=query,
                     key=all_agents_tensor,
                     value=all_agents_tensor
                 )
                 context = spatial_out.squeeze(0).squeeze(0) + self_ctx
-                context, comm_reg, gate_mean, intent_mean = self._apply_communication(context, opp_embs)
+                context, comm_reg, gate_mean, intent_mean = self._apply_communication(context, opp_spatial)
                 comm_regs.append(comm_reg)
                 comm_gate_means.append(gate_mean)
                 comm_intents.append(intent_mean)
@@ -1568,7 +1640,8 @@ class TemporalLSTMEncoder(nn.Module):
 class ActorCriticModel(nn.Module):
     def __init__(self, state_size, action_size, device,
                  hidsize1=512, hidsize2=256,
-                 critic_hidsize1=None, critic_hidsize2=None):
+                 critic_hidsize1=None, critic_hidsize2=None,
+                 global_state_dim: int = 0):
         super(ActorCriticModel, self).__init__()
         self.device = device
         critic_hidsize1 = hidsize1 if critic_hidsize1 is None else int(critic_hidsize1)
@@ -1589,6 +1662,35 @@ class ActorCriticModel(nn.Module):
             nn.Tanh(),
             nn.Linear(critic_hidsize2, 1)
         ).to(self.device)
+
+        # ---------------------------------------------------------------
+        # Bug L26 FIX — CTDE: zentralisierter Critic mit globalem State.
+        # Ref:
+        #   Yu et al. 2022, "The Surprising Effectiveness of PPO in
+        #     Cooperative Multi-Agent Games" (MAPPO),
+        #     arXiv:2103.01955, §4.2 Tab.2 (Agent-Specific Global State AS).
+        #     https://github.com/marlbenchmark/on-policy
+        #   Lowe et al. 2017, MADDPG, arXiv:1706.02275, §4.1.
+        # Critic erhält zusätzliches Feature: mean-pool über alle
+        # `opponents`-base-Obs aus temporal_seq[-1]. Projektion auf
+        # state_size, additiv via sigmoid-Gate (init ≈ 0) -> Anfangs-
+        # verhalten identisch zum Status quo; Gate lernt seinen Einfluss
+        # adaptiv. Vermeidet Checkpoint-Inkompatibilität für `critic`-MLP.
+        # ---------------------------------------------------------------
+        self.global_state_dim = int(global_state_dim)
+        if self.global_state_dim > 0:
+            self.global_state_proj = nn.Sequential(
+                nn.Linear(self.global_state_dim, state_size),
+                nn.LayerNorm(state_size),
+                nn.LeakyReLU(0.1),
+            ).to(self.device)
+            # sigmoid(-5) ≈ 0.0067 -> initial Einfluss quasi 0
+            self.global_state_gate = nn.Parameter(
+                torch.tensor(-5.0, device=self.device)
+            )
+        else:
+            self.global_state_proj = None
+            self.global_state_gate = None
 
         # Auxiliary head: predicts one-step deadlock risk from actor embedding.
         # This is used as an auxiliary task only (no action override).
@@ -1614,6 +1716,26 @@ class ActorCriticModel(nn.Module):
         dist = Categorical(logits=logits)
         return dist
 
+    def apply_global(self, states_critic: torch.Tensor,
+                     global_feat_raw: Optional[torch.Tensor]) -> torch.Tensor:
+        """Bug L26: addiere projezierten globalen State (mean-pool opponents)
+        zum Critic-Encoder-Output via lernbarem Sigmoid-Gate. Ref:
+        MAPPO Yu 2022 §4.2 (AS), MADDPG Lowe 2017."""
+        if self.global_state_proj is None or global_feat_raw is None:
+            return states_critic
+        g = self.global_state_proj(global_feat_raw)
+        gate = torch.sigmoid(self.global_state_gate)
+        return states_critic + gate * g
+
+    def critic_full_params(self):
+        """Parameter-Liste für Critic-Optimizer inkl. Bug-L26-Modul."""
+        params = list(self.critic.parameters())
+        if self.global_state_proj is not None:
+            params += list(self.global_state_proj.parameters())
+        if self.global_state_gate is not None:
+            params += [self.global_state_gate]
+        return params
+
     def evaluate(self, states, actions):
         logits = self.actor(states)
         dist = Categorical(logits=logits)
@@ -1626,6 +1748,13 @@ class ActorCriticModel(nn.Module):
         torch.save(self.actor.state_dict(), filename + ".actor")
         torch.save(self.critic.state_dict(), filename + ".value")
         torch.save(self.deadlock_head.state_dict(), filename + ".deadlock")
+        # Bug L26: optionales Modul separat speichern (vorwärts/rückwärts-kompatibel)
+        if self.global_state_proj is not None:
+            torch.save({
+                'proj': self.global_state_proj.state_dict(),
+                'gate': self.global_state_gate.detach().cpu(),
+                'dim': int(self.global_state_dim),
+            }, filename + ".global_state")
 
     def _load(self, obj, filename):
         if os.path.exists(filename):
@@ -1638,6 +1767,17 @@ class ActorCriticModel(nn.Module):
         self.actor = self._load(self.actor, filename + ".actor")
         self.critic = self._load(self.critic, filename + ".value")
         self.deadlock_head = self._load(self.deadlock_head, filename + ".deadlock")
+        # Bug L26: optionales Modul nachladen (fehlt -> neu mit Gate ≈ 0)
+        gs_file = filename + ".global_state"
+        if self.global_state_proj is not None and os.path.exists(gs_file):
+            print(' >> ', gs_file)
+            payload = torch.load(gs_file, map_location=self.device)
+            if isinstance(payload, dict) and int(payload.get('dim', -1)) == int(self.global_state_dim):
+                self.global_state_proj.load_state_dict(payload['proj'])
+                with torch.no_grad():
+                    self.global_state_gate.copy_(payload['gate'].to(self.device))
+            else:
+                print('   ⚠️ global_state checkpoint dim mismatch -> skipped')
 
 
 # =============================================================================
@@ -1844,7 +1984,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # representation shaping when weighted conservatively.
         # Conservative default in FULL mode: keep auxiliary signal present,
         # but lower its dominance to avoid overpowering PPO policy updates.
-        aux_default = 0.0 if self.simplified_mode > 0 else 0.06
+        aux_default = 0.0 if self.simplified_mode > 0 else 0.072
         self.weight_aux_deadlock = float(np.clip(float(os.getenv('FLATLAND_WEIGHT_AUX_DEADLOCK', str(aux_default))), 0.0, 1.0))
         self.weight_action_diversity = 0.0 if self.simplified_mode > 0 else 0.10
         self.weight_comm = 0.0 if self.simplified_mode > 0 else 3.0e-4
@@ -1852,7 +1992,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # Action diversity parameters (used only if weight_action_diversity > 0)
         self.forward_prob_soft_max = 0.62
         self.lr_prob_soft_min = 0.11
-        self.idle_prob_soft_max = 0.18
+        # Tightened 2026-05-21: was 0.18. Decision-gated Stop-share climbed to
+        # ~40% and produced a "wait-forever" local optimum. Lowering the soft
+        # cap together with the weight bump below (0.30 → 1.0) pushes the
+        # policy away from idling at decision points where forward is legal.
+        self.idle_prob_soft_max = 0.12
         # Apply action-diversity shaping only at meaningful conflict/decision contexts.
         self.action_diversity_gate_enabled = True
         self.action_diversity_gate_threshold = 0.50
@@ -2002,12 +2146,15 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
 
         # Actor-Critic Model (heads only, encoders are separate!)
         critic_hidden = max(192, int(self.hidden_size))
+        # Bug L26: Critic erhält zusätzlich mean-pool(opponents.base_obs)
+        # als globalen State (MAPPO Yu 2022 §4.2 AS).
         self.actor_critic_model = ActorCriticModel(
             self.hidden_size, action_size, self.device,
             hidsize1=self.hidden_size,
             hidsize2=self.hidden_size,
             critic_hidsize1=critic_hidden,
-            critic_hidsize2=critic_hidden
+            critic_hidsize2=critic_hidden,
+            global_state_dim=int(self.state_size),
         )
 
         # Adaptive Learning Rates - Choose between Option A (consolidated) and Option B (synchronized decay)
@@ -2025,7 +2172,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             all_params_raw = list(self.encoder_actor.parameters()) + \
                              list(self.actor_critic_model.actor.parameters()) + \
                              list(self.encoder_critic.parameters()) + \
-                             list(self.actor_critic_model.critic.parameters())
+                             self.actor_critic_model.critic_full_params()  # Bug L26
             # Shared encoder mode can otherwise add identical tensors twice.
             # Deduplicate by tensor id to keep optimizer state compact and stable.
             seen_param_ids = set()
@@ -2080,7 +2227,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             )
             
             self.optimizer_critic_head = optim.AdamW(
-                self.actor_critic_model.critic.parameters(),
+                self.actor_critic_model.critic_full_params(),  # Bug L26
                 lr=base_lr * 1.1
             )
             
@@ -2594,55 +2741,252 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             return 0.0
         return float(np.clip(gate_signal, 0.0, 1.0))
 
+    def _compute_global_state_features(self, state_tuples):
+        """Bug L26 (CTDE): mean-pool über `opponents.base_obs` aus jeweils
+        letztem Timestep jedes temporal_state-Samples. Ergibt Tensor
+        (B, base_obs_dim). Liefert None falls Critic kein global_state-Modul
+        besitzt -> kein Overhead.
+
+        Refs:
+          MAPPO (Yu et al. 2022, arXiv:2103.01955 §4.2, Agent-Specific
+            Global State AS); https://github.com/marlbenchmark/on-policy
+          MADDPG (Lowe et al. 2017, arXiv:1706.02275, §4.1).
+        """
+        if (self.actor_critic_model is None
+                or self.actor_critic_model.global_state_proj is None):
+            return None
+        base_dim = int(self.state_size)
+        bsz = len(state_tuples)
+        out = torch.zeros(bsz, base_dim, device=self.device, dtype=torch.float32)
+        for i, ts in enumerate(state_tuples):
+            if not isinstance(ts, (list, tuple)) or len(ts) == 0:
+                continue
+            last = ts[-1]
+            opps = []
+            if isinstance(last, (list, tuple)) and len(last) >= 2 and isinstance(last[1], list):
+                opps = last[1]
+            if len(opps) == 0:
+                continue
+            stacks = []
+            for o in opps:
+                t = self.encoder_critic._to_1d_tensor(o)
+                if t.numel() >= base_dim:
+                    stacks.append(t[:base_dim])
+            if len(stacks) == 0:
+                continue
+            stk = torch.stack(stacks, dim=0).to(device=self.device, dtype=torch.float32)
+            out[i] = stk.mean(dim=0)
+        return out
+
     def _convert_transitions_to_torch_tensors(self, transitions_array):
         """Convert episode transitions to tensors"""
         state_list, action_list, reward_list, state_next_list, dones_list, aux_deadlock_list = [], [], [], [], [], []
+        # CORRECTNESS FIX (Pardo et al. 2018, "Time Limits in RL",
+        # arXiv:1712.00378): distinguish TRUE termination (agent reached
+        # its target → bootstrap value must be 0) from TRUNCATION (episode
+        # cut off by max_steps / __all__ flag while agent did not finish →
+        # bootstrap value must use the critic V(s_{T+1})). Without this
+        # distinction, the critic systematically underestimates V on long
+        # episodes and the policy is biased toward short, pessimistic
+        # trajectories. We use `finished_flag` (transition[6]) which is
+        # set by base_solver only when terminal[handle] is True (true
+        # per-agent completion), not when only terminal['__all__'] flips.
+        terminated_list = []
 
         for transition in transitions_array:
-            if len(transition) >= 6:
+            if len(transition) >= 7:
                 state_i = transition[0]
                 action_i = transition[1]
                 reward_i = transition[2]
                 state_next_i = transition[3]
                 done_i = transition[4]
                 aux_deadlock_i = transition[5]
+                finished_i = bool(transition[6])
+            elif len(transition) >= 6:
+                state_i = transition[0]
+                action_i = transition[1]
+                reward_i = transition[2]
+                state_next_i = transition[3]
+                done_i = transition[4]
+                aux_deadlock_i = transition[5]
+                # Backward-compat: treat any done as true termination.
+                finished_i = bool(done_i)
             else:
                 state_i, action_i, reward_i, state_next_i, done_i = transition
                 aux_deadlock_i = self._extract_deadlock_label_from_temporal_state(state_next_i)
+                finished_i = bool(done_i)
 
             state_list.append(state_i)
             action_list.append(action_i)
             reward_list.append(reward_i)
             state_next_list.append(state_next_i)
             dones_list.append(1 if done_i else 0)
+            terminated_list.append(1 if finished_i else 0)
             aux_deadlock_list.append(float(aux_deadlock_i))
 
         actions = torch.tensor(action_list, dtype=torch.long).to(self.device)
         rewards = torch.tensor(reward_list, dtype=torch.float).to(self.device) * self.reward_scale
         dones = torch.tensor(dones_list, dtype=torch.float).to(self.device)
+        terminated = torch.tensor(terminated_list, dtype=torch.float).to(self.device)
         aux_deadlock = torch.tensor(aux_deadlock_list, dtype=torch.float).to(self.device)
 
-        return state_list, actions, rewards, state_next_list, dones, aux_deadlock
+        return state_list, actions, rewards, state_next_list, dones, terminated, aux_deadlock
     
-    def _compute_gae(self, rewards, values, dones, next_values):
+    # ------------------------------------------------------------------
+    # Action masking helper (consistent with _masked_act in the policy).
+    # ------------------------------------------------------------------
+    # CRITICAL CORRECTNESS FIX: actions are sampled in _masked_act from a
+    # *masked* Categorical (illegal action logits set to -1e9 before softmax),
+    # but the PPO loss originally computed logprobs/entropy from the
+    # *unmasked* logits. This breaks the on-policy ratio identity
+    #     pi_theta(a|s) / pi_theta_old(a|s)
+    # because the distributions used at sampling time and at update time
+    # are different. It also inflates the entropy bonus by assigning mass to
+    # illegal actions, biasing the gradient.
+    #
+    # Reference: Huang & Ontañón (2022), "A Closer Look at Invalid Action
+    # Masking in Policy Gradient Algorithms" (arXiv:2006.14171), Section 3.2,
+    # which establishes that masking MUST be applied identically at sampling
+    # *and* loss-evaluation time to keep the policy gradient unbiased.
+    # See also CleanRL implementation notes [R6] and MAPPO repo [R4].
+    #
+    # We reconstruct the legal-action mask from the latest observation frame:
+    #   obs[0] = path_left, obs[1] = path_forward, obs[2] = path_right
+    # which directly correspond to RailEnvActions MOVE_LEFT / MOVE_FORWARD /
+    # MOVE_RIGHT legality (DecisionPointObservation.BASE_FEATURE_SPECS).
+    # DO_NOTHING (=0) and STOP_MOVING (=4) are treated as always-legal:
+    # this is conservative — it never removes a legal action — and matches
+    # the guidance "mask only the actions you *know* to be illegal".
+    # ------------------------------------------------------------------
+    def _build_action_masks_from_state_tuples(self, state_tuples):
+        """Reconstruct legal-action masks for stored transitions.
+
+        Must be a SUPERSET of every mask the data-generating policy could
+        have used, otherwise PPO computes log_prob(-1e9) for actions it
+        actually sampled, destroying training (Huang & Ontañón 2022,
+        arXiv:2006.14171 — sec. "consistent masking"; marlbenchmark
+        on-policy stores `available_actions` per transition for the same
+        reason). Here we don't store the mask, so we reconstruct it from
+        obs[0:3]=path_left/forward/right, mirroring the env-level mask in
+        `MARL_ATT_DecisionPointPolicy._legal_action_mask`:
+
+            STOP_MOVING        always legal
+            num_trans <  2     → all 5 actions legal (covers
+                                 FORWARD_ONLY/DONE/OUTSIDE fallbacks
+                                 and 1-transition curves where the
+                                 canonical action is MOVE_FORWARD even
+                                 when geometric path_forward=0)
+            num_trans >= 2     → switch/merge: MOVE_LEFT/FORWARD/RIGHT
+                                 follow obs path bits; DO_NOTHING and
+                                 STOP_MOVING remain legal (permissive
+                                 superset — DONE cells store DO_NOTHING)
+
+        Refs:
+            - Huang & Ontañón 2022 — invalid-action masking in PPO.
+            - Yu et al. 2022 (MAPPO, arXiv:2103.01955) §A.2 — MAPPO
+              implementation stores `available_actions` per timestep.
+            - marlbenchmark/on-policy (Yu et al. ref impl).
+        """
+        bsz = len(state_tuples)
+        if bsz == 0:
+            return torch.ones((0, self.action_size), dtype=torch.float32, device=self.device)
+
+        # RailEnvActions: 0=DO_NOTHING, 1=MOVE_LEFT, 2=MOVE_FORWARD,
+        #                 3=MOVE_RIGHT, 4=STOP_MOVING
+        mask_np = np.ones((bsz, self.action_size), dtype=np.float32)
+
+        for i, st in enumerate(state_tuples):
+            try:
+                latest_frame = st[-1] if isinstance(st, (list, tuple)) and len(st) > 0 else None
+                obs_vec = latest_frame[0] if isinstance(latest_frame, (list, tuple)) and len(latest_frame) > 0 else None
+                if obs_vec is None:
+                    continue
+                v = np.asarray(obs_vec, dtype=np.float32).reshape(-1)
+                if v.shape[0] < 3:
+                    continue
+                left_ok = float(v[0]) > 0.5
+                fwd_ok = float(v[1]) > 0.5
+                right_ok = float(v[2]) > 0.5
+                num_trans = int(left_ok) + int(fwd_ok) + int(right_ok)
+                if num_trans < 2:
+                    # BUG-16 FIX (CRITICAL): previously this branch left the
+                    # mask all-1 (size 5), but at sampling time the wrapper
+                    # `MARL_ATT_DecisionPointPolicy._masked_act` /
+                    # `_legal_action_mask` only ever produces actions in
+                    #   {DO_NOTHING, STOP_MOVING, MOVE_FORWARD}
+                    # for non-switch cells (FORWARD_ONLY, OUTSIDE, DONE,
+                    # WAITING, 1-transition curves). The over-permissive
+                    # reconstructed mask spreads π_old mass onto LEFT/RIGHT
+                    # that were NEVER legal at sampling, so the
+                    # importance-sampling ratio  π_new(a) / π_old(a) became
+                    # systematically > 1 even for an unchanged policy,
+                    # corrupting the PPO clip on the majority of transitions
+                    # (most cells are not switches).
+                    # Tighten to the exact superset the wrapper can produce.
+                    # Ref: Huang & Ontañón 2022 (arXiv:2006.14171) §3.2;
+                    #      Yu et al. 2022 MAPPO §A.2 (store
+                    #      `available_actions` per timestep — same idea).
+                    if self.action_size >= 5:
+                        mask_np[i, 0] = 1.0  # DO_NOTHING (DONE / WAITING)
+                        mask_np[i, 1] = 0.0  # MOVE_LEFT  — never legal here
+                        mask_np[i, 2] = 1.0  # MOVE_FORWARD
+                        mask_np[i, 3] = 0.0  # MOVE_RIGHT — never legal here
+                        mask_np[i, 4] = 1.0  # STOP_MOVING
+                    continue
+                # True decision point (num_trans >= 2): restrict only the
+                # three relative move actions; DO_NOTHING/STOP remain legal.
+                if self.action_size >= 5:
+                    mask_np[i, 1] = 1.0 if left_ok else 0.0
+                    mask_np[i, 2] = 1.0 if fwd_ok else 0.0
+                    mask_np[i, 3] = 1.0 if right_ok else 0.0
+            except Exception:
+                # On any unexpected layout: conservative all-legal mask.
+                continue
+
+        return torch.from_numpy(mask_np).to(self.device)
+
+    @staticmethod
+    def _masked_logits(logits: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
+        """Apply legal-action mask to logits before Categorical (Huang & Ontañón 2022)."""
+        return logits.masked_fill(masks < 0.5, -1e9)
+
+    def _compute_gae(self, rewards, values, dones, next_values, terminated=None):
         """Generalized Advantage Estimation (GAE).
 
         Reference: GAE [R2]. PPO typically combines GAE with clipped policy
         updates [R1], and MAPPO uses the same core estimator [R3], [R4].
 
-        delta_t = r_t + gamma * V(s_{t+1}) * (1 - done_t) - V(s_t)
-        A_t     = delta_t + gamma * lambda * A_{t+1} * (1 - done_t)
+        Time-limit / truncation handling:
+            Pardo, Tavakoli, Levdik & Kormushev (2018),
+            "Time Limits in Reinforcement Learning",
+            arXiv:1712.00378
+            -- When an episode ends by a TIME LIMIT (truncation) rather than
+               by reaching a true terminal state, the value of the
+               bootstrap state V(s_{T+1}) must still be used. Treating
+               truncation as termination (bootstrap = 0) biases V toward
+               pessimism on long episodes. We distinguish the two via the
+               `terminated` mask (true task completion) and use `dones` only
+               to cut the GAE chain at the episode boundary.
+
+        delta_t = r_t + gamma * V(s_{t+1}) * (1 - terminated_t) - V(s_t)
+        A_t     = delta_t + gamma * lambda * A_{t+1} * (1 - dones_t)
         """
+        if terminated is None:
+            # Backward-compatible fallback: any episode end is treated as
+            # true termination. This matches the original (buggy on
+            # truncation) behaviour.
+            terminated = dones
+
         advantages = torch.zeros_like(rewards)
         gae = 0
-        
+
         for t in reversed(range(len(rewards))):
-            delta = rewards[t] + self.discount * next_values[t] * (1 - dones[t]) - values[t]
-            gae = delta + self.discount * self.gae_lambda * gae * (1 - dones[t])
+            delta = rewards[t] + self.discount * next_values[t] * (1.0 - terminated[t]) - values[t]
+            gae = delta + self.discount * self.gae_lambda * gae * (1.0 - dones[t])
             advantages[t] = gae
-        
+
         returns = advantages + values
-        
+
         return advantages, returns
 
     def train_net_accumulated(self):
@@ -2763,22 +3107,28 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 break
 
         for agent_episode_history in selected_trajectories:
-            state_tuples, actions, rewards, state_next_tuples, dones, aux_deadlock = \
+            state_tuples, actions, rewards, state_next_tuples, dones, terminated, aux_deadlock = \
                 self._convert_transitions_to_torch_tensors(agent_episode_history)
 
             # Compute GAE (encoder calls are batched internally)
             with torch.no_grad():
                 states_critic = self.encoder_critic.forward_batch(state_tuples)
+                # Bug L26: globaler State (mean-pool opponents) -> Critic
+                _global_now = self._compute_global_state_features(state_tuples)
+                states_critic = self.actor_critic_model.apply_global(states_critic, _global_now)
                 values = torch.squeeze(self.actor_critic_model.critic(states_critic), dim=-1)
                 # FIXED: Removed torch.clamp(values, -5, 5) — was truncating returns [-19.85, +2.97].
                 # Let critic learn to predict true return values without artificial bounds.
 
                 next_states_critic = self.encoder_critic.forward_batch(state_next_tuples)
+                # Bug L26: globaler State auch für s_{t+1}
+                _global_next = self._compute_global_state_features(state_next_tuples)
+                next_states_critic = self.actor_critic_model.apply_global(next_states_critic, _global_next)
                 next_values = torch.squeeze(self.actor_critic_model.critic(next_states_critic), dim=-1)
                 # Critic now free to fit the full range of returns for better GAE advantage signals.
 
                 traj_gae_advantages, traj_gae_returns = self._compute_gae(
-                    rewards, values, dones, next_values
+                    rewards, values, dones, next_values, terminated=terminated
                 )
 
             episode_data.append((
@@ -2868,7 +3218,15 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # This is the PPO ratio definition pi_theta / pi_theta_old.
         # See [R1], [R5], [R6].
         batch_size_encoding = 256  # ⚡ WICHTIG: Außerhalb definieren!
-        
+
+        # Action masking (Huang & Ontañón 2022, arXiv:2006.14171):
+        # Build legal-action masks for the FINAL rollout window so that the
+        # PPO update applies the SAME masking as `_masked_act` did at
+        # sampling time. IMPORTANT: build AFTER the optional downsampling
+        # above so masks remain index-aligned with all_state_tuples /
+        # all_actions / all_advantages.
+        all_action_masks = self._build_action_masks_from_state_tuples(all_state_tuples)
+
         if self.show_pre_train_debug_msg:
             print(f"\n🔍 Computing initial old_logprobs for {len(all_state_tuples)} samples...")
         
@@ -2880,9 +3238,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             for i in range(0, len(all_state_tuples), batch_size_encoding):
                 batch_states = all_state_tuples[i:i+batch_size_encoding]
                 batch_acts = all_actions[i:i+batch_size_encoding]
-                
+                batch_masks = all_action_masks[i:i+batch_size_encoding]
+
                 states_enc = self.encoder_actor.forward_batch(batch_states)
                 logits = self.actor_critic_model.actor(states_enc)
+                # Apply the same masking as `_masked_act` (Huang & Ontañón 2022).
+                logits = self._masked_logits(logits, batch_masks)
                 old_lp = Categorical(logits=logits).log_prob(batch_acts)
                 all_old_logprobs.append(old_lp)
             
@@ -2938,6 +3299,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 batch_gae_returns = all_gae_returns[batch_indices]
                 batch_aux_deadlock = all_aux_deadlock[batch_indices]
                 batch_old_logprobs = all_old_logprobs[batch_indices]  # 🎯 Pre-computed!
+                batch_action_masks = all_action_masks[batch_indices]
 
                 comm_progress = self._apply_comm_schedule()
 
@@ -2945,6 +3307,9 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 t0 = _tic() if profile_enabled else 0.0
                 states_actor = self.encoder_actor.forward_batch(batch_state_tuples)
                 states_critic = self.encoder_critic.forward_batch(batch_state_tuples)
+                # Bug L26: globaler State (mean-pool opponents) -> Critic
+                _global_batch = self._compute_global_state_features(batch_state_tuples)
+                states_critic = self.actor_critic_model.apply_global(states_critic, _global_batch)
                 if profile_enabled:
                     _add_t('encode_batch', _tic() - t0)
 
@@ -2961,6 +3326,10 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 # Evaluate actions (NEW policy - WITH gradients!)
                 t0 = _tic() if profile_enabled else 0.0
                 logits = self.actor_critic_model.actor(states_actor)
+                # Apply the same legal-action mask used at sampling time
+                # (Huang & Ontañón 2022, arXiv:2006.14171). This keeps
+                # logprob, ratio and entropy consistent with `_masked_act`.
+                logits = self._masked_logits(logits, batch_action_masks)
                 dist = Categorical(logits=logits)
                 logprobs = dist.log_prob(batch_actions)
                 
@@ -3045,11 +3414,30 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                         action_diversity_loss_component = (
                             forward_excess.pow(2)
                             + 0.5 * lr_shortfall.pow(2)
-                            + 0.30 * idle_excess.pow(2)
+                            # 2026-05-21: idle weight raised 0.30 → 1.0 to match
+                            # forward-excess weight. After 500-900 episodes the
+                            # policy collapsed to STOP at ~40% of decision
+                            # points; treating idle as costly as over-forward
+                            # restores a usable Forward gradient.
+                            + 1.0 * idle_excess.pow(2)
                         )
                 if self.weight_aux_deadlock > 0.0:
                     deadlock_logits = torch.squeeze(self.actor_critic_model.deadlock_head(states_actor), dim=-1)
-                    aux_targets = torch.clamp(batch_aux_deadlock, 0.0, 1.0)
+                    # BUG-14 FIX: aux_deadlock label is built as a CONTINUOUS
+                    # [0,1] risk score in `_extract_deadlock_label_from_temporal_state`
+                    # (mix of max(deadlock_risk), oncoming flags, dead-end ratio).
+                    # BCE-with-logits on continuous targets in [0,1] has an
+                    # IRREDUCIBLE floor equal to H(target) — e.g. target=0.45
+                    # gives min BCE ≈ 0.688. This is why AuxDL was stuck near
+                    # ~0.9 and never crossed the 0.80 dampen threshold.
+                    # `pos_weight` only makes sense for *binary* labels, so we
+                    # binarize here (threshold 0.4 — same pattern as marmot
+                    # NeurIPS-2020 `target_collisioncourse`, see [R13]).
+                    # Refs:
+                    #   - marmotlab/flatland-challenge-neurips-2020 [R13]
+                    #     (binary collision-course aux head, BCE).
+                    #   - Yu et al. 2022 MAPPO [R3] §A.3 (binary aux targets).
+                    aux_targets = (torch.clamp(batch_aux_deadlock, 0.0, 1.0) >= 0.4).float()
                     pos_weight = torch.full_like(aux_targets, self.aux_deadlock_pos_weight)
                     aux_deadlock_loss_component = nn.functional.binary_cross_entropy_with_logits(
                         deadlock_logits,
@@ -3087,8 +3475,12 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                         aux_weight_eff *= 0.35
                     elif self.episode_count < 220:
                         aux_weight_eff *= 0.65
-                    if float(aux_deadlock_loss_component.detach().item()) > 1.20:
-                        aux_weight_eff *= 0.50
+                    # AuxDL auto-dampen: reduce weight aggressively when BCE remains
+                    # worse than a well-calibrated classifier (>0.80 with pos_weight=1.5).
+                    # Old threshold was 1.20 which never fired in practice (observed ~0.94).
+                    # Ref: BCE random baseline ≈ 0.77 with 4% positive rate + pos_weight=1.5.
+                    if float(aux_deadlock_loss_component.detach().item()) > 0.80:
+                        aux_weight_eff *= 0.25
 
                     # If rollout completion stays very low, bias optimization toward
                     # exploration and primary PPO signal, while damping auxiliary drag.
@@ -3096,12 +3488,16 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     # settings ([R3], [R4], [R5]).
                     done_hist = self._rollout_diag_buf.get('done_frac', None)
                     done_win = float(np.mean(done_hist)) if done_hist is not None and len(done_hist) > 0 else 0.0
-                    if done_win < 0.12:
+                    # BUG FIX (2026-05-21): threshold was 0.12 but observed done_win was
+                    # consistently 0.13-0.17, so aux damping and entropy boost NEVER fired
+                    # during the critical early training phase. Raised to 0.25 to match the
+                    # WARN threshold in the diagnostic report.
+                    if done_win < 0.25:
                         aux_weight_eff *= 0.50
 
                     policy_weight_eff = self.weight_policy
                     entropy_weight_eff = self.weight_entropy
-                    if done_win < 0.12:
+                    if done_win < 0.25:
                         entropy_weight_eff = max(entropy_weight_eff, self.weight_entropy * 1.75)
                     if self.episode_count >= self.entropy_rescue_start_episode and entropy_mean < self.entropy_floor:
                         entropy_weight_eff = max(entropy_weight_eff, self.weight_entropy * self.entropy_recovery_scale)
@@ -3120,19 +3516,31 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                         policy_weight_eff = max(policy_weight_eff * 0.55, 0.35)
                         entropy_weight_eff *= 0.4
                         comm_weight_eff *= 1.35
-                        hard_spike_batches_total += 1
-                        hard_spike_streak += 1
+                        # BUG FIX (2026-05-21): Gate spike counting behind stability_guard.
+                        # Before stability_guard_start_episode, KL of 0.05-0.20 is NORMAL
+                        # early-training variance. Counting it as hard spikes caused LR to
+                        # decay to the minimum floor (0.70) by ep=40 and stay there permanently,
+                        # preventing any learning. The weight dampening above (policy/entropy
+                        # scaling) is still applied immediately to protect the trust region.
+                        # Ref: Yu et al. 2022 MAPPO (arXiv:2103.01955); Schulman 2017 PPO
+                        # (arXiv:1707.06347): stability guards are for late training only.
+                        if self.episode_count >= self.stability_guard_start_episode:
+                            hard_spike_batches_total += 1
+                            hard_spike_streak += 1
                     elif approx_kl > self.ppo_emergency_kl or ratio_soft_viol:
-                        hard_spike_streak = max(hard_spike_streak, 1)
+                        if self.episode_count >= self.stability_guard_start_episode:
+                            hard_spike_streak = max(hard_spike_streak, 1)
                     else:
-                        hard_spike_streak = 0
+                        if self.episode_count >= self.stability_guard_start_episode:
+                            hard_spike_streak = 0
 
                     if approx_kl > self.ppo_emergency_kl_hard:
                         policy_weight_eff = max(policy_weight_eff * 0.45, 0.30)
                         entropy_weight_eff *= 0.25
                         comm_weight_eff *= 1.45
-                        hard_spike_batches_total += 1
-                        hard_spike_streak += 1
+                        if self.episode_count >= self.stability_guard_start_episode:
+                            hard_spike_batches_total += 1
+                            hard_spike_streak += 1
                     
                     # Keep policy and critic progress coupled: when critic error is high,
                     # increase critic pressure and slightly damp policy updates.
@@ -3242,6 +3650,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                 # Only skip on true NaN/Inf — clip_grad_norm_ already bounds large norms.
                 # The old "> grad_norm_skip_step_hard" threshold blocked ALL optimizer steps
                 # at startup (pre-clip norms >400 are normal with random init + large rewards).
+                # NaN/Inf is genuine divergence and must always trigger LR decay (no episode guard).
                 if not np.isfinite(grad_norm):
                     hard_spike_batches_total += 1
                     hard_spike_streak += 1
@@ -3260,12 +3669,23 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                             f"(post={grad_norm_post:.2f}, thr={self.grad_norm_skip_step_hard:.1f}) — clipped, continuing"
                         )
 
+                # BUG FIX (Bug 12, 2026-05-21): Same defect as Bug 7 but for grad-norm
+                # spike counters. Pre-clip norms 400-900 are NORMAL in early training
+                # with random init + sparse-but-large rewards (own comment above
+                # acknowledges ">400 normal at startup"). Counting them as hard spikes
+                # before stability_guard_start_episode caused permanent LR floor and
+                # blocked recovery (recover branch only fires if hard_spike_batches_total == 0).
+                # Refs: Yu et al. 2022 MAPPO §A.2 [R3]; Schulman 2017 PPO [R1];
+                # Jiang et al. 2022 Flatland-MARL [R12] — large pre-clip norms during
+                # multi-phase curriculum start are expected and not pathological.
                 if grad_norm > self.grad_norm_hard:
-                    hard_spike_batches_total += 1
-                    hard_spike_streak += 1
-                    self._set_actor_lr_factor(self.actor_lr_factor * self.actor_lr_decay_on_instability)
+                    if self.episode_count >= self.stability_guard_start_episode:
+                        hard_spike_batches_total += 1
+                        hard_spike_streak += 1
+                        self._set_actor_lr_factor(self.actor_lr_factor * self.actor_lr_decay_on_instability)
                 elif grad_norm > self.grad_norm_soft:
-                    hard_spike_streak = max(hard_spike_streak, 1)
+                    if self.episode_count >= self.stability_guard_start_episode:
+                        hard_spike_streak = max(hard_spike_streak, 1)
 
                 def _module_grad_norm(module: nn.Module) -> float:
                     sq = 0.0

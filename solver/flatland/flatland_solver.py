@@ -1,5 +1,7 @@
 from typing import Union
 
+from flatland.envs.step_utils.states import TrainState
+
 from environment.environment import Environment
 from policy.policy import Policy
 from rendering.base_renderer import BaseRenderer
@@ -83,7 +85,14 @@ class FlatlandSolver(MultiAgentBaseSolver):
                 
                 # Only call policy.step() if transition is meaningful
                 if should_train or agent_done:
-                    agent_finished = bool(terminal[handle])
+                    # Bugfix 2026-05-21: terminal[handle] is True for ALL agents at
+                    # episode end (max_steps) in flatland-rl, not only for goal-reached
+                    # agents. Derive the real "task completion" flag from the agent's
+                    # TrainState so done_frac metric reflects actual goal arrivals.
+                    try:
+                        agent_finished = bool(self.env.raw_env.agents[handle].state == TrainState.DONE)
+                    except Exception:
+                        agent_finished = bool(terminal[handle])
                     try:
                         policy.step(handle,
                                     state[handle],

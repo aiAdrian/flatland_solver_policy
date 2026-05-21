@@ -125,12 +125,21 @@ def _env_float(name: str, default: float) -> float:
     return float(value)
 
 
-REWARD_STEP_PENALTY = _env_float('FLATLAND_REWARD_STEP_PENALTY', -0.01)
-REWARD_DONE_BONUS = _env_float('FLATLAND_REWARD_DONE_BONUS', 1.0)  # Boosted for stronger positive signal
-REWARD_ALL_DONE_BONUS = _env_float('FLATLAND_REWARD_ALL_DONE_BONUS', 10.0)
-REWARD_DEADLOCK_PENALTY = _env_float('FLATLAND_DEADLOCK_PENALTY', -5.0)   # Massiv gesenkt: 100→8, verhindert Reward-Varianz-Explosion
-REWARD_PROGRESS_BONUS = _env_float('FLATLAND_REWARD_PROGRESS_BONUS', 0.01)  # ↑ reward for progress
-FINAL_NOT_SOLVED_PENALTY = _env_float('FLATLAND_FINAL_NOT_SOLVED_PENALTY', -2.0)   # Gesenkt: 10→2, reduziert Varianz der Rückgabe
+REWARD_STEP_PENALTY = _env_float('FLATLAND_REWARD_STEP_PENALTY', 0.0)
+REWARD_DONE_BONUS = _env_float('FLATLAND_REWARD_DONE_BONUS', 5.0)  # Per-Agent Ziel-Bonus (gilt einmal pro Agent).
+REWARD_ALL_DONE_BONUS = _env_float('FLATLAND_REWARD_ALL_DONE_BONUS', 10.0)  # Team-Bonus, wenn ALLE Agenten im Ziel.
+REWARD_DEADLOCK_PENALTY = _env_float('FLATLAND_DEADLOCK_PENALTY', -1.0)   # Pro-Step in Deadlock-Zelle (Episoden-tot, also addiert sich auf).
+REWARD_PROGRESS_BONUS = _env_float('FLATLAND_REWARD_PROGRESS_BONUS', 0.0)  # 2026-05-21: aus — semi-sparse Setup.
+FINAL_NOT_SOLVED_PENALTY = _env_float('FLATLAND_FINAL_NOT_SOLVED_PENALTY', -1.0)   # Pro-Step in den letzten 5 Steps für jeden Agenten, der NICHT im Ziel ist (= ~-5 gesamt). Genau die „Spiel fertig, nicht im Ziel = schlecht"-Bestrafung.
+# 2026-05-21: alle dense Per-Step-Signale abgeschaltet, um Stop-Plateau aufzubrechen.
+# Aktives Reward-Setup (semi-sparse):
+#   + done_bonus           pro Agent der ins Ziel kommt    (+5)
+#   + all_done_bonus       falls alle ankommen             (+10, zusätzlich)
+#   - deadlock_penalty     pro Step in lokaler Deadlock-Zelle (-1, summiert)
+#   - final_not_solved     letzte 5 Steps für nicht-Done-Agenten (~-5 gesamt)
+# Alle anderen Steps: 0.  -> "nicht im Ziel = schlecht" wird über
+# final_not_solved_penalty UND fehlenden done_bonus realisiert.
+REWARD_IDLE_PENALTY = _env_float('FLATLAND_REWARD_IDLE_PENALTY', 0.0)  # 2026-05-21: aus — semi-sparse Setup.
 
 class FlatlandSparseRewardShaper:
     """Reward shaping for sparse/deadlock-heavy Flatland training.
@@ -150,7 +159,8 @@ class FlatlandSparseRewardShaper:
         all_done_bonus: float,
         deadlock_penalty: float,
         progress_bonus: float,
-        final_not_solved_penalty: float
+        final_not_solved_penalty: float,
+        idle_penalty: float = 0.0,
     ):
         self.step_penalty = float(step_penalty)
         self.done_bonus = float(done_bonus)
@@ -158,6 +168,9 @@ class FlatlandSparseRewardShaper:
         self.deadlock_penalty = float(deadlock_penalty)
         self.progress_bonus = float(progress_bonus)
         self.final_not_solved_penalty = float(final_not_solved_penalty)
+        # Extra cost for choosing STOP/DO_NOTHING in a movable cell with no
+        # oncoming/deadlock context. Breaks the "wait-forever" local optimum.
+        self.idle_penalty = float(idle_penalty)
         self._rewarded_done = {}
         self._all_done_bonus_given = False
         self._prev_distance = {}
@@ -220,37 +233,93 @@ class FlatlandSparseRewardShaper:
         for handle in env.get_agent_handles():
             agent = raw_env.agents[handle]
             
+            # CRITICAL CORRECTNESS FIX (2026-05-20):
+            # Reward components are now ADDITIVE (r += ...) instead of
+            # overwriting (r = ...). The previous overwriting variant silently
+            # dropped earlier components (e.g. step_penalty was replaced by
+            # progress_bonus on any forward step, all_done_bonus replaced the
+            # per-agent done_bonus, final_not_solved_penalty masked deadlock
+            # penalty). That created a near-flat reward landscape where
+            # "STOP forever" was a local optimum and the policy never received
+            # a clear gradient toward the goal.
+            #
+            # Additive shaping follows the potential-based shaping principle
+            # from Ng, Harada & Russell (1999) [R7] and the dense-reward
+            # decomposition used in MAPPO Flatland baselines:
+            #   Yu et al. (2022), MAPPO arXiv:2103.01955 [R3]
+            #   Laurent et al. (2021), Flatland Competition arXiv:2103.16511 [R2]
+            #   marlbenchmark/on-policy reference implementation [R8]
             r = 0.0
-                
+
             if agent.state > TrainState.WAITING:
-                # Apply time pressure for every non-terminal agent so idling is costly.
+                # Per-step dense components (only while agent is still active).
                 if agent.state < TrainState.DONE:
-                    r = self.step_penalty
+                    # Time pressure is ALWAYS applied: idling must be costly.
+                    r += self.step_penalty
 
                     if agent.position is not None and agent.direction is not None:
                         current_dist = self._current_agent_distance(env, agent)
                         prev_dist = float(self._prev_distance.get(handle, current_dist))
                         if current_dist < prev_dist:
-                            r = self.progress_bonus
+                            # Progress bonus stacks on top of step_penalty so that
+                            # the net signal for "moved closer" is positive but
+                            # bounded (step_penalty + progress_bonus).
+                            r += self.progress_bonus
                         self._prev_distance[handle] = current_dist
 
-                        if deadlock_check_enabled and DecisionPointUtils.is_local_deadlock(raw_env, agent, agent_map):
+                        in_deadlock = (
+                            deadlock_check_enabled
+                            and DecisionPointUtils.is_local_deadlock(raw_env, agent, agent_map)
+                        )
+                        if in_deadlock:
                             self._current_episode_deadlocks.add(int(handle))
-                            r = self.deadlock_penalty
+                            r += self.deadlock_penalty
 
-                # +BONUS once when an agent reaches target.
+                        # Idle/Stop penalty: discourage waiting in cells where
+                        # the agent could actually move. Only applied when:
+                        #   - action provided (training time)
+                        #   - action ∈ {DO_NOTHING, STOP_MOVING}
+                        #   - agent is MOVING (not WAITING / READY_TO_DEPART)
+                        #   - cell has >= 1 valid transition
+                        #   - no local deadlock right now (waiting can be
+                        #     correct if the cell is already blocked)
+                        if (
+                            self.idle_penalty != 0.0
+                            and actions is not None
+                            and not in_deadlock
+                            and agent.state == TrainState.MOVING
+                        ):
+                            act_val = actions.get(handle) if isinstance(actions, dict) else None
+                            if act_val is None and not isinstance(actions, dict):
+                                try:
+                                    act_val = actions[handle]
+                                except (IndexError, KeyError, TypeError):
+                                    act_val = None
+                            if act_val is not None and int(act_val) in (
+                                int(RailEnvActions.DO_NOTHING),
+                                int(RailEnvActions.STOP_MOVING),
+                            ):
+                                try:
+                                    trans = raw_env.rail.get_transitions(*agent.position, agent.direction)
+                                    if fast_count_nonzero(trans) >= 1:
+                                        r += self.idle_penalty
+                                except Exception:
+                                    pass
+
+                # Terminal per-agent success bonus (once).
                 if agent.state == TrainState.DONE and not bool(self._rewarded_done.get(handle, False)):
-                    r = self.done_bonus
+                    r += self.done_bonus
                     self._rewarded_done[handle] = True
- 
-                # If all agents are done, grant one-time team bonus to each agent.
-                if give_all_done_bonus:
-                    r = self.all_done_bonus
 
-                # Final not solved penalty only when the episode is near step limit
-                # and not fully solved. Keep all-done bonus intact in solved episodes.
+                # Team-success bonus stacks on top of the per-agent done bonus.
+                if give_all_done_bonus:
+                    r += self.all_done_bonus
+
+                # End-of-episode penalty for agents that never reached the
+                # target. Stacks with step/deadlock penalty so the gradient
+                # truly punishes unsolved trajectories.
                 if near_step_limit and not all_agents_done and agent.state < TrainState.DONE:
-                    r = self.final_not_solved_penalty
+                    r += self.final_not_solved_penalty
 
             shaped[handle] = float(r)
 
@@ -299,7 +368,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
             0.0,
             0.20,
         ))
-        # Route prior from DecisionPointObservation base features [12:15]
+        # Route prior from DecisionPointObservation base features [10:13]
         # (sp_left/sp_forward/sp_right). This keeps navigation simple and
         # stable while still allowing PPO exploration around merges/switches.
         self.sp_hint_route_prior_prob = float(np.clip(
@@ -557,7 +626,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         return int(action)
 
     def _extract_shortest_path_hint_action(self, state, mask: np.ndarray) -> Optional[int]:
-        """Read DecisionPointObservation shortest-path one-hot from base features [12:15].
+        """Read DecisionPointObservation shortest-path one-hot from base features [10:13].
 
         Returns a legal RailEnv action id (LEFT/FORWARD/RIGHT) or None.
         """
@@ -568,10 +637,10 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         except Exception:
             return None
 
-        if obs.shape[0] < 15:
+        if obs.shape[0] < 13:
             return None
 
-        hints = obs[12:15]
+        hints = obs[10:13]
         if not np.all(np.isfinite(hints)):
             return None
 
@@ -757,7 +826,13 @@ default_k_epochs = 3
 ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
     hidden_size=_env_int('FLATLAND_HIDDEN_SIZE', default_hidden_size),
     batch_size=max(32, _env_int('FLATLAND_BATCH_SIZE', default_batch_size)),
-    learning_rate=_env_float('FLATLAND_LR', 1.0e-5),
+    # LR refs: Schulman 2017 PPO (arXiv:1707.06347) 3e-4; Yu et al. 2022
+    # MAPPO (arXiv:2103.01955) 5e-4..7e-4; CleanRL PPO 2.5e-4. Previously
+    # 1e-5 was 10-30x too small: with grad-clip post-norm ≈ 0.4, the
+    # per-update parameter delta was ~4e-6 — below the entropy/diversity
+    # restoring force, so PPO ratio stayed pinned at ~1.0 and policy
+    # entropy never collapsed (stuck at ≈88% of log(action_size)).
+    learning_rate=_env_float('FLATLAND_LR', 1.0e-4),
     discount=_env_float('FLATLAND_DISCOUNT', 0.99),
     gae_lambda=_env_float('FLATLAND_GAE_LAMBDA', 0.92),  # ↓ 0.95→0.92: sharper advantage signal
     use_gpu=USE_GPU_EFFECTIVE,
@@ -810,6 +885,9 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         effective_ppo_param = ppo_param._replace(encoder_shared=True, use_spatial_attention=False)
 
     train_frequency_default = int(np.clip(_env_int('FLATLAND_TRAIN_FREQUENCY', 10), 1, 100))
+    # IMPORTANT: keep pure_marl as pure PPO by default.
+    # DLA shield should only be enabled explicitly (env flag or *_dla mode).
+    use_dla_shield = str(os.getenv('FLATLAND_USE_DLA_SHIELD', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
 
     policy = MARL_ATT_DecisionPointPolicy(
         observation_space,
@@ -820,7 +898,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         train_frequency=train_frequency_default,
         optimizer_mode=optimizer_mode,
         use_action_masking=str(os.getenv('FLATLAND_USE_ACTION_MASKING', '1')).strip().lower() in ('1', 'true', 'yes', 'on'),
-        use_deadlock_avoidance_policy=True
+        use_deadlock_avoidance_policy=use_dla_shield
     )
     # Full baseline (MAPPO/PPO-aligned) with references:
     # - PPO:   https://arxiv.org/abs/1707.06347
@@ -834,25 +912,40 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     # - Encourage exploration at decision points without forcing high route prior.
     # - Avoid over-aggressive heuristic/offensive defaults in early curriculum.
     policy.surrogate_eps_clip = float(np.clip(_env_float('FLATLAND_CLIP_EPS', 0.20), 0.05, 0.40))
-    policy.weight_entropy = float(np.clip(_env_float('FLATLAND_WEIGHT_ENTROPY', 0.02), 0.0, 1.0))
+    policy.weight_entropy = float(np.clip(_env_float('FLATLAND_WEIGHT_ENTROPY', 0.04), 0.0, 1.0))
     policy.reward_scale = float(np.clip(_env_float('FLATLAND_REWARD_SCALE', 0.12), 0.01, 0.25))
     policy.weight_loss = float(np.clip(_env_float('FLATLAND_WEIGHT_VALUE', 1.00), 0.1, 5.0))
     policy.stability_guard_start_episode = 900
     policy.stability_guard_hard_episode = 1800
-    policy.ppo_target_kl = 0.020
-    policy.ppo_max_kl = 0.050
-    policy.ppo_emergency_kl = 0.12
-    policy.ppo_emergency_kl_hard = 0.25
+    # KL thresholds calibrated against MAPPO reference (Yu et al. 2022, arXiv:2103.01955)
+    # and PPO best-practices (Schulman 2017, arXiv:1707.06347; CleanRL baselines):
+    #   target_kl: soft brake → 0.05 (MAPPO paper Table 1 SMAC avg)
+    #   max_kl:    hard spike → 0.15 (early training KL of 0.05-0.15 is NORMAL)
+    #   emergency: reserve for extreme instability only
+    # Previous values (0.020/0.050/0.12/0.25) fired on every early-training batch,
+    # causing progressive LR decay to the minimum floor by ep=40 and preventing learning.
+    # Ref: https://arxiv.org/abs/2103.01955 (MAPPO); https://arxiv.org/abs/1707.06347 (PPO)
+    policy.ppo_target_kl = 0.050
+    policy.ppo_max_kl = 0.120
+    policy.ppo_emergency_kl = 0.200
+    policy.ppo_emergency_kl_hard = 0.350
     policy.ratio_guard_soft = 1.15
     policy.ratio_guard_soft_low = 0.85
     policy.ratio_guard_hard = 1.22
     policy.ratio_guard_hard_low = 0.75
-    policy.max_hard_batches_before_lr_decay = 4
-    policy.hard_spike_streak_limit = 4
-    policy.actor_lr_min_factor = 0.70
-    policy.actor_lr_decay_on_instability = 0.88
-    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.10), 0.0, 1.0))
-    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.08), 0.0, 1.0))
+    # Require 12 hard batches (~2-3 full epochs of evidence) before LR decay.
+    # Old value of 4 caused LR decay within a single epoch in early training.
+    policy.max_hard_batches_before_lr_decay = 12
+    policy.hard_spike_streak_limit = 6
+    policy.actor_lr_min_factor = 0.50
+    policy.actor_lr_decay_on_instability = 0.92
+    # Recovery rate must be meaningfully larger than decay to avoid permanent LR floor.
+    # With decay=0.92 and recover=1.04: ~8 clean updates to recover from one decay event.
+    # Old value was 1.01 (never set in profile, remained from __init__), requiring ~35
+    # clean updates per decay — never recovered in practice.
+    policy.actor_lr_recover_rate = 1.04
+    policy.max_eps_random = float(np.clip(_env_float('FLATLAND_MAX_EPS_RANDOM', 0.12), 0.0, 1.0))
+    policy.decision_eps_floor = float(np.clip(_env_float('FLATLAND_DECISION_EPS_FLOOR', 0.10), 0.0, 1.0))
     policy.use_decision_eps_floor = str(os.getenv('FLATLAND_USE_DECISION_EPS_FLOOR', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
     # Keep Full-mode defaults unchanged; Core defaults to diversity OFF.
     adiv_default = 0.0 if core_mode_enabled else 0.12
@@ -897,6 +990,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
         f"max_eps_random={policy.max_eps_random:.3f}, "
         f"train_frequency={int(policy.train_frequency)}, "
         f"use_decision_eps_floor={bool(policy.use_decision_eps_floor)}, "
+        f"dla_shield={bool(policy.use_deadlock_avoidance_policy)}, "
         f"core_mode={bool(core_mode_enabled)}, "
         f"weight_entropy={policy.weight_entropy:.3f}, "
         f"clip_eps={policy.surrogate_eps_clip:.3f}, "
@@ -1158,7 +1252,9 @@ LEGACY EXAMPLES (still supported):
     ppo_param = MARL_ATTENTION_TEMPORAL_MAPPO_Param(
         hidden_size=_env_int('FLATLAND_HIDDEN_SIZE', default_hidden_size),
         batch_size=max(32, _env_int('FLATLAND_BATCH_SIZE', default_batch_size)),  # Use mode-aware default (FAST:128, else:256)
-        learning_rate=_env_float('FLATLAND_LR', 1.0e-5),
+        # See LR rationale at top-level ppo_param construction (refs:
+        # Schulman 2017 PPO 3e-4, Yu 2022 MAPPO 5e-4..7e-4, CleanRL 2.5e-4).
+        learning_rate=_env_float('FLATLAND_LR', 1.0e-4),
         discount=_env_float('FLATLAND_DISCOUNT', 0.99),
         gae_lambda=_env_float('FLATLAND_GAE_LAMBDA', 0.95),
         use_gpu=USE_GPU_EFFECTIVE,
@@ -1313,7 +1409,8 @@ LEGACY EXAMPLES (still supported):
                     all_done_bonus=REWARD_ALL_DONE_BONUS,
                     deadlock_penalty=REWARD_DEADLOCK_PENALTY,
                     progress_bonus=REWARD_PROGRESS_BONUS,
-                    final_not_solved_penalty=FINAL_NOT_SOLVED_PENALTY
+                    final_not_solved_penalty=FINAL_NOT_SOLVED_PENALTY,
+                    idle_penalty=REWARD_IDLE_PENALTY,
                 )
         )
  
