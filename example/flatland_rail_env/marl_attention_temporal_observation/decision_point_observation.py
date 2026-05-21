@@ -11,8 +11,19 @@ Idea provenance (high level, approximate):
     * explicit PRE_M node type,
     * deadlock-distance profiling fields used by the MAPPO encoder.
 
+Communication-aware design (Etappe 1 + S1, 2026-05-21):
+    Indices 13-21 of the 22D base obs are intentionally placed in the SAME
+    vector that downstream encoders share between self and neighbours. This
+    follows the TarMAC pattern (Das et al. 2019, https://arxiv.org/abs/1810.11187)
+    of parameter-shared observation encoders, and the DIAL pattern of
+    differentiable inter-agent communication (Foerster et al. 2016,
+    https://arxiv.org/abs/1605.06676): instead of broadcasting bespoke
+    messages, neighbours' deadlock pressure and last actions flow through
+    the same encoder + spatial-attention path as self.
+
 Layout:
-- BASE_OBS_SIZE=13: local agent state features
+- BASE_OBS_SIZE=22: local agent state (0-12) + deadlock/planning (13-16,
+    migrated from tree) + last-action broadcast (17-20) + sp-match (21).
 - TREE PAYLOAD: Decision-Point Graph with three node types:
   - INIT (type=0): Agent initialization/spawn
   - SWITCH (type=1): Route choice (num_transitions > 1)
@@ -67,9 +78,16 @@ class DecisionPointObservation(ObservationBuilder):
     _last_100_tree_stats = []  # List of tree_stats pro Episode
     _last_obs_fn_perf_report = None
 
-    # Export 13 base features.
-    # Legacy lifecycle duplicates were removed; deadlock signals live in tree payload.
-    BASE_OBS_SIZE = 13
+    # Export 22 base features (Etappe 1 + S1 — 2026-05-21):
+    # Indices 0-12: original 13D self-status (path/delta/state/priority/cell-flags/sp-hint).
+    # Indices 13-16: deadlock + planning info migrated from tree payload — flows to
+    #                neighbours via shared encoder (TarMAC, Das 2019 arXiv:1810.11187 §3;
+    #                DIAL, Foerster 2016 arXiv:1605.06676 §3.1 — differentiable
+    #                communication via shared parameters).
+    # Indices 17-21: last-action broadcast (4D one-hot + sp-match flag) — so
+    #                neighbours can read each other's behaviour, not just status.
+    #                Same parameter-sharing argument as above (S1 action broadcast).
+    BASE_OBS_SIZE = 22
     OBS_SIZE = BASE_OBS_SIZE
     # Legacy alias; active runtime cap is configured via self.local_search_max_nodes.
     MAX_NODES = 48
@@ -81,10 +99,13 @@ class DecisionPointObservation(ObservationBuilder):
         ("[7]",     "priority_rank",            "normalized rank by remaining distance"),
         ("[8-9]",   "merge/switch",             "cell semantics (redundant lifecycle flags removed)"),
         ("[10-12]", "sp_left/sp_forward/sp_right", "shortest-path action hint one-hot"),
-        ("payload", "raw_tree_payload",         "exported separately via env.dev_tree_dict[handle]. Nodes/edges include deadlock_risk."),
+        ("[13-16]", "deadlock+planning",        "deadlock_risk, deadlock_distance_norm, steps_to_next_switch_norm, sp_improves_norm (migrated from tree, now also visible to neighbours)"),
+        ("[17-20]", "last_action_L/F/R/S",      "4D one-hot of agent's previous action (S1 action broadcast, inferred from pos/dir delta)"),
+        ("[21]",    "action_matches_sp",        "1 if previous action == shortest-path hint, else 0 (signals plan-following)"),
+        ("payload", "raw_tree_payload",         "exported separately via env.dev_tree_dict[handle]. Tree-encoder weight is dampened (0.1) now that key info is migrated to base."),
     ]
 
-    # Canonical base-feature specification for indices 0..12 (13D base obs).
+    # Canonical base-feature specification for indices 0..21 (22D base obs).
     # Removed [7]st_4 (MALFUNCTION=0% always) and [8]st_6 (not_started=100% always)—dead constants.
     # Kept [6]st_3 (READY_TO_DEPART) as occasional signal (1% of steps).
     # Deadlock features moved to tree payload (node and edge features).
@@ -103,6 +124,15 @@ class DecisionPointObservation(ObservationBuilder):
         (10, "sp_left",              "shortest-path hint one-hot: left"),
         (11, "sp_forward",           "shortest-path hint one-hot: forward"),
         (12, "sp_right",             "shortest-path hint one-hot: right"),
+        (13, "deadlock_risk",        "[0,1] aggregate deadlock pressure within local probe (migrated from tree)"),
+        (14, "deadlock_distance_norm", "[0,1] proximity of nearest deadlock (1=immediate, 0=none in horizon)"),
+        (15, "steps_to_next_switch_norm", "[0,1] normalized distance to next decision point (1=immediate, 0=>=8 cells away)"),
+        (16, "sp_improves_norm",     "[0,1] how much best successor improves remaining distance vs current cell"),
+        (17, "last_action_left",     "1 if previous action was LEFT, else 0 (S1 action broadcast)"),
+        (18, "last_action_forward",  "1 if previous action was FORWARD, else 0"),
+        (19, "last_action_right",    "1 if previous action was RIGHT, else 0"),
+        (20, "last_action_stop",     "1 if previous action was STOP (no progress), else 0"),
+        (21, "action_matches_sp",    "1 if previous action matched shortest-path hint, else 0"),
     ]
 
     def __init__(self,
@@ -188,6 +218,20 @@ class DecisionPointObservation(ObservationBuilder):
             self._obs_func_prof[key] = self._obs_prof_new_bucket()
         self.env = None
         self.agent_map = None
+        # ── LAST-ACTION TRACKING (Etappe S1, 2026-05-21) ──────────────────
+        # Inferred from agent position/direction delta between consecutive
+        # observations. The resulting one-hot is exported in indices 17-20
+        # of the 22D base obs and reaches neighbours through the shared
+        # observation encoder downstream (TarMAC parameter-sharing, Das et
+        # al. 2019 arXiv:1810.11187 §3; DIAL differentiable comm, Foerster
+        # et al. 2016 arXiv:1605.06676 §3.1). Decision-point context for
+        # this signal: Laurent et al. 2021 (arXiv:2103.16511) — switch and
+        # merge cells are where action-broadcast carries the most weight.
+        # Keys: handle -> (pos_tuple, direction).  Cleared on reset.
+        self._prev_pos_dir = {}
+        # Previous shortest-path hint one-hot (sp_left, sp_fwd, sp_right) per
+        # handle. Used to compute the `action_matches_sp` feature.
+        self._prev_sp_hint = {}
         self._print_feature_layout_doc()
 
     def _obs_prof_new_bucket(self):
@@ -243,6 +287,10 @@ class DecisionPointObservation(ObservationBuilder):
 
     def reset(self):
         self.agent_map = np.zeros((self.env.height, self.env.width), dtype=np.int32) - 1
+        # Clear last-action tracking on each episode reset so we do not leak
+        # state across episodes.
+        self._prev_pos_dir = {}
+        self._prev_sp_hint = {}
 
     @staticmethod
     def _dir_to_rel_bin(current_dir: int, next_dir: int) -> int:
@@ -1057,15 +1105,15 @@ class DecisionPointObservation(ObservationBuilder):
     @classmethod
     def _print_feature_layout_doc(cls):
         if os.getenv("DEBUG_OBSERVATION", "0") == "1":
-            print(">> DecisionPointObservation (15D Base + Tree Payload) - Feature-Layout:")
+            print(">> DecisionPointObservation (22D Base + Tree Payload) - Feature-Layout:")
             for idx, name, desc in cls.FEATURE_GROUPS_DOC:
                 print(f"   {idx:<8} {name:<18} {desc}")
-            print("   0..14    base_feature_specs  exact index-to-meaning mapping (15D total)")
-            print("   Tree Payload: nodes and edges contain deadlock_risk, deadlock_ahead, deadlock_hard_block")
+            print("   0..21    base_feature_specs  exact index-to-meaning mapping (22D total)")
+            print("   Tree Payload: still exported; encoder weight dampened (0.1) since key info now in base.")
 
     @classmethod
     def _cleanup_base_features(cls, raw_features: np.ndarray) -> None:
-        # No masking: all 15 base features are kept as-is.
+        # No masking: all 22 base features are kept as-is.
         return
 
     @staticmethod
@@ -1193,6 +1241,35 @@ class DecisionPointObservation(ObservationBuilder):
             decision_type += 4
         return decision_type
 
+    def _infer_last_action(self, handle, pos, direction) -> int:
+        """Infer last action id from pos/direction delta vs. previous step.
+
+        Flatland action ids: DO_NOTHING=0, LEFT=1, FORWARD=2, RIGHT=3, STOP=4.
+
+        Returns 0 if no previous state is recorded (first step in episode).
+        Returns 4 (STOP) if position is unchanged (agent did not progress).
+        Otherwise infers L/F/R from direction delta.
+        """
+        prev = self._prev_pos_dir.get(handle)
+        if prev is None or pos is None or direction is None:
+            return 0
+        prev_pos, prev_dir = prev
+        try:
+            same_pos = (int(pos[0]) == int(prev_pos[0]) and int(pos[1]) == int(prev_pos[1]))
+        except Exception:
+            return 0
+        if same_pos:
+            return 4  # STOP / no progress
+        delta = (int(direction) - int(prev_dir)) % 4
+        if delta == 0:
+            return 2  # FORWARD
+        if delta == 3:
+            return 1  # LEFT
+        if delta == 1:
+            return 3  # RIGHT
+        # delta == 2: u-turn → unusual, treat as STOP-like ambiguous signal.
+        return 4
+
     def _build_base_features(self, handle, agent, pos, direction, distance_map):
         prof_active = bool(self.obs_func_profile_enabled and self._obs_profile_active)
         t0 = time.perf_counter() if prof_active else 0.0
@@ -1270,7 +1347,7 @@ class DecisionPointObservation(ObservationBuilder):
         if prof_active:
             self._obs_prof_add('base_priority', time.perf_counter() - t_seg)
  
-        # Export selected lifecycle flags used by the current 13D contract.
+        # Export selected lifecycle flags used by the current 22D contract.
         # st_3=READY_TO_DEPART (st_4=MALFUNCTION and st_6=done removed as dead constants).
         t_seg = time.perf_counter() if prof_active else 0.0
         raw_features[6] = 1.0 if agent.state == TrainState.READY_TO_DEPART else 0.0  # st_3 (READY_TO_DEPART)
@@ -1295,6 +1372,92 @@ class DecisionPointObservation(ObservationBuilder):
         if prof_active:
             self._obs_prof_add('base_sp_hint', time.perf_counter() - t_seg)
 
+        # ── INDICES 13-16: DEADLOCK + PLANNING (migrated from tree payload) ──
+        # Same profile already computed for tree; cheap to call once more here.
+        # Routed through shared encoder so neighbours see each other's deadlock
+        # pressure (S1 + Etappe 1, 2026-05-21).
+        t_seg = time.perf_counter() if prof_active else 0.0
+        try:
+            deadlock_profile = self._calculate_deadlock_profile(handle, pos, direction)
+            raw_features[13] = float(np.clip(deadlock_profile.get("risk", 0.0), 0.0, 1.0))
+            raw_features[14] = float(np.clip(deadlock_profile.get("deadlock_distance_norm", 0.0), 0.0, 1.0))
+        except Exception:
+            raw_features[13] = 0.0
+            raw_features[14] = 0.0
+
+        # steps_to_next_switch_norm: walk forward until a switch (>1 transitions)
+        # appears. Normalized by 8 cells (=1.0 if next cell, 0.0 if >=8 away).
+        try:
+            steps = 0
+            p_walk, d_walk = tuple(pos), int(direction)
+            max_walk = 8
+            for _ in range(max_walk):
+                trans = self._rail_get_transitions(p_walk, d_walk)
+                num_t = int(fast_count_nonzero(trans))
+                if num_t == 0:
+                    break
+                if num_t > 1:
+                    break
+                # Single transition: follow it (corridor cell).
+                next_dir = None
+                for nd in range(4):
+                    if trans[nd]:
+                        next_dir = nd
+                        break
+                if next_dir is None:
+                    break
+                next_pos = get_new_position(p_walk, next_dir)
+                if (next_pos[0] < 0 or next_pos[0] >= self.env.height
+                        or next_pos[1] < 0 or next_pos[1] >= self.env.width):
+                    break
+                steps += 1
+                p_walk, d_walk = next_pos, next_dir
+            raw_features[15] = float(np.clip(1.0 - steps / float(max_walk), 0.0, 1.0))
+        except Exception:
+            raw_features[15] = 0.0
+
+        # sp_improves_norm: how much better the best successor is vs. the
+        # average of the alternative branches. Re-uses already-computed deltas
+        # (raw_features[3..5]). Range [0,1]: 1.0 = SP strongly dominates,
+        # 0.0 = all branches equal or no valid alternatives.
+        try:
+            deltas = [raw_features[3], raw_features[4], raw_features[5]]
+            paths  = [raw_features[0], raw_features[1], raw_features[2]]
+            # Use only branches that exist (path == 1) AND are not the best (delta < 0).
+            losses = [abs(float(d)) for d, p in zip(deltas, paths) if float(p) > 0.5 and float(d) < -1e-6]
+            raw_features[16] = float(np.clip(max(losses) if losses else 0.0, 0.0, 1.0))
+        except Exception:
+            raw_features[16] = 0.0
+
+        # ── INDICES 17-20: LAST-ACTION ONE-HOT (S1 action broadcast) ─────────
+        # Inferred from agent's pos/direction delta vs. previous step. Order:
+        # [17]=LEFT, [18]=FORWARD, [19]=RIGHT, [20]=STOP.
+        # DO_NOTHING / first-step / lifecycle-transitions all map to all-zero.
+        last_action_id = self._infer_last_action(handle, pos, direction)
+        if last_action_id == 1:    # LEFT
+            raw_features[17] = 1.0
+        elif last_action_id == 2:  # FORWARD
+            raw_features[18] = 1.0
+        elif last_action_id == 3:  # RIGHT
+            raw_features[19] = 1.0
+        elif last_action_id == 4:  # STOP / no progress
+            raw_features[20] = 1.0
+
+        # ── INDEX 21: ACTION_MATCHES_SP ──────────────────────────────────────
+        # Compare last action against previous shortest-path hint. 1.0 if the
+        # agent followed the SP advice last step, else 0.0. Helps neighbours
+        # detect whether a peer is plan-conforming or improvising.
+        prev_sp = self._prev_sp_hint.get(handle)
+        if prev_sp is not None and last_action_id in (1, 2, 3):
+            sp_idx = last_action_id - 1  # 1->0 (left), 2->1 (fwd), 3->2 (right)
+            raw_features[21] = 1.0 if float(prev_sp[sp_idx]) > 0.5 else 0.0
+
+        # Update tracking state for next observation step.
+        self._prev_pos_dir[handle] = (tuple(pos), int(direction))
+        self._prev_sp_hint[handle] = (float(sp_left), float(sp_fwd), float(sp_right))
+        if prof_active:
+            self._obs_prof_add('base_flags', time.perf_counter() - t_seg)
+
         if prof_active:
             self._obs_prof_add('base_features', time.perf_counter() - t0)
 
@@ -1302,8 +1465,9 @@ class DecisionPointObservation(ObservationBuilder):
 
     def get(self, handle: int = 0):
         """Return (base_features, seen_agents, raw_tree_payload) for one agent.
-        Export 15 base features (dead TrainStates removed, deadlock moved to tree).
-        Deadlock information is embedded in tree payload nodes/edges.
+        Export 22 base features (13D legacy + 4 deadlock/planning + 5 action-broadcast).
+        Tree payload is still exported but encoder weight is dampened (0.1) since
+        key information is now also visible to neighbours via the base obs.
         """
         prof_active = False
         t0 = 0.0
@@ -1344,7 +1508,7 @@ class DecisionPointObservation(ObservationBuilder):
             if other_pos == pos:
                 opp_agents.add(other.handle)
 
-        # Fill base features according to the 15D schema.
+        # Fill base features according to the 22D schema.
         raw_features = self._build_base_features(
             handle=handle,
             agent=agent,
@@ -1502,6 +1666,21 @@ class DecisionPointObservation(ObservationBuilder):
                 elif name == "is_pre_merge":
                     frac = float(np.mean(col > 0.5))
                     note = f"pre-merge {frac*100:.0f}% of steps"
+                elif name == "deadlock_risk":
+                    note = f"mean risk={float(np.mean(col)):.3f}"
+                elif name == "deadlock_distance_norm":
+                    near = float(np.mean(col > 0.5))
+                    note = f"near-deadlock {near*100:.0f}% of steps"
+                elif name == "steps_to_next_switch_norm":
+                    note = f"mean prox={float(np.mean(col)):.3f}"
+                elif name == "sp_improves_norm":
+                    note = f"mean gain={float(np.mean(col)):.3f}"
+                elif name.startswith("last_action_"):
+                    frac = float(np.mean(col > 0.5))
+                    note = f"{name.replace('last_action_','')} {frac*100:.0f}% of steps"
+                elif name == "action_matches_sp":
+                    frac = float(np.mean(col > 0.5))
+                    note = f"plan-follow {frac*100:.0f}% of steps"
 
                 print(
                     f"  {idx:>2}  {name:<22} "
@@ -1511,7 +1690,7 @@ class DecisionPointObservation(ObservationBuilder):
                 )
 
             # ── priority_rank episode-mean trend (compact) ───────────────────
-            pr_ep = _ep_means(9)  # feature [9] = priority_rank
+            pr_ep = _ep_means(7)  # feature [7] = priority_rank (22D schema)
             if len(pr_ep) >= 2:
                 half = max(1, len(pr_ep) // 2)
                 first_half = pr_ep[:half].mean()

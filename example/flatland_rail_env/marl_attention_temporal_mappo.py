@@ -883,8 +883,20 @@ class TemporalTransformerEncoder(nn.Module):
         # LEVEL 1: Observation Encoder (spatial features → embeddings)
         # obs_encoder processes only the handcrafted base vector.
         # Tree information is provided separately as raw payload.
+        #
+        # PARAMETER SHARING (TarMAC / DIAL pattern):
+        #   The SAME `self.obs_encoder` is applied to (a) the agent's own base
+        #   features and (b) every neighbour's base features (see
+        #   `forward_agent` and `forward_batch` below). This means whatever
+        #   information lives in the 22D base obs — in particular the new
+        #   indices 13-16 (deadlock/planning) and 17-21 (last-action +
+        #   sp-match) — is mapped into the SAME embedding space for self and
+        #   neighbours, and is therefore directly addressable by the
+        #   communication module (TarMAC: Das et al. 2019 arXiv:1810.11187 §3;
+        #   DIAL: Foerster et al. 2016 arXiv:1605.06676 §3.1 — differentiable
+        #   message passing through shared sender/receiver networks).
         # ========================================================================
-        self.base_obs_dim = min(obs_dim, _BASE_OBS_DIM)  # = 35
+        self.base_obs_dim = min(obs_dim, _BASE_OBS_DIM)  # = DecisionPointObservation.BASE_OBS_SIZE (22)
         self.obs_encoder = nn.Sequential(
             nn.Linear(self.base_obs_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -926,9 +938,18 @@ class TemporalTransformerEncoder(nn.Module):
         )
 
         # Tree signal comes exclusively from raw local-search payload.
+        # Decision-point local search + corridor compression follows the
+        # Flatland 2020 competition tradition (Laurent et al. 2021,
+        # arXiv:2103.16511 §3-4; Mohanty et al. 2020 arXiv:2012.05893).
         self.tree_payload_encoder = TreePayloadEncoder(hidden_dim)
         self.tree_norm = nn.LayerNorm(hidden_dim)
         self.use_tree_payload_encoder = True
+        # Etappe 1 (2026-05-21): dampen tree fusion weight because key tree
+        # info (deadlock_risk, deadlock_distance_norm, steps_to_next_switch_norm,
+        # sp_improves_norm) is now in the 22D base obs and visible to
+        # neighbours via the shared encoder (TarMAC, Das 2019 arXiv:1810.11187).
+        # Tree stays alive as structural safety net (Laurent 2021).
+        self.tree_signal_weight = 0.1
 
         # BUG-L20 FIX (2026-05-21): Spatial-Attention K/V vorprojizieren.
         # `self_temporal_context` lebt nach Temporal-Attn+Tree-Fusion in einem
@@ -1121,7 +1142,12 @@ class TemporalTransformerEncoder(nn.Module):
         last_obs, _, last_payload = self._unpack_temporal_step(temporal_seq[-1])
         last_obs_t = self._to_1d_tensor(last_obs)
         tree_emb = self._encode_tree_signal(last_obs_t, last_payload)
-        self_temporal_context = self.tree_norm(self_temporal_context + tree_emb)
+        # Tree-signal weight dampener (Etappe 1, 2026-05-21): key tree info
+        # (deadlock_risk/distance, steps_to_next_switch, sp_improves) is now
+        # in the 22D base obs and routed through the shared encoder to
+        # neighbours. Keep tree encoder as a safety net but reduce its weight.
+        tree_signal_weight = float(getattr(self, 'tree_signal_weight', 0.1))
+        self_temporal_context = self.tree_norm(self_temporal_context + tree_signal_weight * tree_emb)
         
         # ========================================================================
         # STEP 3: SPATIAL ATTENTION - Multi-Agent Interaction (optional)
@@ -1134,6 +1160,10 @@ class TemporalTransformerEncoder(nn.Module):
         _, current_opponents, _ = self._unpack_temporal_step(temporal_seq[-1])  # Last timestep
         
         # Encode opponents (current timestep base features) if spatial attention is enabled.
+        # TarMAC-style parameter sharing (Das et al. 2019 arXiv:1810.11187 §3):
+        # neighbours are passed through the SAME `self.obs_encoder` as self,
+        # so the new 22D features (last_action_*, action_matches_sp, deadlock_*)
+        # are broadcast into the spatial-attention + communication pipeline.
         opp_embeddings = []
         if use_spatial and len(current_opponents) > 0:
             for opp_obs in current_opponents:
@@ -1215,7 +1245,7 @@ class TemporalTransformerEncoder(nn.Module):
         
         # Encode base obs features; tree signal comes from payload path.
         flat_obs = all_self_obs_tensor.view(-1, all_self_obs_tensor.shape[-1])
-        flat_base_obs = flat_obs[:, :self.base_obs_dim]  # (B*T, 35)
+        flat_base_obs = flat_obs[:, :self.base_obs_dim]  # (B*T, base_obs_dim)
         flat_embeddings = self.obs_encoder(flat_base_obs)  # (B*T, H)
         
         # Reshape back: (batch_size, temporal_window, hidden_dim)
@@ -1238,7 +1268,8 @@ class TemporalTransformerEncoder(nn.Module):
         # Tree signal (batch): fuse serialized block and raw tree_payload.
         last_obs_b = all_self_obs_tensor[:, -1, :]  # (B, obs_dim)
         tree_emb_b = self._encode_tree_signal_batch(last_obs_b, all_tree_payloads)
-        self_temporal_contexts = self.tree_norm(self_temporal_contexts + tree_emb_b)
+        tree_signal_weight = float(getattr(self, 'tree_signal_weight', 0.1))
+        self_temporal_contexts = self.tree_norm(self_temporal_contexts + tree_signal_weight * tree_emb_b)
         
         # Spatial attention (process per agent due to varying opponent counts)
         use_spatial = bool(getattr(self, 'use_spatial_attention', True))
@@ -1328,7 +1359,7 @@ class TemporalLSTMEncoder(nn.Module):
 
         # obs_encoder processes only the handcrafted base vector.
         # Tree information is provided separately as raw payload.
-        self.base_obs_dim = min(obs_dim, _BASE_OBS_DIM)  # = 35
+        self.base_obs_dim = min(obs_dim, _BASE_OBS_DIM)  # = DecisionPointObservation.BASE_OBS_SIZE (22)
         self.obs_encoder = nn.Sequential(
             nn.Linear(self.base_obs_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -1368,6 +1399,10 @@ class TemporalLSTMEncoder(nn.Module):
         self.tree_payload_encoder = TreePayloadEncoder(hidden_dim)
         self.tree_norm = nn.LayerNorm(hidden_dim)
         self.use_tree_payload_encoder = True
+        # Etappe 1 (2026-05-21): dampen tree fusion weight (see
+        # TemporalTransformerEncoder). Refs: TarMAC (Das 2019 arXiv:1810.11187),
+        # Flatland decision-point tradition (Laurent 2021 arXiv:2103.16511).
+        self.tree_signal_weight = 0.1
 
         # BUG-L20 FIX (2026-05-21): vgl. TemporalTransformerEncoder. Projektion
         # bringt Self-Kontext und Opponent-Embeddings in gemeinsamen Raum für
@@ -1494,7 +1529,8 @@ class TemporalLSTMEncoder(nn.Module):
         last_obs, _, last_payload = self._unpack_temporal_step(temporal_seq[-1])
         last_obs_t = self._to_1d_tensor(last_obs)
         tree_emb = self._encode_tree_signal(last_obs_t, last_payload)
-        self_temporal_context = self.tree_norm(self_temporal_context + tree_emb)
+        tree_signal_weight = float(getattr(self, 'tree_signal_weight', 0.1))
+        self_temporal_context = self.tree_norm(self_temporal_context + tree_signal_weight * tree_emb)
 
         # Check if spatial attention is enabled (can be disabled for speed)
         use_spatial = getattr(self, 'use_spatial_attention', True)
@@ -1555,7 +1591,7 @@ class TemporalLSTMEncoder(nn.Module):
 
         all_self_obs_tensor = torch.stack(all_self_obs, dim=0)
         flat_obs = all_self_obs_tensor.view(-1, all_self_obs_tensor.shape[-1])
-        flat_base_obs = flat_obs[:, :self.base_obs_dim]  # (B*T, 35)
+        flat_base_obs = flat_obs[:, :self.base_obs_dim]  # (B*T, base_obs_dim)
         flat_embeddings = self.obs_encoder(flat_base_obs)  # (B*T, H)
         self_embeddings = flat_embeddings.view(batch_size, self.temporal_window, self.hidden_dim)
 
@@ -1565,7 +1601,8 @@ class TemporalLSTMEncoder(nn.Module):
         # Tree signal (batch): fuse serialized block and raw tree_payload.
         last_obs_b = all_self_obs_tensor[:, -1, :]  # (B, obs_dim)
         tree_emb_b = self._encode_tree_signal_batch(last_obs_b, all_tree_payloads)
-        self_temporal_contexts = self.tree_norm(self_temporal_contexts + tree_emb_b)
+        tree_signal_weight = float(getattr(self, 'tree_signal_weight', 0.1))
+        self_temporal_contexts = self.tree_norm(self_temporal_contexts + tree_signal_weight * tree_emb_b)
 
         use_spatial = bool(getattr(self, 'use_spatial_attention', True))
         final_embeddings = []
@@ -1577,6 +1614,7 @@ class TemporalLSTMEncoder(nn.Module):
             opps = all_opponents[i]
 
             if use_spatial and len(opps) > 0:
+                # TarMAC-style shared encoder for neighbours (Das 2019 arXiv:1810.11187).
                 opp_embs = []
                 for opp_obs in opps:
                     opp_t = self._to_1d_tensor(opp_obs)
@@ -1950,9 +1988,13 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             
         # PPO/MAPPO baseline defaults (conservative and reference-aligned).
         # See [R1], [R3], [R4], [R5], [R6].
+        # 2026-05-21 v3: weight_entropy 0.02 -> 0.03 (x1.5), nach Plateau bei
+        # done=0.37 mit chronisch zu niedriger Entropy (0.69 < Floor 0.70).
+        # Yu et al. 2022 (MAPPO arXiv:2103.01955) verwenden 0.01-0.03 fuer
+        # sparse-reward MARL; 0.03 ist die obere Grenze fuer mehr Exploration.
         self.surrogate_eps_clip = 0.20
         self.weight_loss = 1.00
-        self.weight_entropy = 0.02
+        self.weight_entropy = 0.03
         self.decision_eps_floor = 0.08
         self.max_eps_random = 0.10
         self.weight_policy = 1.00
@@ -2241,8 +2283,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         
         self.actor_lr_factor = 1.0
         # Entropy rescue prevents late deterministic collapse around local minima.
+        # 2026-05-21 v3: floor 0.70 -> 0.75 angehoben, damit Auto-Rescue frueher
+        # triggert. Bei v2-Lauf chronisch entropy ~0.69 ohne Recovery-Aktion;
+        # mit 0.75 wird der entropy_recovery_scale=6.0 Hebel staerker genutzt.
         self.entropy_rescue_start_episode = 350      # ⬆️ Activate VERY early (was 700, now immediately!)
-        self.entropy_floor = 0.70       # Higher floor to avoid premature deterministic collapse.
+        self.entropy_floor = 0.75       # Higher floor to avoid premature deterministic collapse.
         self.entropy_recovery_scale = 6.0  # Stronger entropy rescue when floor is violated.
 
         self.loss_function = nn.SmoothL1Loss(beta=1.0)
@@ -3993,12 +4038,22 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         print("\n" + "="*80 + "\n")
 
     # Feature names/descriptions for current DecisionPointObservation layout
-    # (13D base vector; tree context is provided out-of-band via payload).
+    # (22D base vector — Etappe 1 + S1, 2026-05-21:
+    #   [0-12]  legacy self-status,
+    #   [13-16] deadlock + planning (migrated from tree),
+    #   [17-20] last-action one-hot (S1 action broadcast),
+    #   [21]    action_matches_sp flag.
+    # Tree context is provided out-of-band via payload.)
     _OBS_FEATURE_NAMES = [
         "path_left", "path_forward", "path_right",
         "delta_left", "delta_forward", "delta_right",
         "st_3", "priority_rank", "is_pre_merge", "is_switch",
         "sp_left", "sp_forward", "sp_right",
+        "deadlock_risk", "deadlock_distance_norm",
+        "steps_to_next_switch_norm", "sp_improves_norm",
+        "last_action_left", "last_action_forward",
+        "last_action_right", "last_action_stop",
+        "action_matches_sp",
     ]
 
     _OBS_FEATURE_DESC = [
@@ -4015,6 +4070,15 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         "Shortest-path hint: left",
         "Shortest-path hint: forward",
         "Shortest-path hint: right",
+        "Aggregate deadlock pressure within local probe (migrated from tree)",
+        "Proximity of nearest deadlock (1=immediate, 0=none in horizon)",
+        "Distance to next decision point, normalized (1=immediate, 0=>=8 cells)",
+        "How much best successor improves remaining distance vs alternatives",
+        "Last action was LEFT (S1 action broadcast)",
+        "Last action was FORWARD",
+        "Last action was RIGHT",
+        "Last action was STOP / no progress",
+        "Last action matched shortest-path hint (plan-following flag)",
     ]
 
     def _print_obs_statistics(self):

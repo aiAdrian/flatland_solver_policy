@@ -139,7 +139,13 @@ FINAL_NOT_SOLVED_PENALTY = _env_float('FLATLAND_FINAL_NOT_SOLVED_PENALTY', -1.0)
 #   - final_not_solved     letzte 5 Steps für nicht-Done-Agenten (~-5 gesamt)
 # Alle anderen Steps: 0.  -> "nicht im Ziel = schlecht" wird über
 # final_not_solved_penalty UND fehlenden done_bonus realisiert.
-REWARD_IDLE_PENALTY = _env_float('FLATLAND_REWARD_IDLE_PENALTY', 0.0)  # 2026-05-21: aus — semi-sparse Setup.
+# 2026-05-21 v2: idle-penalty wieder aktiviert (klein, -0.02), nachdem reines
+# semi-sparse Setup zu Stop-Collapse @ ep ~1200 fuehrte (Stop-Quote 40%,
+# done 0.40 -> 0.30). Yu et al. (2022) MAPPO Sec. 4 / Laurent et al. 2021
+# (arXiv:2103.16511) Sec. 4: kleine idle-cost ist noetig, damit STOP nicht
+# zum lokalen Optimum wird. -0.02 bleibt im Reward-Rauschen unauffaellig
+# (vs done_bonus +5), bricht aber das Plateau.
+REWARD_IDLE_PENALTY = _env_float('FLATLAND_REWARD_IDLE_PENALTY', -0.02)
 
 class FlatlandSparseRewardShaper:
     """Reward shaping for sparse/deadlock-heavy Flatland training.
@@ -363,21 +369,40 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         self.force_forward_on_forward_only = str(
             os.getenv('FLATLAND_FORCE_FORWARD_ON_FORWARD_ONLY', '0')
         ).strip().lower() in ('1', 'true', 'yes', 'on')
+        # 2026-05-21 v2: stop-floor von 0.02 -> 0.04 angehoben. Bei Stop-Collapse
+        # bewirkt ein hoeherer Floor mehr Variabilitaet im Stop-Subraum und
+        # verhindert deterministische Stop-Pfade (Categorical sampling bleibt
+        # genuegend stochastisch).
         self.stop_action_floor = float(np.clip(
-            _env_float('FLATLAND_STOP_ACTION_FLOOR', 0.02),
+            _env_float('FLATLAND_STOP_ACTION_FLOOR', 0.04),
             0.0,
             0.20,
         ))
         # Route prior from DecisionPointObservation base features [10:13]
         # (sp_left/sp_forward/sp_right). This keeps navigation simple and
         # stable while still allowing PPO exploration around merges/switches.
+        #
+        # 2026-05-21 v2: prior 0.35 -> 0.50 und logit-bonus 0.35 -> 0.60
+        # angehoben, nachdem action_matches_sp von 0.39 auf 0.29 abrutschte
+        # (Plan-Following kollabierte mit Stop-Collapse). Laurent et al. 2021
+        # (arXiv:2103.16511, Sec. 4 "MARL approaches") betont SP-Hint als
+        # primaeren Navigation-Bias an Switches.
+        #
+        # 2026-05-21 v3: prior 0.50 -> 0.40 und logit-bonus 0.60 -> 0.40
+        # zurueckgenommen. v2-Werte erwiesen sich als ueberreguliert: done
+        # plateaute bei 0.37 mit Entropy chronisch unter Floor (0.69). Policy
+        # folgte dem Plan zu strikt -> kein Exploration-Spielraum fuer
+        # alternative Routen bei Konflikten. 0.40/0.40 = SP bleibt klarer
+        # Bias, aber Policy darf wieder abweichen. Yu et al. 2022 (MAPPO,
+        # arXiv:2103.01955) Sec. 5.3: Action-Prior sollte 30-50% bleiben,
+        # nicht ueber 50%.
         self.sp_hint_route_prior_prob = float(np.clip(
-            _env_float('FLATLAND_SP_HINT_ROUTE_PRIOR_PROB', 0.35),
+            _env_float('FLATLAND_SP_HINT_ROUTE_PRIOR_PROB', 0.40),
             0.0,
             1.0,
         ))
         self.sp_hint_logit_bonus = float(np.clip(
-            _env_float('FLATLAND_SP_HINT_LOGIT_BONUS', 0.35),
+            _env_float('FLATLAND_SP_HINT_LOGIT_BONUS', 0.40),
             0.0,
             4.0,
         ))
