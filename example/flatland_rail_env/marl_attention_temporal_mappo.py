@@ -2004,7 +2004,7 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # sparse-reward MARL; 0.03 ist die obere Grenze fuer mehr Exploration.
         self.surrogate_eps_clip = 0.20
         self.weight_loss = 1.00
-        self.weight_entropy = 0.03
+        self.weight_entropy = 0.04
         self.decision_eps_floor = 0.08
         self.max_eps_random = 0.10
         self.weight_policy = 1.00
@@ -2038,11 +2038,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # but lower its dominance to avoid overpowering PPO policy updates.
         aux_default = 0.0 if self.simplified_mode > 0 else 0.072
         self.weight_aux_deadlock = float(np.clip(float(os.getenv('FLATLAND_WEIGHT_AUX_DEADLOCK', str(aux_default))), 0.0, 1.0))
-        self.weight_action_diversity = 0.0 if self.simplified_mode > 0 else 0.10
+        self.weight_action_diversity = 0.0 if self.simplified_mode > 0 else 0.15
         self.weight_comm = 0.0 if self.simplified_mode > 0 else 3.0e-4
         
         # Action diversity parameters (used only if weight_action_diversity > 0)
-        self.forward_prob_soft_max = 0.62
+        self.forward_prob_soft_max = 0.55
         self.lr_prob_soft_min = 0.11
         # Tightened 2026-05-21: was 0.18. Decision-gated Stop-share climbed to
         # ~40% and produced a "wait-forever" local optimum. Lowering the soft
@@ -2297,8 +2297,8 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # triggert. Bei v2-Lauf chronisch entropy ~0.69 ohne Recovery-Aktion;
         # mit 0.75 wird der entropy_recovery_scale=6.0 Hebel staerker genutzt.
         self.entropy_rescue_start_episode = 350      # ⬆️ Activate VERY early (was 700, now immediately!)
-        self.entropy_floor = 0.75       # Higher floor to avoid premature deterministic collapse.
-        self.entropy_recovery_scale = 6.0  # Stronger entropy rescue when floor is violated.
+        self.entropy_floor = 0.78       # Higher floor to avoid premature deterministic collapse.
+        self.entropy_recovery_scale = 8.0  # Stronger entropy rescue when floor is violated.
 
         self.loss_function = nn.SmoothL1Loss(beta=1.0)
         self.training_step_count = 0
@@ -3606,16 +3606,32 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
                     # consistently 0.13-0.17, so aux damping and entropy boost NEVER fired
                     # during the critical early training phase. Raised to 0.25 to match the
                     # WARN threshold in the diagnostic report.
+                    # 2026-05-22: Zwei-Stufen-Schwelle (Notfall + Stagnation).
+                    # Vorher: nur 0.25 als Notfall -> bei done~0.37 keine Korrektur,
+                    # Policy plateaut mit forward-bias 0.73 @ decisions, entropy ~Floor.
+                    # Refs: Yu et al. 2022 MAPPO arXiv:2103.01955 §A.2 (entropy schedule),
+                    # Schulman 2017 PPO arXiv:1707.06347 (trust-region tuning).
                     if done_win < 0.25:
-                        aux_weight_eff *= 0.50
+                        aux_weight_eff *= 0.50          # Notfall-Aux-Damping
+                    elif done_win < 0.40:
+                        aux_weight_eff *= 0.70          # Stagnations-Aux-Damping
 
                     policy_weight_eff = self.weight_policy
                     entropy_weight_eff = self.weight_entropy
                     if done_win < 0.25:
-                        entropy_weight_eff = max(entropy_weight_eff, self.weight_entropy * 1.75)
-                    if self.episode_count >= self.entropy_rescue_start_episode and entropy_mean < self.entropy_floor:
+                        entropy_weight_eff = max(entropy_weight_eff, self.weight_entropy * 1.75)  # Notfall-Entropy
+                    elif done_win < 0.40:
+                        entropy_weight_eff = max(entropy_weight_eff, self.weight_entropy * 1.40)  # Stagnations-Entropy
+
+                    # 2026-05-22: Entropy-Rescue ohne Episode-Gate.
+                    # Beobachtung: Entropy fiel monoton 0.79->0.70 ueber 140 Episoden
+                    # trotz Floor=0.78. Episode-Gate (350) blockierte Rescue.
+                    # Refs: Yu et al. 2022 MAPPO arXiv:2103.01955 §A.2 (Entropy schedule);
+                    # Schulman 2017 PPO arXiv:1707.06347 (entropy bonus role).
+                    if entropy_mean < self.entropy_floor:
                         entropy_weight_eff = max(entropy_weight_eff, self.weight_entropy * self.entropy_recovery_scale)
                         policy_weight_eff *= 0.90
+
 
                     ratio_soft_viol = (ratio_mean > self.ratio_guard_soft) or (ratio_mean < self.ratio_guard_soft_low)
                     ratio_hard_viol = (ratio_mean > self.ratio_guard_hard) or (ratio_mean < self.ratio_guard_hard_low)

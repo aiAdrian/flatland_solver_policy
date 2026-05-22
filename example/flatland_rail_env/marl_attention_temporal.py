@@ -929,7 +929,7 @@ def create_ma_ppo_agent_dp(observation_space: int, action_space: int, eps: float
     policy.action_diversity_gate_threshold = float(np.clip(_env_float('FLATLAND_ACTION_DIVERSITY_GATE_THRESHOLD', 0.50), 0.0, 1.0))
     policy.forward_prob_soft_max = float(np.clip(_env_float('FLATLAND_FORWARD_PROB_SOFT_MAX', 0.60), 0.20, 0.80))
     policy.lr_prob_soft_min = float(np.clip(_env_float('FLATLAND_LR_PROB_SOFT_MIN', 0.14), 0.05, 0.40))
-    policy.idle_prob_soft_max = float(np.clip(_env_float('FLATLAND_IDLE_PROB_SOFT_MAX', 0.17), 0.0, 0.40))
+    policy.idle_prob_soft_max = float(np.clip(_env_float('FLATLAND_IDLE_PROB_SOFT_MAX', 0.12), 0.0, 0.40))
     policy.idle_logit_penalty = float(np.clip(_env_float('FLATLAND_IDLE_LOGIT_PENALTY', 1.35), 0.0, 4.0))
     policy.stop_logit_penalty = float(np.clip(_env_float('FLATLAND_STOP_LOGIT_PENALTY', 1.20), 0.0, 4.0))
     # Auxiliary deadlock supervision can help sparse/deadlock-heavy MAPPO runs

@@ -101,7 +101,7 @@ class DecisionPointObservation(ObservationBuilder):
         ("[10-12]", "sp_left/sp_forward/sp_right", "shortest-path action hint one-hot"),
         ("[13-16]", "deadlock+planning",        "deadlock_risk, deadlock_distance_norm, steps_to_next_switch_norm, sp_improves_norm (migrated from tree, now also visible to neighbours)"),
         ("[17-20]", "last_action_L/F/R/S",      "4D one-hot of agent's previous action (S1 action broadcast, inferred from pos/dir delta)"),
-        ("[21]",    "action_matches_sp",        "1 if previous action == shortest-path hint, else 0 (signals plan-following)"),
+        ("[21]",    "action_matches_sp",        "tri-state: 1.0=followed SP, 0.5=stopped (defensible), 0.0=off-plan (signals plan-following with yield-tolerance)"),
         ("payload", "raw_tree_payload",         "exported separately via env.dev_tree_dict[handle]. Tree-encoder weight is dampened (0.1) now that key info is migrated to base."),
     ]
 
@@ -132,7 +132,7 @@ class DecisionPointObservation(ObservationBuilder):
         (18, "last_action_forward",  "1 if previous action was FORWARD, else 0"),
         (19, "last_action_right",    "1 if previous action was RIGHT, else 0"),
         (20, "last_action_stop",     "1 if previous action was STOP (no progress), else 0"),
-        (21, "action_matches_sp",    "1 if previous action matched shortest-path hint, else 0"),
+        (21, "action_matches_sp",    "tri-state plan conformance: 1.0=followed SP, 0.5=stopped (defensible), 0.0=off-plan/first step"),
     ]
 
     def __init__(self,
@@ -1246,9 +1246,13 @@ class DecisionPointObservation(ObservationBuilder):
 
         Flatland action ids: DO_NOTHING=0, LEFT=1, FORWARD=2, RIGHT=3, STOP=4.
 
-        Returns 0 if no previous state is recorded (first step in episode).
-        Returns 4 (STOP) if position is unchanged (agent did not progress).
-        Otherwise infers L/F/R from direction delta.
+        Returns:
+            0 = no previous state (first step) OR lifecycle no-op
+                (WAITING / READY_TO_DEPART without progress)
+            1 = LEFT  (real choice, prev cell had >1 transitions)
+            2 = FORWARD (or any forced curve where prev cell had ≤1 transition)
+            3 = RIGHT (real choice, prev cell had >1 transitions)
+            4 = STOP (agent on map, did not progress this step)
         """
         prev = self._prev_pos_dir.get(handle)
         if prev is None or pos is None or direction is None:
@@ -1258,8 +1262,27 @@ class DecisionPointObservation(ObservationBuilder):
             same_pos = (int(pos[0]) == int(prev_pos[0]) and int(pos[1]) == int(prev_pos[1]))
         except Exception:
             return 0
+
+        # ── Position unchanged: distinguish lifecycle no-op from real STOP ──
         if same_pos:
+            try:
+                agent_state = self.env.agents[handle].state
+            except Exception:
+                agent_state = None
+            if agent_state in (TrainState.WAITING, TrainState.READY_TO_DEPART):
+                return 0  # DO_NOTHING (lifecycle, not a policy STOP)
             return 4  # STOP / no progress
+
+        # ── Position changed: classify movement ──
+        # If the previous cell was a corridor (≤1 transitions), the direction
+        # change was forced by the rail layout — the agent chose FORWARD, not L/R.
+        try:
+            prev_transitions = self._rail_get_transitions(prev_pos, prev_dir)
+            if fast_count_nonzero(prev_transitions) <= 1:
+                return 2  # FORWARD on forced curve
+        except Exception:
+            pass  # fall through to delta-based inference
+
         delta = (int(direction) - int(prev_dir)) % 4
         if delta == 0:
             return 2  # FORWARD
@@ -1269,6 +1292,7 @@ class DecisionPointObservation(ObservationBuilder):
             return 3  # RIGHT
         # delta == 2: u-turn → unusual, treat as STOP-like ambiguous signal.
         return 4
+
 
     def _build_base_features(self, handle, agent, pos, direction, distance_map):
         prof_active = bool(self.obs_func_profile_enabled and self._obs_profile_active)
@@ -1342,8 +1366,13 @@ class DecisionPointObservation(ObservationBuilder):
         else:
             # If cohort rank is undefined (all same distance / single sample),
             # fall back to normalized remaining distance so the feature remains informative.
-            fallback_max = max(1.0, float(self.env.width + self.env.height))
+            # Prefer the actual distance-map maximum cached by get_many (more
+            # realistic than map-diagonal which is often an over-estimate).
+            fallback_max = float(getattr(self, "_max_dist", 0.0))
+            if fallback_max <= 1.0:
+                fallback_max = max(1.0, float(self.env.width + self.env.height))
             priority_rank = self._distance_to_unit(self_distance, fallback_max)
+
         if prof_active:
             self._obs_prof_add('base_priority', time.perf_counter() - t_seg)
  
@@ -1443,25 +1472,43 @@ class DecisionPointObservation(ObservationBuilder):
         elif last_action_id == 4:  # STOP / no progress
             raw_features[20] = 1.0
 
-        # ── INDEX 21: ACTION_MATCHES_SP ──────────────────────────────────────
-        # Compare last action against previous shortest-path hint. 1.0 if the
-        # agent followed the SP advice last step, else 0.0. Helps neighbours
-        # detect whether a peer is plan-conforming or improvising.
+        # ── INDEX 21: ACTION_MATCHES_SP (tri-state plan conformance) ─────────
+        #   1.0 = agent followed shortest-path hint last step (plan-conforming)
+        #   0.5 = agent stopped (defensible non-plan action, e.g. yield)
+        #   0.0 = movement contradicted SP hint, or first step / lifecycle no-op
+        # Rationale: binary 0/1 penalises every STOP, but in MARL rail
+        # scheduling a yield is often the cooperative optimum.
+        # Refs: Laurent et al. 2021 (arXiv:2103.16511, §4.2 yielding policies).
         prev_sp = self._prev_sp_hint.get(handle)
-        if prev_sp is not None and last_action_id in (1, 2, 3):
+        if last_action_id == 4:
+            # STOP / no progress — defensible non-plan action
+            raw_features[21] = 0.5
+        elif prev_sp is not None and last_action_id in (1, 2, 3):
             sp_idx = last_action_id - 1  # 1->0 (left), 2->1 (fwd), 3->2 (right)
             raw_features[21] = 1.0 if float(prev_sp[sp_idx]) > 0.5 else 0.0
+        # else: last_action_id == 0 (DO_NOTHING / first step) → leaves 0.0
 
-        # Update tracking state for next observation step.
-        self._prev_pos_dir[handle] = (tuple(pos), int(direction))
-        self._prev_sp_hint[handle] = (float(sp_left), float(sp_fwd), float(sp_right))
-        if prof_active:
-            self._obs_prof_add('base_flags', time.perf_counter() - t_seg)
+
+        # ── TRACKING-UPDATE für nächste Observation ──────────────────────────
+        # Nur tracken wenn Agent tatsächlich auf der Map ist. Sonst aliased
+        # initial_position als "previous position" und der erste echte
+        # MOVING-Step wird fälschlich als STOP klassifiziert (Bug 7).
+        if agent.position is not None:
+            self._prev_pos_dir[handle] = (tuple(pos), int(direction))
+            self._prev_sp_hint[handle] = (float(sp_left), float(sp_fwd), float(sp_right))
+        else:
+            # Stale tracking aus früheren Lifecycle-Phasen löschen.
+            self._prev_pos_dir.pop(handle, None)
+            self._prev_sp_hint.pop(handle, None)
+
+        # NOTE: Profiler-Call 'base_flags' wurde hier entfernt (Bug 6 — er war
+        # ein Duplikat des oberen Calls und benutzte einen veralteten t_seg).
 
         if prof_active:
             self._obs_prof_add('base_features', time.perf_counter() - t0)
 
         return raw_features
+
 
     def get(self, handle: int = 0):
         """Return (base_features, seen_agents, raw_tree_payload) for one agent.
@@ -1679,8 +1726,11 @@ class DecisionPointObservation(ObservationBuilder):
                     frac = float(np.mean(col > 0.5))
                     note = f"{name.replace('last_action_','')} {frac*100:.0f}% of steps"
                 elif name == "action_matches_sp":
-                    frac = float(np.mean(col > 0.5))
-                    note = f"plan-follow {frac*100:.0f}% of steps"
+                    follow_frac = float(np.mean(col > 0.75))                       # 1.0 entries
+                    yield_frac  = float(np.mean((col > 0.25) & (col < 0.75)))      # 0.5 entries
+                    off_frac    = float(np.mean((col >= 0.0) & (col < 0.25)))      # 0.0 entries
+                    note = f"follow {follow_frac*100:.0f}% / yield {yield_frac*100:.0f}% / off {off_frac*100:.0f}%"
+
 
                 print(
                     f"  {idx:>2}  {name:<22} "
