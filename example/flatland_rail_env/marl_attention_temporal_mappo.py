@@ -15,6 +15,8 @@ from torch.nn.utils.rnn import pack_padded_sequence
 
 from policy.learning_policy.learning_policy import LearningPolicy
 from marl_attention_temporal_observation.decision_point_observation import DecisionPointObservation
+from marl_attention_temporal_observation.decision_point_utils import DecisionPointUtils  # noqa: E402
+from environment.environment import Environment  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -2363,6 +2365,11 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
             'step_calls': deque(maxlen=self._rollout_diag_window),
         }
 
+        # step / replay buffer config
+        self.store_only_real_decision_points = str(os.getenv('MARL_ATTENTION_STORE_ONLY_REAL_DECISION_POINTS', '1')).strip().lower() in ('1', 'true', 'yes', 'on')
+        self.agent_at_decision_point = {}  # Track if agent is currently at a decision point (for action diversity shaping)
+        self.env = None  # Will be set in set_environment() for access to env-specific info (e.g. decision points)
+
     def _comm_progress(self) -> float:
         start_ep = int(self.comm_reg_start_episode)
         full_ep = int(self.comm_reg_full_episode)
@@ -2578,6 +2585,17 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         return action.item()
 
     def step(self, handle, state, action, reward, next_state, done, agent_finished: Optional[bool] = None):
+        if self.store_only_real_decision_points:
+            """Sonly store not forward only -> forward only""" 
+            agent = self.env.raw_env.agents[handle]
+            cell_type = DecisionPointUtils.classify_cell_type(agent, self.env.raw_env)
+            pre_cell_type = self.agent_at_decision_point.get(agent.handle, 'UNKNOWN')
+            if pre_cell_type == 'FORWARD_ONLY' and cell_type == 'FORWARD_ONLY':
+                near_step_limit = self.env.raw_env._elapsed_steps > (self.env.raw_env._max_episode_steps - 7)
+                if not near_step_limit:
+                    # Skip storing this transition to focus on real decision points.
+                    return
+                      
         """Store transition - state is now temporal sequence!"""
         t0 = time.perf_counter() if self.time_profile_enabled else 0.0
         aux_deadlock = self._extract_deadlock_label_from_temporal_state(next_state)
@@ -5004,6 +5022,14 @@ class MARL_ATTENTION_TEMPORAL_PPOPolicy(LearningPolicy):
         # consumed the buffered values (including tree diagnostics).
         for key in self._stat_buf:
             self._stat_buf[key].clear()
+
+    def reset(self, env: Environment):
+        self.env = env
+
+    def start_step(self, train: bool):
+        for agent in self.env.raw_env.agents:
+            cell_type = DecisionPointUtils.classify_cell_type(agent, self.env.raw_env)
+            self.agent_at_decision_point[agent.handle] = cell_type 
 
     def end_episode(self, train):
         if train:

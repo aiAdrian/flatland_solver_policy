@@ -262,7 +262,7 @@ class BaseSolver:
                          eps=1.0,
                          eps_decay=0.995,
                          min_eps=0.001,
-                         checkpoint_interval=100):
+                         checkpoint_interval=50):
 
         training_mode = True
         # By default, keep CLI epsilon as hard upper bound. Policies can opt in

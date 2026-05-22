@@ -274,9 +274,11 @@ class FlatlandSparseRewardShaper:
                         self._prev_distance[handle] = current_dist
 
                         in_deadlock = (
-                            deadlock_check_enabled
+                            agent.state > TrainState.WAITING
+                            and agent.state < TrainState.DONE
+                            and deadlock_check_enabled
                             and DecisionPointUtils.is_local_deadlock(raw_env, agent, agent_map)
-                        )
+                        )  
                         if in_deadlock:
                             self._current_episode_deadlocks.add(int(handle))
                             r += self.deadlock_penalty
@@ -476,60 +478,6 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         return position, direction
 
     # ------------------------------------------------------------------
-    # Cell-Type Classification for State-Machine Reduction
-    # ------------------------------------------------------------------
-    # Classifies rail cells into 5 types to optimize decision-making:
-    # OUTSIDE: Agent spawning (state type selection)
-    # FORWARD_ONLY: Single rail path (no choice, hard-coded MOVE_FORWARD)
-    # MERGING: Before a merge/switch (binary choice: forward or stop)
-    # SWITCH: Multi-choice cell (left/forward/right)
-    # DONE: Goal reached (no action needed)
-    # ------------------------------------------------------------------
-    def _classify_cell_type(self, agent: EnvAgent, raw_env) -> str:
-        """Classify the current cell type of an agent.
-        
-        Returns: 'OUTSIDE' | 'FORWARD_ONLY' | 'MERGING' | 'SWITCH' | 'DONE'  
-        """
-        # DONE state
-        if agent.state == TrainState.DONE:
-            return 'DONE'
-        
-        # OUTSIDE: not yet on map
-        if agent.position is None or not agent.state.is_on_map_state():
-            return 'OUTSIDE'
-        
-        # Get transitions at current position
-        transitions = raw_env.rail.get_transitions(*agent.position, agent.direction)
-        num_transitions = fast_count_nonzero(transitions)
-        
-        # SWITCH: >1 transition options
-        if num_transitions > 1:
-            return 'SWITCH'
-        
-        # Check next cell (one forward)
-        next_pos = get_new_position(agent.position, agent.direction)
-        if next_pos[0] < 0 or next_pos[0] >= raw_env.height or next_pos[1] < 0 or next_pos[1] >= raw_env.width:
-            return 'FORWARD_ONLY'
-        next_dir = fast_argmax(transitions)
-        next_transitions = raw_env.rail.get_transitions(*next_pos, next_dir)
-        next_num_transitions = fast_count_nonzero(next_transitions)
-        opp_dir_options = 1
-        for nd in range(4):
-            if nd != next_dir:
-                ntrans = raw_env.rail.get_transitions(*next_pos, nd)
-                opp_dir_options = max(opp_dir_options, fast_count_nonzero(ntrans))
-        if next_num_transitions == 1:
-            if opp_dir_options > 1:
-                # Next cell has choices (merge point ahead)
-                return 'MERGING'
-            else:
-                # Next cell is also forward-only
-                return 'FORWARD_ONLY'
-        
-        # Default fallback
-        return 'FORWARD_ONLY'
-
-    # ------------------------------------------------------------------
     # Invalid-Action Masking for Flatland's directed maze
     # ------------------------------------------------------------------
     # Refs: Huang & Ontañón (2022) arXiv:2006.14171 -- masking invalid
@@ -635,7 +583,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
             # action is legal. This keeps DO_NOTHING/STOP available but
             # reduces their over-selection in sparse-switch layouts.
             if False:
-                cell_type = self._classify_cell_type(agent, self._env.raw_env)
+                cell_type = DecisionPointUtils.classify_cell_type(agent, self._env.raw_env)
                 if cell_type in ('MERGING', 'SWITCH'):
                     has_move = bool(
                         mask[RailEnvActions.MOVE_LEFT] > 0.5
@@ -686,6 +634,9 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         return int(action)
 
     def act(self, handle: int, state, eps=0.):
+        if np.random.rand() < eps:
+            return np.random.choice(self.action_size)
+        
         agent: EnvAgent = self._env.raw_env.agents[handle]
         
         # ================================================================
@@ -693,7 +644,7 @@ class MARL_ATT_DecisionPointPolicy(MARL_ATTENTION_TEMPORAL_PPOPolicy):
         # Laurent et al. (2021): Optimize credit assignment by only
         # applying policy to genuine decision points (SWITCH/MERGING).
         # ================================================================
-        cell_type = self._classify_cell_type(agent, self._env.raw_env)
+        cell_type = DecisionPointUtils.classify_cell_type(agent, self._env.raw_env)
         # FORWARD_ONLY cells: hard-coded MOVE_FORWARD (no policy choice)
         # This avoids training noise on trivial forward-only rail segments.
         if cell_type == 'FORWARD_ONLY':
@@ -837,11 +788,11 @@ default_hidden_size = 64
 # This keeps replay sampling independent of total buffer size.
 # References: PPO (https://arxiv.org/abs/1707.06347), MAPPO (https://arxiv.org/abs/2103.01955),
 # and implementation guidance (https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/).
-default_batch_size = 128
+default_batch_size = 512
 default_batch_fraction = 1.0
-default_max_batches = 5
+default_max_batches = 10
 # Smaller on-policy window keeps updates fresher in sparse-done phases.
-default_memory_episodes = 50
+default_memory_episodes = 20
 
 # Recommended default: stronger PPO update to avoid near-zero policy drift.
 default_k_epochs = 3

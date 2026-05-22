@@ -1,6 +1,7 @@
 from flatland.core.grid.grid4_utils import get_new_position
 from flatland.envs.fast_methods import fast_argmax, fast_count_nonzero
-
+from flatland.envs.agent_utils import EnvAgent  # noqa: E402
+from flatland.envs.step_utils.states import TrainState  # noqa: E402
 
 class DecisionPointUtils:
     """Utility functions for simplified deadlock detection.
@@ -84,6 +85,62 @@ class DecisionPointUtils:
         other_next_pos = get_new_position(other_pos, other_next_dir)
         return other_next_pos == my_pos and my_next_pos == other_pos
 
+
+    # ------------------------------------------------------------------
+    # Cell-Type Classification for State-Machine Reduction
+    # ------------------------------------------------------------------
+    # Classifies rail cells into 5 types to optimize decision-making:
+    # OUTSIDE: Agent spawning (state type selection)
+    # FORWARD_ONLY: Single rail path (no choice, hard-coded MOVE_FORWARD)
+    # MERGING: Before a merge/switch (binary choice: forward or stop)
+    # SWITCH: Multi-choice cell (left/forward/right)
+    # DONE: Goal reached (no action needed)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def classify_cell_type(agent: EnvAgent, raw_env) -> str:
+        """Classify the current cell type of an agent.
+        
+        Returns: 'OUTSIDE' | 'FORWARD_ONLY' | 'MERGING' | 'SWITCH' | 'DONE'  
+        """
+        # DONE state
+        if agent.state == TrainState.DONE:
+            return 'DONE'
+        
+        # OUTSIDE: not yet on map
+        if agent.position is None or not agent.state.is_on_map_state():
+            return 'OUTSIDE'
+        
+        # Get transitions at current position
+        transitions = raw_env.rail.get_transitions(*agent.position, agent.direction)
+        num_transitions = fast_count_nonzero(transitions)
+        
+        # SWITCH: >1 transition options
+        if num_transitions > 1:
+            return 'SWITCH'
+        
+        # Check next cell (one forward)
+        next_pos = get_new_position(agent.position, agent.direction)
+        if next_pos[0] < 0 or next_pos[0] >= raw_env.height or next_pos[1] < 0 or next_pos[1] >= raw_env.width:
+            return 'FORWARD_ONLY'
+        next_dir = fast_argmax(transitions)
+        next_transitions = raw_env.rail.get_transitions(*next_pos, next_dir)
+        next_num_transitions = fast_count_nonzero(next_transitions)
+        opp_dir_options = 1
+        for nd in range(4):
+            if nd != next_dir:
+                ntrans = raw_env.rail.get_transitions(*next_pos, nd)
+                opp_dir_options = max(opp_dir_options, fast_count_nonzero(ntrans))
+        if next_num_transitions == 1:
+            if opp_dir_options > 1:
+                # Next cell has choices (merge point ahead)
+                return 'MERGING'
+            else:
+                # Next cell is also forward-only
+                return 'FORWARD_ONLY'
+        
+        # Default fallback
+        return 'FORWARD_ONLY'
+
     @staticmethod
     def is_local_deadlock(raw_env, agent, agent_map) -> bool:
         """Return True if simplified recursive deadlock rule is met."""
@@ -116,7 +173,8 @@ class DecisionPointUtils:
         if other_agent_id != -1:
             other_dir = raw_env.agents[other_agent_id].direction
             if other_dir != ndir:
-                other_transitions = DecisionPointUtils._rail_get_transitions(raw_env, npos, other_dir)
+                other_pos = raw_env.agents[other_agent_id].position
+                other_transitions = DecisionPointUtils._rail_get_transitions(raw_env, other_pos, other_dir)
                 if fast_count_nonzero(other_transitions) == 1:
                     return True
         return DecisionPointUtils._is_local_head_on_deadlock(raw_env,
