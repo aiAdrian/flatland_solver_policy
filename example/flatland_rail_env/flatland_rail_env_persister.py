@@ -23,7 +23,8 @@ class RailEnvironmentPersistable(RailEnvironment):
                  grid_mode=True,
                  random_seed=25041978,
                  silent=False,
-                 disable_mal_functions=False):
+                 disable_mal_functions=False,
+                 extra_line_off=False):
         super(RailEnvironmentPersistable, self).__init__(
             obs_builder_object=obs_builder_object_creator(),
             max_rails_between_cities=max_rails_between_cities,
@@ -52,6 +53,7 @@ class RailEnvironmentPersistable(RailEnvironment):
         self._grid_height = grid_height
         self._grid_mode = grid_mode
         self._random_seed = random_seed
+        self.extra_line_off = extra_line_off
 
     def _clone(self, info_str: Union[str, None],
                number_of_agents: Union[int, None] = None,
@@ -134,7 +136,8 @@ class RailEnvironmentPersistable(RailEnvironment):
 
     def reset(self):
         if len(self._loaded_env) > 0:
-            print("")
+            if not self.extra_line_off:
+                print("")
             filename = self._loaded_env[self._loaded_env_itr]
             state, info, loaded_env = self._cached_reset(filename)
             self._reset_cached_rail_env(loaded_env.raw_env)
