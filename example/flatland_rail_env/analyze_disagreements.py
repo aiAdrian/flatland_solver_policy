@@ -318,13 +318,25 @@ def main():
     dla = DLAWrapper()
     dla_logger = LoggingPolicy(dla, "DLA")
 
-    mappo = MAPPOPolicy(device='cpu')
+    # Pick up the right BASE_DIM matching our observation config
+    from train_marl import _get_observation_base_dim, BC_CHECKPOINT
+    base_dim = _get_observation_base_dim()
+    print(f">> Building MAPPO with base_dim={base_dim}")
+
+    mappo = MAPPOPolicy(base_dim=base_dim, device='cpu')
     mappo.reset(env_mappo)
-    if os.path.exists(args.checkpoint):
-        mappo.load(args.checkpoint)
-    else:
-        print(f"[error] Checkpoint not found: {args.checkpoint}")
-        sys.exit(1)
+
+    # Try MAPPO checkpoint first, fall back to BC checkpoint
+    ckpt_path = args.checkpoint
+    if not os.path.exists(ckpt_path):
+        if os.path.exists(BC_CHECKPOINT):
+            print(f"[info] No MAPPO checkpoint at {ckpt_path}")
+            print(f"[info] Falling back to BC checkpoint: {BC_CHECKPOINT}")
+            ckpt_path = BC_CHECKPOINT
+        else:
+            print(f"[error] No checkpoint found (tried {ckpt_path} and {BC_CHECKPOINT})")
+            sys.exit(1)
+    mappo.load(ckpt_path)
     mappo_logger = LoggingPolicy(mappo, "MAPPO")
 
     # Run pairs of episodes

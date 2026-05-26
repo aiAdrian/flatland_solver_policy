@@ -33,7 +33,84 @@ from policy.heuristic_policy.shortest_path_deadlock_avoidance_policy.deadlock_av
     import DeadLockAvoidancePolicy
 
 from marl_attention_temporal_observation.decision_point_observation import DecisionPointObservation
+from marl_attention_temporal_observation.spawn_aware_observation import SpawnAwareObservation
+from marl_attention_temporal_observation.conflict_aware_observation import ConflictAwareObservation
 from marl_attention_temporal_observation.decision_point_utils import DecisionPointUtils
+
+
+# =============================================================================
+# OBSERVATION REGISTRY
+# -----------------------------------------------------------------------------
+# Central registry of all available observation builders.
+# Each entry maps a CLI key to (builder_class, base_obs_size, description).
+#
+# To add a new observation:
+#   1. Implement it as a subclass of DecisionPointObservation
+#   2. Add a new entry below
+#   3. Use --obs <key> on the CLI
+# =============================================================================
+OBSERVATION_REGISTRY = {
+    "decision_point": {
+        "class": DecisionPointObservation,
+        "base_dim": DecisionPointObservation.BASE_OBS_SIZE,   # 22
+        "description": "Baseline: decision-point graph + tree payload",
+    },
+    "spawn_aware": {
+        "class": SpawnAwareObservation,
+        "base_dim": SpawnAwareObservation.BASE_OBS_SIZE,      # 25
+        "description": "+ 3 spawn signals (active/pending density, ready)",
+    },
+    "conflict_aware": {
+        "class": ConflictAwareObservation,
+        "base_dim": ConflictAwareObservation.BASE_OBS_SIZE,   # 39
+        "description": "+ 5 global + 9 local CBS-style conflict features",
+    },
+}
+
+# Default observation if --obs is not specified.
+DEFAULT_OBSERVATION = "conflict_aware"
+
+# Module-level selected observation (set by CLI in main()).
+# Defaults to DEFAULT_OBSERVATION; overridable via --obs flag.
+_SELECTED_OBSERVATION_KEY: str = DEFAULT_OBSERVATION
+
+
+def _get_selected_observation_key() -> str:
+    """Return the currently selected observation key."""
+    return _SELECTED_OBSERVATION_KEY
+
+
+def _set_selected_observation(key: str) -> None:
+    """Set the active observation. Validates against registry."""
+    global _SELECTED_OBSERVATION_KEY
+    if key not in OBSERVATION_REGISTRY:
+        valid = ", ".join(sorted(OBSERVATION_REGISTRY.keys()))
+        raise ValueError(
+            f"Unknown observation key '{key}'. Valid keys: {valid}"
+        )
+    _SELECTED_OBSERVATION_KEY = key
+
+
+def _get_observation_class():
+    """Return the class object for the selected observation."""
+    return OBSERVATION_REGISTRY[_get_selected_observation_key()]["class"]
+
+
+def _get_observation_base_dim() -> int:
+    """Return BASE_OBS_SIZE for the selected observation."""
+    return OBSERVATION_REGISTRY[_get_selected_observation_key()]["base_dim"]
+
+
+def _print_observation_info() -> None:
+    """Pretty-print which observation is currently active."""
+    key = _get_selected_observation_key()
+    entry = OBSERVATION_REGISTRY[key]
+    print(f"[Obs] Selected:    {key}")
+    print(f"[Obs] Class:       {entry['class'].__name__}")
+    print(f"[Obs] Base dim:    {entry['base_dim']}")
+    print(f"[Obs] Description: {entry['description']}")
+
+
 
 from flatland_rail_env_persister import RailEnvironmentPersistable
 from reward_shaper import SimpleRewardShaper
@@ -55,12 +132,19 @@ MAX_RAIL_PAIRS_IN_CITY = 2
 MAX_EPISODE_STEPS = 500
 
 EVAL_EPISODES = 20
+
 SEED = 42
 DEVICE = "cpu"
 
 ENV_CACHE_DIR = os.path.join(_THIS_DIR, "generated_envs", "simple_marl")
-BC_CHECKPOINT = os.path.join(_THIS_DIR, "bc_checkpoint.pt")
-MAPPO_CHECKPOINT = os.path.join(_THIS_DIR, "mappo_checkpoint.pt")
+def _bc_checkpoint_path() -> str:
+    """BC checkpoint path is observation-specific to avoid dim mismatches."""
+    return os.path.join(_THIS_DIR, f"bc_checkpoint_{_get_selected_observation_key()}.pt")
+
+
+def _mappo_checkpoint_path() -> str:
+    """MAPPO checkpoint path is observation-specific to avoid dim mismatches."""
+    return os.path.join(_THIS_DIR, f"mappo_checkpoint_{_get_selected_observation_key()}.pt")
 
 REWARD_DONE_BONUS = 50.0          # was 5.0 — make goal-arrival much more attractive
 REWARD_ALL_DONE_BONUS = 100.0     # was 10.0
@@ -69,16 +153,16 @@ REWARD_STEP_PENALTY = 0.01        # was 0.0 — STOP forever now costs something
 REWARD_FINAL_NOT_SOLVED = 1.0     # was 0.1 — incentive to actually solve
 
 MAPPO_HIDDEN = 64
-MAPPO_LR = 1e-4  # was 3e-4 — slower learning rate prevents BC destruction
+MAPPO_LR =  3e-5
 MAPPO_GAMMA = 0.99
 MAPPO_GAE_LAMBDA = 0.95
-MAPPO_CLIP_EPS = 0.20
-MAPPO_ENTROPY = 0.01   # was 0.001 — needs more exploration to escape STOP-collapse
+MAPPO_CLIP_EPS = 0.10    
+MAPPO_ENTROPY = 0.005 
 MAPPO_VALUE_COEF = 0.5
 MAPPO_GRAD_CLIP = 0.5
-MAPPO_PPO_EPOCHS = 2
+MAPPO_PPO_EPOCHS = 1
 MAPPO_BATCH_SIZE = 256
-
+ 
 EPS_START = 0.05  # Lower exploration when warmstarted from BC (was 0.30)
 EPS_END = 0.01
 EPS_DECAY_EPISODES = 500
@@ -252,7 +336,9 @@ def build_environment(
 ) -> Environment:
 
     def obs_builder_factory():
-        return DecisionPointObservation()
+        """Instantiate the observation builder selected via --obs CLI flag."""
+        obs_class = _get_observation_class()
+        return obs_class(verbose_first_call=False)
 
     env = RailEnvironmentPersistable(
         obs_builder_object_creator=obs_builder_factory,
@@ -294,7 +380,6 @@ def build_environment(
 
     env.reset = _patched_reset
     return env
-
 
 # =============================================================================
 # Solver setup.
@@ -394,16 +479,17 @@ def run_eval(
         b = int(np.round(BAR_LEN * current_done))
         done_bar = '#' * b + '_' * (BAR_LEN - b)
 
+        # This-episode agent count
+        ep_done_n = int(round(float(tot_terminate) * N_AGENTS))
+
         bar.set_postfix_str(
-            f"agents:{N_AGENTS:>2d}  "
+            f"agents:[{ep_done_n:>2d}/{N_AGENTS:>2d}]  "
             f"done={current_done:>4.0%} "
             f"[{done_bar}]  "
             f"deadlock={current_dlk:>4.0%}  "
             f"steps={current_len:>4.0f}  "
             f"reward={current_rew:>+8.1f}"
         )
-
-
 
         bar.update(1)
 
@@ -481,9 +567,10 @@ class DLARecordingWrapper(Policy):
             return action
 
         base_obs, opps, payload = MAPPOPolicy._unwrap_state(state)
+        bd = _get_observation_base_dim()
         self.demos.append((
-            base_obs[:MAPPOPolicy.BASE_DIM].copy(),
-            [np.asarray(o, dtype=np.float32).flatten()[:MAPPOPolicy.BASE_DIM].copy() for o in opps],
+            base_obs[:bd].copy(),
+            [np.asarray(o, dtype=np.float32).flatten()[:bd].copy() for o in opps],
             payload,
             action,
         ))
@@ -539,7 +626,7 @@ def run_bc(n_demo_episodes: int = 200, n_bc_epochs: int = 10):
     print("\n" + "=" * 70)
     print("BEHAVIOR CLONING from DLA expert (decision-points only)")
     print("=" * 70)
-    bc_logger = TBLogger(run_name="bc")
+    bc_logger = TBLogger(run_name=f"bc_{_get_selected_observation_key()}")
 
     demos = collect_dla_demos(n_episodes=n_demo_episodes)
     if len(demos) == 0:
@@ -548,6 +635,7 @@ def run_bc(n_demo_episodes: int = 200, n_bc_epochs: int = 10):
         return
 
     policy = MAPPOPolicy(
+        base_dim=_get_observation_base_dim(),
         hidden=MAPPO_HIDDEN,
         learning_rate=MAPPO_LR,
         gamma=MAPPO_GAMMA,
@@ -562,10 +650,11 @@ def run_bc(n_demo_episodes: int = 200, n_bc_epochs: int = 10):
     )
 
     stats = policy.train_bc(demos, n_epochs=n_bc_epochs, batch_size=MAPPO_BATCH_SIZE)
-    policy.save(BC_CHECKPOINT)
+    bc_ckpt = _bc_checkpoint_path()
+    policy.save(bc_ckpt)
 
     print(f"\n[BC] Final  loss={stats['bc_loss']:.4f}  acc={stats['bc_acc']:.3f}")
-    print(f"[BC] Checkpoint saved: {BC_CHECKPOINT}")
+    print(f"[BC] Checkpoint saved: {bc_ckpt}")
 
     bc_logger.log_bc_epoch(epoch=n_bc_epochs, loss=stats["bc_loss"], accuracy=stats["bc_acc"])
 
@@ -585,6 +674,7 @@ def run_train(n_episodes: int = 2000):
 
     env = build_environment()
     policy = MAPPOPolicy(
+        base_dim=_get_observation_base_dim(),
         hidden=MAPPO_HIDDEN,
         learning_rate=MAPPO_LR,
         gamma=MAPPO_GAMMA,
@@ -598,19 +688,21 @@ def run_train(n_episodes: int = 2000):
         device=DEVICE,
     )
 
-    if os.path.exists(MAPPO_CHECKPOINT):
-        print(f"[Train] Resuming from MAPPO checkpoint: {MAPPO_CHECKPOINT}")
-        policy.load(MAPPO_CHECKPOINT)
-    elif os.path.exists(BC_CHECKPOINT):
-        print(f"[Train] Loading BC warmstart from {BC_CHECKPOINT}")
-        policy.load(BC_CHECKPOINT)
+    mappo_ckpt = _mappo_checkpoint_path()
+    bc_ckpt = _bc_checkpoint_path()
+    if os.path.exists(mappo_ckpt):
+        print(f"[Train] Resuming from MAPPO checkpoint: {mappo_ckpt}")
+        policy.load(mappo_ckpt)
+    elif os.path.exists(bc_ckpt):
+        print(f"[Train] Loading BC warmstart from {bc_ckpt}")
+        policy.load(bc_ckpt)
         policy.episode_count = 0
     else:
         print("[Train] No warmstart — training from scratch.")
 
 
     solver = setup_solver(env, policy)
-    train_logger = TBLogger(run_name="train_mappo")
+    train_logger = TBLogger(run_name=f"train_mappo_{_get_selected_observation_key()}")
 
     t0 = time.perf_counter()
     done_history: List[float] = []
@@ -651,6 +743,9 @@ def run_train(n_episodes: int = 2000):
 
         stats = policy.last_train_stats
 
+        # This-episode agent count
+        ep_done_n = int(round(float(tot_terminate) * N_AGENTS))
+
         # Action distribution: [DO_NOTHING, LEFT, FORWARD, RIGHT, STOP]
         ad = getattr(policy, 'last_action_dist', {0: 0, 1: 0, 2: 0, 3: 0, 4: 0})
         act_str = (f"acts[N:{ad.get(0,0):.0%} "
@@ -660,7 +755,7 @@ def run_train(n_episodes: int = 2000):
                    f"S:{ad.get(4,0):.0%}]")
 
         bar.set_postfix_str(
-            f"agents:{N_AGENTS:>2d}  "
+            f"agents:[{ep_done_n:>2d}/{N_AGENTS:>2d}]  "
             f"done={recent_done_now:>4.0%} "
             f"[{done_bar}]  "
             f"reward={recent_rew_now:>+6.0f}  "
@@ -677,10 +772,10 @@ def run_train(n_episodes: int = 2000):
             print(f"\n[Train] Mid-training eval at episode {ep+1} ...")
             eval_metrics = run_eval(policy, n_episodes=10, verbose=False, tb_logger=train_logger)
             eval_log.append({"episode": ep + 1, **eval_metrics})
-            policy.save(MAPPO_CHECKPOINT)
+            policy.save(_mappo_checkpoint_path())
 
     bar.close()
-    policy.save(MAPPO_CHECKPOINT)
+    policy.save(_mappo_checkpoint_path())
     elapsed = time.perf_counter() - t0
     print(f"\n[Train] Training complete in {elapsed/60:.1f} min")
     print("[Train] Final eval ...")
@@ -708,17 +803,23 @@ def run_eval_mode(policy_name: str, n_episodes: int = EVAL_EPISODES):
     elif policy_name == "dla":
         policy = DLAWrapper()
     elif policy_name == "mappo":
-        policy = MAPPOPolicy(hidden=MAPPO_HIDDEN, device=DEVICE)
-        ckpt = MAPPO_CHECKPOINT if os.path.exists(MAPPO_CHECKPOINT) else BC_CHECKPOINT
+        policy = MAPPOPolicy(
+            base_dim=_get_observation_base_dim(),
+            hidden=MAPPO_HIDDEN,
+            device=DEVICE,
+        )
+        mappo_ckpt = _mappo_checkpoint_path()
+        bc_ckpt = _bc_checkpoint_path()
+        ckpt = mappo_ckpt if os.path.exists(mappo_ckpt) else bc_ckpt
         if os.path.exists(ckpt):
             policy.load(ckpt)
         else:
-            print(f"[Eval] WARNING: No checkpoint at {MAPPO_CHECKPOINT} or {BC_CHECKPOINT}")
+            print(f"[Eval] WARNING: No checkpoint at {mappo_ckpt} or {bc_ckpt}")
             print("[Eval] Evaluating random-init MAPPO (expect very low done-rate).")
     else:
         raise ValueError(f"Unknown policy: {policy_name}")
 
-    logger = TBLogger(run_name=f"eval_{policy_name}")
+    logger = TBLogger(run_name=f"eval_{policy_name}_{_get_selected_observation_key()}")
     try:
         return run_eval(policy, n_episodes=n_episodes, tb_logger=logger)
     finally:
@@ -729,13 +830,35 @@ def run_eval_mode(policy_name: str, n_episodes: int = EVAL_EPISODES):
 # CLI.
 # =============================================================================
 def main():
-    parser = argparse.ArgumentParser(description="Flatland MARL — simple training/eval")
+    parser = argparse.ArgumentParser(
+        description="Flatland MARL — simple training/eval",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
     parser.add_argument("--mode", choices=["eval", "bc", "train"], required=True)
     parser.add_argument("--policy", choices=["random", "dla", "mappo"], default="mappo")
     parser.add_argument("--episodes", type=int, default=None)
     parser.add_argument("--bc-epochs", type=int, default=10)
     parser.add_argument("--seed", type=int, default=SEED)
+
+    # Observation selector — choose which observation builder to use.
+    obs_help_lines = ["Observation builder to use:"]
+    for key, entry in sorted(OBSERVATION_REGISTRY.items()):
+        marker = " (default)" if key == DEFAULT_OBSERVATION else ""
+        obs_help_lines.append(
+            f"  {key:<16} dim={entry['base_dim']:<3} {entry['description']}{marker}"
+        )
+    parser.add_argument(
+        "--obs",
+        choices=sorted(OBSERVATION_REGISTRY.keys()),
+        default=DEFAULT_OBSERVATION,
+        help="\n".join(obs_help_lines),
+    )
+
     args = parser.parse_args()
+
+    # Activate selected observation BEFORE any environment is built.
+    _set_selected_observation(args.obs)
+    _print_observation_info()
 
     np.random.seed(args.seed)
     random.seed(args.seed)

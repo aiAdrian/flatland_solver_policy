@@ -407,8 +407,8 @@ class RolloutBuffer:
 
 class MAPPOPolicy(LearningPolicy):
 
-    BASE_DIM = 22       # DecisionPointObservation base vector size.
-    ACTION_SIZE = 5     # DO_NOTHING, MOVE_LEFT, MOVE_FORWARD, MOVE_RIGHT, STOP.
+    DEFAULT_BASE_DIM = 22  # DecisionPointObservation base vector size (legacy default).
+    ACTION_SIZE = 5        # DO_NOTHING, MOVE_LEFT, MOVE_FORWARD, MOVE_RIGHT, STOP.
 
     def __init__(
         self,
@@ -423,8 +423,13 @@ class MAPPOPolicy(LearningPolicy):
         ppo_epochs: int = 4,
         batch_size: int = 256,
         device: str = "cpu",
+        base_dim: int = None,
     ):
         super().__init__()
+        # base_dim is dynamic: caller can pass it (e.g. from
+        # SpawnAwareObservation.BASE_OBS_SIZE = 25). Fallback to legacy 22.
+        self.BASE_DIM = int(base_dim) if base_dim is not None else self.DEFAULT_BASE_DIM
+        print(f">> MAPPOPolicy initialised with BASE_DIM={self.BASE_DIM}")
         self.hidden = int(hidden)
         self.lr = float(learning_rate)
         self.gamma = float(gamma)
