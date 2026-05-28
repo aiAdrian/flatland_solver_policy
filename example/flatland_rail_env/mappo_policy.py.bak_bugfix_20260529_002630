@@ -845,30 +845,12 @@ class MAPPOPolicy(LearningPolicy):
                 lp = dist.log_prob(b_act)
                 ent = dist.entropy().mean()
 
-                # BUGFIX_RATIO_CLAMP: prevent ratio explosion (was 43911!)
-                log_ratio = lp - b_old_lp
-                log_ratio = torch.clamp(log_ratio, min=-10.0, max=10.0)
-                ratio = torch.exp(log_ratio)
+                ratio = torch.exp(lp - b_old_lp)
                 surr1 = ratio * b_adv
                 surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * b_adv
                 p_loss = -torch.min(surr1, surr2).mean()
                 v_loss = ((values - b_ret) ** 2).mean()
                 loss = p_loss + self.value_coef * v_loss - self.entropy_coef * ent
-
-                # BUGFIX_KL_EARLYSTOP: detect catastrophic policy drift BEFORE update
-                with torch.no_grad():
-                    approx_kl = ((ratio - 1.0) - log_ratio).mean().item()
-                if approx_kl > 0.075:  # 1.5x target_kl=0.05
-                    if n_minibatches <= 2 or n_minibatches % 8 == 0:
-                        print(f"[PPO] KL early-stop at mb#{n_minibatches}: "
-                              f"approx_kl={approx_kl:.4f} > 0.075 (skip update)")
-                    stats["kl"].append(float(approx_kl))
-                    stats["ratio"].append(float(ratio.mean().item()))
-                    stats["v_loss"].append(float(v_loss.item()))
-                    stats["p_loss"].append(float(p_loss.item()))
-                    stats["ent"].append(float(ent.item()))
-                    stats["clip_frac"].append(0.0)
-                    break  # skip rest of this PPO-epoch
 
                 self.optimizer.zero_grad()
                 loss.backward()

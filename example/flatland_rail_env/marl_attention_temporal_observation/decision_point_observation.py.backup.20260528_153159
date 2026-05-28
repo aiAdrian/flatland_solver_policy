@@ -1247,12 +1247,16 @@ class DecisionPointObservation(ObservationBuilder):
         Flatland action ids: DO_NOTHING=0, LEFT=1, FORWARD=2, RIGHT=3, STOP=4.
 
         Returns:
-            0 = no previous state, lifecycle no-op, OR ambiguous
-            1 = LEFT, 2 = FORWARD, 3 = RIGHT, 4 = STOP
+            0 = no previous state (first step) OR lifecycle no-op
+                (WAITING / READY_TO_DEPART without progress)
+            1 = LEFT  (real choice, prev cell had >1 transitions)
+            2 = FORWARD (or any forced curve where prev cell had ≤1 transition)
+            3 = RIGHT (real choice, prev cell had >1 transitions)
+            4 = STOP (agent on map, did not progress this step)
         """
         prev = self._prev_pos_dir.get(handle)
         if prev is None or pos is None or direction is None:
-            return 0  # FIX: first step is DO_NOTHING, NOT STOP
+            return 0
         prev_pos, prev_dir = prev
         try:
             same_pos = (int(pos[0]) == int(prev_pos[0]) and int(pos[1]) == int(prev_pos[1]))
@@ -1262,18 +1266,12 @@ class DecisionPointObservation(ObservationBuilder):
         # ── Position unchanged: distinguish lifecycle no-op from real STOP ──
         if same_pos:
             try:
-                agent = self.env.agents[handle]
-                agent_state = agent.state
+                agent_state = self.env.agents[handle].state
             except Exception:
-                return 0  # FIX: be conservative if we can't read state
-            # FIX: Lifecycle states return 0 (no STOP-bias)
-            if agent_state in (TrainState.WAITING, TrainState.READY_TO_DEPART, TrainState.DONE):
-                return 0
-            # FIX: Only return STOP if agent is genuinely active (MOVING/STOPPED on map)
-            # AND we had a previous tracking entry. Otherwise return 0.
-            if agent.position is None:
-                return 0  # not on map → can't have stopped
-            return 4  # genuine STOP / no progress despite being on map
+                agent_state = None
+            if agent_state in (TrainState.WAITING, TrainState.READY_TO_DEPART):
+                return 0  # DO_NOTHING (lifecycle, not a policy STOP)
+            return 4  # STOP / no progress
 
         # ── Position changed: classify movement ──
         # If the previous cell was a corridor (≤1 transitions), the direction
@@ -1358,23 +1356,22 @@ class DecisionPointObservation(ObservationBuilder):
         finite_distances = [dist for _, dist, _ in all_distance if np.isfinite(dist)]
         finite_unique = sorted(set(finite_distances))
 
-        # FIX: ALWAYS use normalized remaining-distance signal in addition to rank.
-        # The pure rank can be degenerate (5 agents → only 5 levels) and constant
-        # within an episode for static cohorts. Hybrid: 50% rank + 50% distance-norm.
-        fallback_max = float(getattr(self, "_max_dist", 0.0))
-        if fallback_max <= 1.0:
-            fallback_max = max(1.0, float(self.env.width + self.env.height))
-        distance_signal = self._distance_to_unit(self_distance, fallback_max)
-
         if len(finite_unique) >= 2:
+            # Generic normalized distance-rank priority in [0, 1].
+            # Best (smallest remaining distance) -> 0.0, worst -> 1.0.
             value_to_rank = {dist: i for i, dist in enumerate(finite_unique)}
             denom = max(1, len(finite_unique) - 1)
             rank = value_to_rank.get(self_distance, len(finite_unique) - 1)
-            rank_signal = float(rank) / float(denom)
-            # Blend: rank for cohort-comparison, distance for absolute progress
-            priority_rank = 0.5 * rank_signal + 0.5 * distance_signal
+            priority_rank = float(rank) / float(denom)
         else:
-            priority_rank = distance_signal
+            # If cohort rank is undefined (all same distance / single sample),
+            # fall back to normalized remaining distance so the feature remains informative.
+            # Prefer the actual distance-map maximum cached by get_many (more
+            # realistic than map-diagonal which is often an over-estimate).
+            fallback_max = float(getattr(self, "_max_dist", 0.0))
+            if fallback_max <= 1.0:
+                fallback_max = max(1.0, float(self.env.width + self.env.height))
+            priority_rank = self._distance_to_unit(self_distance, fallback_max)
 
         if prof_active:
             self._obs_prof_add('base_priority', time.perf_counter() - t_seg)
@@ -1482,36 +1479,25 @@ class DecisionPointObservation(ObservationBuilder):
         # Rationale: binary 0/1 penalises every STOP, but in MARL rail
         # scheduling a yield is often the cooperative optimum.
         # Refs: Laurent et al. 2021 (arXiv:2103.16511, §4.2 yielding policies).
-        # FIX: Tri-state with neutral default for ambiguous cases.
-
         prev_sp = self._prev_sp_hint.get(handle)
-
         if last_action_id == 4:
-
-            raw_features[21] = 0.5  # STOP — defensible yield
-
+            # STOP / no progress — defensible non-plan action
+            raw_features[21] = 0.5
         elif prev_sp is not None and last_action_id in (1, 2, 3):
-
-            sp_idx = last_action_id - 1
-
+            sp_idx = last_action_id - 1  # 1->0 (left), 2->1 (fwd), 3->2 (right)
             raw_features[21] = 1.0 if float(prev_sp[sp_idx]) > 0.5 else 0.0
-
-        else:
-
-            raw_features[21] = 0.5  # neutral, not off-plan
+        # else: last_action_id == 0 (DO_NOTHING / first step) → leaves 0.0
 
 
         # ── TRACKING-UPDATE für nächste Observation ──────────────────────────
-        # FIX: Track only for agents genuinely on the map AND in active states.
-        # WAITING/READY_TO_DEPART/DONE → clear tracking (no last_action signal).
-        is_active = (
-            agent.position is not None
-            and agent.state in (TrainState.MOVING, TrainState.STOPPED, TrainState.MALFUNCTION)
-        )
-        if is_active:
+        # Nur tracken wenn Agent tatsächlich auf der Map ist. Sonst aliased
+        # initial_position als "previous position" und der erste echte
+        # MOVING-Step wird fälschlich als STOP klassifiziert (Bug 7).
+        if agent.position is not None:
             self._prev_pos_dir[handle] = (tuple(pos), int(direction))
             self._prev_sp_hint[handle] = (float(sp_left), float(sp_fwd), float(sp_right))
         else:
+            # Stale tracking aus früheren Lifecycle-Phasen löschen.
             self._prev_pos_dir.pop(handle, None)
             self._prev_sp_hint.pop(handle, None)
 

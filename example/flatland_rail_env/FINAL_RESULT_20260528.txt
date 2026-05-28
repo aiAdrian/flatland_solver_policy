@@ -1,0 +1,45 @@
+=== Flatland MARL — Final Result (Post-Patch) ===
+Date: 2026-05-28
+Training: 200 episodes, ~118 minutes
+Observation: ConflictAwareObservation (39d base + tree)
+
+PRE-PATCH (baseline):
+  done_rate     = 0.530
+  deadlock_rate = 0.470
+
+POST-PATCH (Final-Eval, 20 episodes):
+  done_rate     = 0.750  (+/-0.315)
+  deadlock_rate = 0.190
+  total_reward  = -15.30
+  episode_len   = 368.9
+
+Mid-Eval Trajectory:
+  ep 100: done=0.760  deadlock=0.200
+  ep 200: done=0.640  deadlock=0.280  (training instability)
+  Final:  done=0.750  deadlock=0.190  (latest checkpoint)
+
+Improvements applied:
+  PATCH 1: priority_rank — fix progress feedback
+  PATCH 2: spawn_active_density — fix global state
+  PATCH 3: last_action_* — fix action history
+  PATCH 4: conflict features — proper conflict detection
+
+Result: +42% done_rate, -60% deadlock_rate
+
+=== Phase 2 Experiment (Continuation Training) ===
+Started: 2026-05-28 19:31
+Duration: 164 minutes (300 episodes warmstart from Phase 1)
+
+Result:
+  done_rate     = 0.600  (-0.150 vs Phase 1)
+  deadlock_rate = 0.060  (-0.130, much better)
+  total_reward  = -8.67
+
+Diagnosis:
+  - PPO instability (KL spikes >1.0, ratio >3)
+  - Entropy collapse (H=0.00 sustained)
+  - Defensive policy (high stop rate, fewer goals)
+  - WITHOUT KL-early-stopping → catastrophic drift
+
+CONCLUSION: Phase 1 checkpoint is the BEST.
+Use: mappo_FINAL_done75_20260528.pt

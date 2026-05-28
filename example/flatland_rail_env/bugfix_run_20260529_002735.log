@@ -1,0 +1,992 @@
+[Obs] Selected:    conflict_aware
+[Obs] Class:       ConflictAwareObservation
+[Obs] Base dim:    39
+[Obs] Description: + 5 global + 9 local CBS-style conflict features
+
+============================================================
+  Flatland MARL — mode=train
+============================================================
+
+======================================================================
+MAPPO TRAINING  (200 episodes)
+======================================================================
+>> Environment:Flatland:RailEnv
+[Env] Using 324 cached environments at /home/u216993/workspace/ai4realnet/aiAdrian_flatland/flatland_solver_policy/example/flatland_rail_env/generated_envs/simple_marl
+Load environments from disk. #  324  loaded.
+>> MAPPOPolicy
+>> MAPPOPolicy initialised with BASE_DIM=39
+[Train] Loading BC warmstart from /home/u216993/workspace/ai4realnet/aiAdrian_flatland/flatland_solver_policy/example/flatland_rail_env/bc_checkpoint_conflict_aware.pt
+[Load] /home/u216993/workspace/ai4realnet/aiAdrian_flatland/flatland_solver_policy/example/flatland_rail_env/bc_checkpoint_conflict_aware.pt  (episode_count=0)
+[reward] Using OutcomeBasedReward (step=-1, deadlock=-5, done=+50+saved, all_done=+100, fail=-200, scale=0.01)
+[TBLogger] Logging to /home/u216993/workspace/ai4realnet/aiAdrian_flatland/flatland_solver_policy/example/flatland_rail_env/runs/20260529_002741_train_mappo_conflict_aware
+[Train[MAPPO]] starting (200 iterations)
+>> DeadLockAvoidancePolicy
+[PPO-DEBUG] N=447  adv=[-1.846,+3.378] std=1.001  ret=[-0.5,+4.9] mean=+1.1  mask_legal_avg=3.10  old_lp=[-0.414±1.272]
+[PPO-DEBUG] mb#1 grad_norm=13.12805  loss=+0.8300  p_loss=-0.0072  v_loss=+1.6795  ent=0.1271
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.023008  ratio=1.04938  head_max_dparam=0.001508  clip_frac=0.151
+[Train[MAPPO]]     1/200 (  0.5%)  agents:[ 5/ 5]  done=100% [#########################]  reward=   +23  eps=  5%  KL=+0.023  H=0.16  acts[N:0% L:2% F:56% R:2% S:40%]  (13s)
+[PPO-DEBUG] N=1544  adv=[-1.766,+5.000] std=0.944  ret=[-1.3,+5.0] mean=+0.3  mask_legal_avg=3.01  old_lp=[-0.325±0.796]
+[PPO-DEBUG] mb#1 grad_norm=114.41522  loss=+0.7226  p_loss=-0.0294  v_loss=+1.5150  ent=0.2710
+[PPO-DEBUG] DONE  n_mb=28  KL=+0.007553  ratio=1.01342  head_max_dparam=0.007473  clip_frac=0.289
+[Train[MAPPO]]     2/200 (  1.0%)  agents:[ 2/ 5]  done= 70% [##################_______]  reward=   -25  eps=  5%  KL=+0.008  H=0.25  acts[N:0% L:0% F:33% R:0% S:67%]  (53s)
+[PPO-DEBUG] N=1552  adv=[-3.175,+5.000] std=0.914  ret=[-2.2,+5.0] mean=-0.6  mask_legal_avg=3.01  old_lp=[-0.341±0.897]
+[PPO-DEBUG] mb#1 grad_norm=49.21434  loss=+0.4910  p_loss=-0.0890  v_loss=+1.1696  ent=0.2399
+[PPO-DEBUG] DONE  n_mb=28  KL=+0.006555  ratio=1.01262  head_max_dparam=0.007339  clip_frac=0.379
+[Train[MAPPO]]     3/200 (  1.5%)  agents:[ 2/ 5]  done= 60% [###############__________]  reward=   -43  eps=  5%  KL=+0.007  H=0.31  acts[N:0% L:0% F:21% R:0% S:79%]  (79s)
+[PPO-DEBUG] N=417  adv=[-2.057,+2.819] std=1.001  ret=[-0.5,+5.1] mean=+1.1  mask_legal_avg=3.23  old_lp=[-0.257±0.834]
+[PPO-DEBUG] mb#1 grad_norm=36.21788  loss=+0.8955  p_loss=-0.0893  v_loss=+1.9766  ent=0.1735
+[PPO-DEBUG] DONE  n_mb=8  KL=-0.002555  ratio=1.00589  head_max_dparam=0.005818  clip_frac=0.126
+[Train[MAPPO]]     4/200 (  2.0%)  agents:[ 5/ 5]  done= 70% [##################_______]  reward=   -26  eps=  5%  KL=-0.003  H=0.18  acts[N:0% L:2% F:77% R:3% S:18%]  (84s)
+[PPO-DEBUG] N=1063  adv=[-2.779,+4.546] std=1.000  ret=[-2.7,+4.9] mean=-0.4  mask_legal_avg=3.02  old_lp=[-0.444±0.720]
+[PPO-DEBUG] mb#1 grad_norm=41.35679  loss=+0.6009  p_loss=+0.0668  v_loss=+1.0862  ent=0.4511
+[PPO-DEBUG] DONE  n_mb=20  KL=+0.006099  ratio=1.00309  head_max_dparam=0.012218  clip_frac=0.394
+[Train[MAPPO]]     5/200 (  2.5%)  agents:[ 3/ 5]  done= 68% [#################________]  reward=   -29  eps=  5%  KL=+0.006  H=0.40  acts[N:0% L:1% F:37% R:0% S:62%]  (99s)
+[PPO-DEBUG] N=2479  adv=[-5.000,+3.402] std=0.886  ret=[-3.0,+0.6] mean=-1.4  mask_legal_avg=3.00  old_lp=[-0.402±0.664]
+[PPO-DEBUG] mb#1 grad_norm=56.55306  loss=+0.6064  p_loss=+0.0129  v_loss=+1.2024  ent=0.3825
+[PPO] KL early-stop at mb#8: approx_kl=0.0767 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=10  KL=+0.037510  ratio=1.00524  head_max_dparam=0.003547  clip_frac=0.174
+[Train[MAPPO]]     6/200 (  3.0%)  agents:[ 0/ 5]  done= 57% [##############___________]  reward=   -51  eps=  5%  KL=+0.038  H=0.41  acts[N:0% L:0% F:30% R:0% S:69%]  (116s)
+[PPO-DEBUG] N=1937  adv=[-5.000,+5.000] std=0.976  ret=[-4.0,+4.6] mean=-2.0  mask_legal_avg=3.01  old_lp=[-0.356±0.728]
+[PPO-DEBUG] mb#1 grad_norm=22.62798  loss=+0.3108  p_loss=+0.0113  v_loss=+0.6124  ent=0.3366
+[PPO-DEBUG] DONE  n_mb=32  KL=+0.004659  ratio=1.00242  head_max_dparam=0.023456  clip_frac=0.261
+[Train[MAPPO]]     7/200 (  3.5%)  agents:[ 1/ 5]  done= 51% [#############____________]  reward=   -56  eps=  5%  KL=+0.005  H=0.36  acts[N:0% L:0% F:22% R:0% S:77%]  (145s)
+[PPO-DEBUG] N=2020  adv=[-4.551,+5.000] std=0.954  ret=[-4.7,+4.5] mean=-2.8  mask_legal_avg=3.01  old_lp=[-0.238±0.785]
+[PPO-DEBUG] mb#1 grad_norm=23.88624  loss=+0.2936  p_loss=-0.0114  v_loss=+0.6180  ent=0.1990
+[PPO-DEBUG] DONE  n_mb=32  KL=+0.017772  ratio=0.98747  head_max_dparam=0.032504  clip_frac=0.251
+[Train[MAPPO]]     8/200 (  4.0%)  agents:[ 1/ 5]  done= 48% [############_____________]  reward=   -63  eps=  5%  KL=+0.018  H=0.26  acts[N:0% L:0% F:14% R:0% S:85%]  (174s)
+[PPO-DEBUG] N=536  adv=[-2.019,+3.827] std=1.001  ret=[-1.7,+4.8] mean=+0.2  mask_legal_avg=3.19  old_lp=[-0.202±0.673]
+[PPO-DEBUG] mb#1 grad_norm=49.05517  loss=+0.7902  p_loss=-0.0042  v_loss=+1.5987  ent=0.2469
+[PPO-DEBUG] DONE  n_mb=12  KL=+0.006852  ratio=1.00242  head_max_dparam=0.008814  clip_frac=0.154
+[Train[MAPPO]]     9/200 (  4.5%)  agents:[ 5/ 5]  done= 53% [#############____________]  reward=   -53  eps=  5%  KL=+0.007  H=0.23  acts[N:0% L:0% F:48% R:1% S:51%]  (181s)
+[PPO-DEBUG] N=2482  adv=[-5.000,+5.000] std=0.981  ret=[-4.7,+0.6] mean=-2.7  mask_legal_avg=3.01  old_lp=[-0.289±0.749]
+[PPO-DEBUG] mb#1 grad_norm=38.85600  loss=+0.2478  p_loss=-0.0816  v_loss=+0.6734  ent=0.3641
+[PPO-DEBUG] DONE  n_mb=40  KL=+0.016156  ratio=0.99314  head_max_dparam=0.033199  clip_frac=0.263
+[Train[MAPPO]]    10/200 (  5.0%)  agents:[ 0/ 5]  done= 48% [############_____________]  reward=   -63  eps=  5%  KL=+0.016  H=0.36  acts[N:0% L:0% F:12% R:0% S:88%]  (217s)
+[PPO-DEBUG] N=432  adv=[-2.698,+3.316] std=1.001  ret=[-2.0,+4.9] mean=+0.1  mask_legal_avg=3.15  old_lp=[-0.387±1.019]
+[PPO-DEBUG] mb#1 grad_norm=51.47866  loss=+1.2173  p_loss=+0.0300  v_loss=+2.3855  ent=0.2755
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.000053  ratio=1.00454  head_max_dparam=0.004670  clip_frac=0.095
+[Train[MAPPO]]    11/200 (  5.5%)  agents:[ 5/ 5]  done= 53% [#############____________]  reward=   -55  eps=  5%  KL=+0.000  H=0.26  acts[N:0% L:2% F:66% R:1% S:32%]  (223s)
+[PPO-DEBUG] N=1643  adv=[-5.000,+5.000] std=0.989  ret=[-5.3,+4.6] mean=-2.9  mask_legal_avg=3.02  old_lp=[-0.244±0.675]
+[PPO-DEBUG] mb#1 grad_norm=18.48221  loss=+0.3035  p_loss=+0.0168  v_loss=+0.5886  ent=0.3803
+[PPO-DEBUG] DONE  n_mb=28  KL=+0.039582  ratio=0.96610  head_max_dparam=0.014891  clip_frac=0.458
+[Train[MAPPO]]    12/200 (  6.0%)  agents:[ 2/ 5]  done= 52% [#############____________]  reward=   -58  eps=  5%  KL=+0.040  H=0.47  acts[N:0% L:0% F:12% R:0% S:87%]  (247s)
+[PPO-DEBUG] N=430  adv=[-4.999,+4.077] std=1.001  ret=[-2.0,+4.9] mean=+0.4  mask_legal_avg=3.08  old_lp=[-0.189±0.638]
+[PPO-DEBUG] mb#1 grad_norm=44.49195  loss=+0.6279  p_loss=+0.0190  v_loss=+1.2264  ent=0.2130
+[PPO-DEBUG] DONE  n_mb=8  KL=-0.000349  ratio=1.00161  head_max_dparam=0.003245  clip_frac=0.068
+[Train[MAPPO]]    13/200 (  6.5%)  agents:[ 5/ 5]  done= 55% [##############___________]  reward=   -52  eps=  5%  KL=-0.000  H=0.20  acts[N:0% L:2% F:54% R:0% S:43%]  (253s)
+[PPO-DEBUG] N=1971  adv=[-5.000,+3.911] std=0.999  ret=[-5.3,+5.1] mean=-1.9  mask_legal_avg=3.02  old_lp=[-0.293±0.741]
+[PPO-DEBUG] mb#1 grad_norm=43.57146  loss=+0.5047  p_loss=+0.0627  v_loss=+0.8984  ent=0.3576
+[PPO] KL early-stop at mb#16: approx_kl=0.0804 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=16  KL=+0.059304  ratio=0.94623  head_max_dparam=0.010566  clip_frac=0.266
+[Train[MAPPO]]    14/200 (  7.0%)  agents:[ 1/ 5]  done= 53% [#############____________]  reward=   -54  eps=  5%  KL=+0.059  H=0.42  acts[N:0% L:0% F:14% R:0% S:85%]  (270s)
+[PPO-DEBUG] N=1779  adv=[-5.000,+3.645] std=0.941  ret=[-5.8,+2.9] mean=-2.2  mask_legal_avg=3.04  old_lp=[-0.372±0.815]
+[PPO-DEBUG] mb#1 grad_norm=7.48331  loss=+0.3055  p_loss=+0.0223  v_loss=+0.5847  ent=0.4564
+[PPO-DEBUG] DONE  n_mb=28  KL=+0.094524  ratio=0.92304  head_max_dparam=0.016306  clip_frac=0.587
+[Train[MAPPO]]    15/200 (  7.5%)  agents:[ 3/ 5]  done= 53% [#############____________]  reward=   -54  eps=  5%  KL=+0.095  H=0.49  acts[N:1% L:0% F:16% R:0% S:84%]  (295s)
+[PPO-DEBUG] N=2099  adv=[-5.000,+4.042] std=0.991  ret=[-5.7,+2.6] mean=-2.0  mask_legal_avg=3.05  old_lp=[-0.356±0.976]
+[PPO-DEBUG] mb#1 grad_norm=17.41208  loss=+0.3283  p_loss=+0.0918  v_loss=+0.4878  ent=0.3653
+[PPO-DEBUG] DONE  n_mb=36  KL=+0.059655  ratio=0.95083  head_max_dparam=0.016880  clip_frac=0.401
+[Train[MAPPO]]    16/200 (  8.0%)  agents:[ 1/ 5]  done= 51% [#############____________]  reward=   -55  eps=  5%  KL=+0.060  H=0.34  acts[N:0% L:0% F:13% R:0% S:87%]  (321s)
+[PPO-DEBUG] N=1098  adv=[-4.335,+5.000] std=0.997  ret=[-1.8,+3.9] mean=-0.6  mask_legal_avg=3.08  old_lp=[-0.272±0.952]
+[PPO-DEBUG] mb#1 grad_norm=15.48655  loss=+0.2073  p_loss=-0.0331  v_loss=+0.4871  ent=0.1543
+[PPO-DEBUG] DONE  n_mb=20  KL=+0.005315  ratio=0.99839  head_max_dparam=0.009264  clip_frac=0.106
+[Train[MAPPO]]    17/200 (  8.5%)  agents:[ 5/ 5]  done= 54% [##############___________]  reward=   -51  eps=  5%  KL=+0.005  H=0.15  acts[N:0% L:1% F:28% R:1% S:70%]  (337s)
+[PPO-DEBUG] N=1888  adv=[-2.653,+4.243] std=1.000  ret=[-3.7,+3.7] mean=-1.0  mask_legal_avg=3.06  old_lp=[-0.288±0.850]
+[PPO-DEBUG] mb#1 grad_norm=29.08928  loss=+0.3662  p_loss=+0.0130  v_loss=+0.7158  ent=0.2370
+[PPO-DEBUG] DONE  n_mb=22  KL=+0.067808  ratio=0.94803  head_max_dparam=0.016777  clip_frac=0.334
+[Train[MAPPO]]    18/200 (  9.0%)  agents:[ 2/ 5]  done= 53% [#############____________]  reward=   -52  eps=  5%  KL=+0.068  H=0.36  acts[N:0% L:0% F:31% R:0% S:68%]  (358s)
+[PPO-DEBUG] N=2079  adv=[-4.726,+4.401] std=1.000  ret=[-4.8,+2.5] mean=-1.9  mask_legal_avg=3.05  old_lp=[-0.701±0.941]
+[PPO-DEBUG] mb#1 grad_norm=17.10999  loss=+0.2024  p_loss=-0.0024  v_loss=+0.4289  ent=0.4803
+[PPO-DEBUG] DONE  n_mb=24  KL=+0.153689  ratio=0.87298  head_max_dparam=0.019670  clip_frac=0.509
+[Train[MAPPO]]    19/200 (  9.5%)  agents:[ 2/ 5]  done= 53% [#############____________]  reward=   -53  eps=  5%  KL=+0.154  H=0.38  acts[N:0% L:0% F:15% R:0% S:84%]  (381s)
+[PPO-DEBUG] N=2414  adv=[-5.000,+5.000] std=0.992  ret=[-5.7,-0.1] mean=-3.0  mask_legal_avg=3.03  old_lp=[-1.197±1.001]
+[PPO-DEBUG] mb#1 grad_norm=16.29389  loss=+0.1163  p_loss=-0.0441  v_loss=+0.3414  ent=0.5117
+[PPO] KL early-stop at mb#16: approx_kl=0.0809 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=18  KL=+0.122363  ratio=0.86799  head_max_dparam=0.011348  clip_frac=0.528
+[ObsFnPerf] ep=20 interval=20 sample_every=8 get=2.943ms get_many=15.072ms local_search=2.362ms deadlock_profile=0.178ms base_features=0.000ms debug_overlay=0.000ms deadlock_calls_per_local_search=7.82
+[ObsFnPerfBase] transitions=0.000ms successors=0.000ms priority=0.000ms flags=0.000ms sp_hint=0.000ms
+[ObsFnPerfDetail] get_p50=2.981ms get_p95=4.208ms get_max=5.406ms get_many_p50=15.050ms get_many_p95=17.467ms get_many_max=143.457ms local_search_p50=2.301ms local_search_p95=3.187ms local_search_max=4.338ms
+[ObsFnPerfLocalSearch] nodes_mean=7.82 nodes_p95=8.00 edges_mean=8.36 edges_p95=10.00 seen_agents_mean=1.31 ms_per_node=0.3019 handles_per_get_many=5.00
+[ObsFnPerfGetMany] total_nodes_mean=37.67 total_nodes_p95=40.00 total_edges_mean=40.28 total_edges_p95=43.00
+[Train[MAPPO]]    20/200 ( 10.0%)  agents:[ 0/ 5]  done= 50% [############_____________]  reward=   -56  eps=  5%  KL=+0.122  H=0.45  acts[N:0% L:0% F:14% R:2% S:84%]  (403s)
+[PPO-DEBUG] N=1486  adv=[-3.800,+5.000] std=0.982  ret=[-6.0,+4.6] mean=-2.7  mask_legal_avg=3.03  old_lp=[-1.062±1.223]
+[PPO-DEBUG] mb#1 grad_norm=7.73457  loss=+0.3103  p_loss=-0.0054  v_loss=+0.6491  ent=0.4420
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.123497  ratio=0.80632  head_max_dparam=0.002002  clip_frac=0.189
+[Train[MAPPO]]    21/200 ( 10.5%)  agents:[ 3/ 5]  done= 50% [#############____________]  reward=   -56  eps=  5%  KL=+0.123  H=0.42  acts[N:0% L:0% F:17% R:0% S:83%]  (414s)
+[PPO-DEBUG] N=1712  adv=[-3.900,+5.000] std=0.960  ret=[-6.4,+4.9] mean=-3.7  mask_legal_avg=3.03  old_lp=[-1.906±1.353]
+[PPO-DEBUG] mb#1 grad_norm=6.47114  loss=+0.2359  p_loss=+0.0277  v_loss=+0.4309  ent=0.3625
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.127980  ratio=0.76660  head_max_dparam=0.002313  clip_frac=0.234
+[Train[MAPPO]]    22/200 ( 11.0%)  agents:[ 2/ 5]  done= 50% [############_____________]  reward=   -57  eps=  5%  KL=+0.128  H=0.29  acts[N:0% L:0% F:14% R:0% S:85%]  (426s)
+[PPO-DEBUG] N=1671  adv=[-2.876,+5.000] std=0.982  ret=[-6.2,+4.6] mean=-3.3  mask_legal_avg=3.02  old_lp=[-1.541±1.166]
+[PPO-DEBUG] mb#1 grad_norm=16.55120  loss=+0.2878  p_loss=-0.0191  v_loss=+0.6338  ent=0.5031
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.093527  ratio=0.76059  head_max_dparam=0.001653  clip_frac=0.140
+[Train[MAPPO]]    23/200 ( 11.5%)  agents:[ 2/ 5]  done= 50% [############_____________]  reward=   -58  eps=  5%  KL=+0.094  H=0.44  acts[N:0% L:0% F:20% R:0% S:80%]  (437s)
+[PPO-DEBUG] N=1878  adv=[-4.810,+5.000] std=0.950  ret=[-6.6,+4.8] mean=-3.2  mask_legal_avg=3.02  old_lp=[-1.325±1.622]
+[PPO-DEBUG] mb#1 grad_norm=10.12815  loss=+0.2109  p_loss=-0.0780  v_loss=+0.5946  ent=0.4176
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.087936  ratio=0.79722  head_max_dparam=0.001495  clip_frac=0.109
+[Train[MAPPO]]    24/200 ( 12.0%)  agents:[ 2/ 5]  done= 49% [############_____________]  reward=   -59  eps=  5%  KL=+0.088  H=0.39  acts[N:0% L:0% F:17% R:0% S:83%]  (447s)
+[PPO-DEBUG] N=1234  adv=[-3.811,+5.000] std=0.995  ret=[-7.1,+4.9] mean=-3.9  mask_legal_avg=3.02  old_lp=[-2.698±1.797]
+[PPO-DEBUG] mb#1 grad_norm=4.96531  loss=+0.5421  p_loss=+0.0751  v_loss=+0.9408  ent=0.1704
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.142956  ratio=0.75694  head_max_dparam=0.002451  clip_frac=0.219
+[Train[MAPPO]]    25/200 ( 12.5%)  agents:[ 3/ 5]  done= 50% [############_____________]  reward=   -59  eps=  5%  KL=+0.143  H=0.16  acts[N:1% L:1% F:18% R:0% S:81%]  (455s)
+[PPO-DEBUG] N=2398  adv=[-5.000,+3.456] std=0.911  ret=[-7.3,-0.4] mean=-4.9  mask_legal_avg=3.00  old_lp=[-4.171±1.419]
+[PPO-DEBUG] mb#1 grad_norm=13.23439  loss=+0.1757  p_loss=-0.0581  v_loss=+0.4724  ent=0.1167
+[PPO-DEBUG] DONE  n_mb=40  KL=-0.006091  ratio=1.04068  head_max_dparam=0.025045  clip_frac=0.746
+[Train[MAPPO]]    26/200 ( 13.0%)  agents:[ 0/ 5]  done= 48% [############_____________]  reward=   -62  eps=  5%  KL=-0.006  H=0.13  acts[N:0% L:0% F:24% R:0% S:76%]  (492s)
+[PPO-DEBUG] N=1688  adv=[-4.179,+5.000] std=0.975  ret=[-7.4,+4.5] mean=-4.8  mask_legal_avg=3.01  old_lp=[-3.521±1.661]
+[PPO-DEBUG] mb#1 grad_norm=6.35513  loss=+0.3304  p_loss=+0.0378  v_loss=+0.5918  ent=0.1632
+[PPO-DEBUG] DONE  n_mb=17  KL=+0.196254  ratio=0.81056  head_max_dparam=0.007798  clip_frac=0.661
+[Train[MAPPO]]    27/200 ( 13.5%)  agents:[ 2/ 5]  done= 47% [############_____________]  reward=   -63  eps=  5%  KL=+0.196  H=0.14  acts[N:0% L:0% F:16% R:0% S:84%]  (510s)
+[PPO-DEBUG] N=1736  adv=[-5.000,+5.000] std=0.992  ret=[-7.6,+4.1] mean=-4.6  mask_legal_avg=3.01  old_lp=[-3.538±1.946]
+[PPO-DEBUG] mb#1 grad_norm=7.39942  loss=+0.3843  p_loss=-0.0508  v_loss=+0.8757  ent=0.1387
+[PPO-DEBUG] DONE  n_mb=28  KL=+0.104863  ratio=0.92906  head_max_dparam=0.022615  clip_frac=0.730
+[Train[MAPPO]]    28/200 ( 14.0%)  agents:[ 2/ 5]  done= 47% [############_____________]  reward=   -64  eps=  5%  KL=+0.105  H=0.12  acts[N:0% L:0% F:13% R:0% S:87%]  (537s)
+[PPO-DEBUG] N=2412  adv=[-5.000,+4.209] std=0.985  ret=[-7.7,+1.2] mean=-4.2  mask_legal_avg=3.02  old_lp=[-3.151±1.952]
+[PPO-DEBUG] mb#1 grad_norm=11.19070  loss=+0.2168  p_loss=+0.0128  v_loss=+0.4174  ent=0.2336
+[PPO] KL early-stop at mb#8: approx_kl=0.0988 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=10  KL=+0.057349  ratio=0.95986  head_max_dparam=0.005820  clip_frac=0.359
+[Train[MAPPO]]    29/200 ( 14.5%)  agents:[ 0/ 5]  done= 46% [###########______________]  reward=   -64  eps=  5%  KL=+0.057  H=0.23  acts[N:0% L:0% F:9% R:0% S:91%]  (554s)
+[PPO-DEBUG] N=2442  adv=[-5.000,+3.863] std=0.966  ret=[-7.6,-2.0] mean=-4.5  mask_legal_avg=3.01  old_lp=[-3.753±1.641]
+[PPO-DEBUG] mb#1 grad_norm=28.30142  loss=+0.3249  p_loss=+0.0811  v_loss=+0.4957  ent=0.2010
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.087697  ratio=0.87293  head_max_dparam=0.002918  clip_frac=0.180
+[Train[MAPPO]]    30/200 ( 15.0%)  agents:[ 0/ 5]  done= 44% [###########______________]  reward=   -67  eps=  5%  KL=+0.088  H=0.18  acts[N:0% L:0% F:37% R:0% S:63%]  (569s)
+[PPO-DEBUG] N=1863  adv=[-4.023,+5.000] std=0.955  ret=[-7.3,+4.1] mean=-3.9  mask_legal_avg=3.02  old_lp=[-3.187±2.035]
+[PPO-DEBUG] mb#1 grad_norm=13.82687  loss=+0.2459  p_loss=+0.0155  v_loss=+0.4712  ent=0.2600
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.045810  ratio=1.18032  head_max_dparam=0.001746  clip_frac=0.104
+[Train[MAPPO]]    31/200 ( 15.5%)  agents:[ 2/ 5]  done= 44% [###########______________]  reward=   -67  eps=  5%  KL=+0.046  H=0.27  acts[N:0% L:0% F:17% R:0% S:82%]  (581s)
+[PPO-DEBUG] N=1573  adv=[-3.963,+5.000] std=0.979  ret=[-7.9,+5.0] mean=-4.4  mask_legal_avg=3.02  old_lp=[-3.382±2.562]
+[PPO-DEBUG] mb#1 grad_norm=14.60077  loss=+0.4452  p_loss=+0.0637  v_loss=+0.7730  ent=0.2471
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.060914  ratio=1.13465  head_max_dparam=0.002618  clip_frac=0.232
+[Train[MAPPO]]    32/200 ( 16.0%)  agents:[ 3/ 5]  done= 44% [###########______________]  reward=   -67  eps=  5%  KL=+0.061  H=0.20  acts[N:1% L:1% F:18% R:0% S:80%]  (591s)
+[PPO-DEBUG] N=890  adv=[-2.372,+4.313] std=1.001  ret=[-2.5,+4.1] mean=-0.9  mask_legal_avg=3.04  old_lp=[-0.376±1.045]
+[PPO-DEBUG] mb#1 grad_norm=32.93204  loss=+0.7927  p_loss=-0.0128  v_loss=+1.6221  ent=0.2801
+[PPO] KL early-stop at mb#8: approx_kl=0.1457 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=14  KL=-0.023329  ratio=1.14102  head_max_dparam=0.009887  clip_frac=0.233
+[Train[MAPPO]]    33/200 ( 16.5%)  agents:[ 5/ 5]  done= 46% [############_____________]  reward=   -64  eps=  5%  KL=-0.023  H=0.21  acts[N:0% L:0% F:34% R:2% S:64%]  (601s)
+[PPO-DEBUG] N=1216  adv=[-3.638,+3.669] std=1.000  ret=[-3.4,+4.0] mean=-1.2  mask_legal_avg=3.02  old_lp=[-0.350±0.931]
+[PPO-DEBUG] mb#1 grad_norm=12.40936  loss=+0.3545  p_loss=+0.0166  v_loss=+0.6883  ent=0.3128
+[PPO-DEBUG] DONE  n_mb=20  KL=+0.008110  ratio=1.00653  head_max_dparam=0.010727  clip_frac=0.249
+[Train[MAPPO]]    34/200 ( 17.0%)  agents:[ 4/ 5]  done= 47% [############_____________]  reward=   -62  eps=  5%  KL=+0.008  H=0.28  acts[N:0% L:0% F:33% R:1% S:67%]  (618s)
+[PPO-DEBUG] N=890  adv=[-1.890,+4.510] std=1.001  ret=[-1.6,+4.6] mean=-0.4  mask_legal_avg=3.03  old_lp=[-0.211±0.803]
+[PPO-DEBUG] mb#1 grad_norm=13.23989  loss=+0.3320  p_loss=+0.1096  v_loss=+0.4524  ent=0.1898
+[PPO-DEBUG] DONE  n_mb=16  KL=-0.024063  ratio=1.03492  head_max_dparam=0.007862  clip_frac=0.101
+[Train[MAPPO]]    35/200 ( 17.5%)  agents:[ 5/ 5]  done= 49% [############_____________]  reward=   -60  eps=  5%  KL=-0.024  H=0.13  acts[N:0% L:1% F:30% R:0% S:69%]  (629s)
+[PPO-DEBUG] N=940  adv=[-4.708,+4.070] std=1.001  ret=[-1.7,+4.7] mean=-0.0  mask_legal_avg=3.06  old_lp=[-0.260±0.928]
+[PPO-DEBUG] mb#1 grad_norm=6.98327  loss=+0.2282  p_loss=+0.0761  v_loss=+0.3115  ent=0.1827
+[PPO-DEBUG] DONE  n_mb=16  KL=+0.000511  ratio=1.00295  head_max_dparam=0.009661  clip_frac=0.082
+[Train[MAPPO]]    36/200 ( 18.0%)  agents:[ 5/ 5]  done= 50% [############_____________]  reward=   -58  eps=  5%  KL=+0.001  H=0.17  acts[N:0% L:0% F:42% R:1% S:55%]  (642s)
+[PPO-DEBUG] N=2455  adv=[-5.000,+3.337] std=0.999  ret=[-4.1,+0.7] mean=-1.6  mask_legal_avg=3.07  old_lp=[-0.452±1.014]
+[PPO-DEBUG] mb#1 grad_norm=19.60687  loss=+0.2252  p_loss=-0.0314  v_loss=+0.5295  ent=0.4056
+[PPO] KL early-stop at mb#16: approx_kl=0.0912 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=17  KL=+0.101623  ratio=0.90249  head_max_dparam=0.009074  clip_frac=0.417
+[Train[MAPPO]]    37/200 ( 18.5%)  agents:[ 0/ 5]  done= 49% [############_____________]  reward=   -59  eps=  5%  KL=+0.102  H=0.48  acts[N:0% L:1% F:27% R:0% S:72%]  (664s)
+[PPO-DEBUG] N=1702  adv=[-5.000,+4.740] std=0.981  ret=[-5.6,+4.8] mean=-3.0  mask_legal_avg=3.01  old_lp=[-2.310±2.064]
+[PPO-DEBUG] mb#1 grad_norm=21.83945  loss=+0.3402  p_loss=-0.0013  v_loss=+0.6998  ent=0.4199
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.127148  ratio=0.72828  head_max_dparam=0.001588  clip_frac=0.135
+[Train[MAPPO]]    38/200 ( 19.0%)  agents:[ 2/ 5]  done= 48% [############_____________]  reward=   -60  eps=  5%  KL=+0.127  H=0.31  acts[N:0% L:0% F:17% R:0% S:82%]  (675s)
+[PPO-DEBUG] N=1258  adv=[-4.685,+5.000] std=0.988  ret=[-5.9,+4.8] mean=-2.7  mask_legal_avg=3.02  old_lp=[-2.490±2.367]
+[PPO-DEBUG] mb#1 grad_norm=15.65883  loss=+0.3282  p_loss=+0.0155  v_loss=+0.6331  ent=0.1934
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.159075  ratio=0.74634  head_max_dparam=0.001920  clip_frac=0.101
+[Train[MAPPO]]    39/200 ( 19.5%)  agents:[ 3/ 5]  done= 49% [############_____________]  reward=   -60  eps=  5%  KL=+0.159  H=0.14  acts[N:3% L:0% F:25% R:0% S:71%]  (684s)
+[PPO-DEBUG] N=283  adv=[-1.678,+3.114] std=1.002  ret=[-1.4,+5.6] mean=+1.2  mask_legal_avg=3.08  old_lp=[-0.237±0.840]
+[PPO-DEBUG] mb#1 grad_norm=57.90035  loss=+1.7920  p_loss=-0.0239  v_loss=+3.6386  ent=0.1693
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.020031  ratio=0.98585  head_max_dparam=0.006727  clip_frac=0.134
+[ObsFnPerf] ep=40 interval=20 sample_every=8 get=1.971ms get_many=10.541ms local_search=2.285ms deadlock_profile=0.184ms base_features=0.000ms debug_overlay=0.000ms deadlock_calls_per_local_search=7.71
+[ObsFnPerfBase] transitions=0.000ms successors=0.000ms priority=0.000ms flags=0.000ms sp_hint=0.000ms
+[ObsFnPerfDetail] get_p50=2.605ms get_p95=3.624ms get_max=4.431ms get_many_p50=10.294ms get_many_p95=17.221ms get_many_max=18.774ms local_search_p50=2.417ms local_search_p95=2.719ms local_search_max=2.748ms
+[ObsFnPerfLocalSearch] nodes_mean=7.71 nodes_p95=8.00 edges_mean=7.88 edges_p95=9.00 seen_agents_mean=0.53 ms_per_node=0.2965 handles_per_get_many=5.00
+[ObsFnPerfGetMany] total_nodes_mean=23.88 total_nodes_p95=40.00 total_edges_mean=24.27 total_edges_p95=42.00
+[Train[MAPPO]]    40/200 ( 20.0%)  agents:[ 5/ 5]  done= 50% [############_____________]  reward=   -57  eps=  5%  KL=+0.020  H=0.17  acts[N:0% L:1% F:81% R:2% S:16%]  (688s)
+[PPO-DEBUG] N=1959  adv=[-5.000,+3.863] std=0.989  ret=[-6.9,+4.3] mean=-2.0  mask_legal_avg=3.01  old_lp=[-2.078±2.187]
+[PPO-DEBUG] mb#1 grad_norm=33.81176  loss=+0.2986  p_loss=-0.0771  v_loss=+0.7621  ent=0.2669
+[PPO-DEBUG] DONE  n_mb=14  KL=+0.063114  ratio=1.05405  head_max_dparam=0.012165  clip_frac=0.449
+[Train[MAPPO]]    41/200 ( 20.5%)  agents:[ 1/ 5]  done= 49% [############_____________]  reward=   -58  eps=  5%  KL=+0.063  H=0.32  acts[N:0% L:0% F:56% R:0% S:44%]  (706s)
+[PPO-DEBUG] N=2400  adv=[-5.000,+0.404] std=0.891  ret=[-7.6,-1.2] mean=-5.5  mask_legal_avg=3.00  old_lp=[-5.818±1.370]
+[PPO-DEBUG] mb#1 grad_norm=11.09579  loss=+0.0951  p_loss=-0.1262  v_loss=+0.4438  ent=0.0296
+[PPO-DEBUG] DONE  n_mb=40  KL=-0.065995  ratio=1.09086  head_max_dparam=0.024964  clip_frac=0.742
+[Train[MAPPO]]    42/200 ( 21.0%)  agents:[ 0/ 5]  done= 48% [############_____________]  reward=   -61  eps=  5%  KL=-0.066  H=0.04  acts[N:0% L:0% F:19% R:0% S:81%]  (741s)
+[PPO-DEBUG] N=415  adv=[-2.608,+3.480] std=1.001  ret=[-3.3,+4.9] mean=-1.3  mask_legal_avg=3.07  old_lp=[-0.370±1.144]
+[PPO-DEBUG] mb#1 grad_norm=59.34839  loss=+2.5872  p_loss=+0.0021  v_loss=+5.1830  ent=0.3209
+[PPO-DEBUG] DONE  n_mb=8  KL=-0.043739  ratio=1.05621  head_max_dparam=0.008482  clip_frac=0.324
+[Train[MAPPO]]    43/200 ( 21.5%)  agents:[ 5/ 5]  done= 49% [############_____________]  reward=   -59  eps=  5%  KL=-0.044  H=0.24  acts[N:0% L:1% F:92% R:1% S:5%]  (747s)
+[PPO-DEBUG] N=765  adv=[-3.682,+3.919] std=1.001  ret=[-1.6,+4.8] mean=-0.1  mask_legal_avg=3.12  old_lp=[-0.311±1.274]
+[PPO-DEBUG] mb#1 grad_norm=12.12014  loss=+0.5314  p_loss=+0.0458  v_loss=+0.9792  ent=0.2025
+[PPO-DEBUG] DONE  n_mb=12  KL=-0.007449  ratio=1.01088  head_max_dparam=0.007082  clip_frac=0.107
+[Train[MAPPO]]    44/200 ( 22.0%)  agents:[ 5/ 5]  done= 50% [#############____________]  reward=   -57  eps=  5%  KL=-0.007  H=0.17  acts[N:0% L:1% F:93% R:2% S:4%]  (758s)
+[PPO-DEBUG] N=676  adv=[-3.125,+3.550] std=1.001  ret=[-1.2,+5.1] mean=-0.0  mask_legal_avg=3.09  old_lp=[-0.244±1.053]
+[PPO-DEBUG] mb#1 grad_norm=11.35514  loss=+0.5650  p_loss=+0.0446  v_loss=+1.0478  ent=0.1762
+[PPO-DEBUG] DONE  n_mb=12  KL=-0.000015  ratio=1.00481  head_max_dparam=0.008047  clip_frac=0.079
+[Train[MAPPO]]    45/200 ( 22.5%)  agents:[ 5/ 5]  done= 52% [#############____________]  reward=   -55  eps=  5%  KL=-0.000  H=0.17  acts[N:0% L:1% F:90% R:1% S:8%]  (767s)
+[PPO-DEBUG] N=1585  adv=[-5.000,+5.000] std=0.997  ret=[-6.7,+5.2] mean=-3.6  mask_legal_avg=3.01  old_lp=[-4.662±1.788]
+[PPO-DEBUG] mb#1 grad_norm=22.22175  loss=+0.3668  p_loss=+0.0532  v_loss=+0.6306  ent=0.0846
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.108965  ratio=0.84651  head_max_dparam=0.002193  clip_frac=0.195
+[Train[MAPPO]]    46/200 ( 23.0%)  agents:[ 2/ 5]  done= 51% [#############____________]  reward=   -56  eps=  5%  KL=+0.109  H=0.08  acts[N:0% L:0% F:55% R:0% S:44%]  (778s)
+[PPO-DEBUG] N=1207  adv=[-5.000,+4.404] std=0.996  ret=[-6.8,+4.8] mean=-3.5  mask_legal_avg=3.02  old_lp=[-4.485±2.536]
+[PPO-DEBUG] mb#1 grad_norm=13.05086  loss=+0.5509  p_loss=+0.0028  v_loss=+1.0999  ent=0.0952
+[PPO] KL early-stop at mb#8: approx_kl=0.0872 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=9  KL=+0.156007  ratio=0.79831  head_max_dparam=0.002741  clip_frac=0.365
+[Train[MAPPO]]    47/200 ( 23.5%)  agents:[ 3/ 5]  done= 51% [#############____________]  reward=   -56  eps=  5%  KL=+0.156  H=0.08  acts[N:0% L:0% F:50% R:1% S:49%]  (790s)
+[PPO-DEBUG] N=1997  adv=[-5.000,+4.585] std=0.923  ret=[-7.3,+4.3] mean=-4.9  mask_legal_avg=3.01  old_lp=[-5.371±2.022]
+[PPO-DEBUG] mb#1 grad_norm=10.26840  loss=+0.2126  p_loss=-0.0573  v_loss=+0.5416  ent=0.0453
+[PPO-DEBUG] DONE  n_mb=32  KL=-0.033039  ratio=1.04499  head_max_dparam=0.012205  clip_frac=0.550
+[Train[MAPPO]]    48/200 ( 24.0%)  agents:[ 1/ 5]  done= 51% [#############____________]  reward=   -57  eps=  5%  KL=-0.033  H=0.06  acts[N:0% L:0% F:24% R:0% S:75%]  (822s)
+[PPO-DEBUG] N=2475  adv=[-5.000,+3.624] std=0.869  ret=[-7.5,-1.4] mean=-5.3  mask_legal_avg=3.01  old_lp=[-5.364±1.877]
+[PPO-DEBUG] mb#1 grad_norm=8.55635  loss=+0.0698  p_loss=-0.1114  v_loss=+0.3649  ent=0.0642
+[PPO-DEBUG] DONE  n_mb=40  KL=-0.006552  ratio=1.04093  head_max_dparam=0.008681  clip_frac=0.736
+[Train[MAPPO]]    49/200 ( 24.5%)  agents:[ 0/ 5]  done= 50% [############_____________]  reward=   -59  eps=  5%  KL=-0.007  H=0.08  acts[N:0% L:0% F:20% R:0% S:80%]  (858s)
+[PPO-DEBUG] N=1115  adv=[-2.070,+5.000] std=0.997  ret=[-7.7,+5.2] mean=-5.0  mask_legal_avg=3.02  old_lp=[-5.193±2.134]
+[PPO-DEBUG] mb#1 grad_norm=15.93732  loss=+0.8537  p_loss=-0.1044  v_loss=+1.9202  ent=0.0991
+[PPO] KL early-stop at mb#8: approx_kl=0.1106 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=9  KL=+0.114503  ratio=0.86520  head_max_dparam=0.005177  clip_frac=0.424
+[Train[MAPPO]]    50/200 ( 25.0%)  agents:[ 3/ 5]  done= 50% [############_____________]  reward=   -59  eps=  5%  KL=+0.115  H=0.09  acts[N:0% L:1% F:30% R:0% S:69%]  (868s)
+[PPO-DEBUG] N=1994  adv=[-5.000,+5.000] std=0.984  ret=[-7.7,+4.7] mean=-5.4  mask_legal_avg=3.01  old_lp=[-6.007±1.845]
+[PPO-DEBUG] mb#1 grad_norm=7.36043  loss=+0.3084  p_loss=+0.0803  v_loss=+0.4583  ent=0.0571
+[PPO-DEBUG] DONE  n_mb=32  KL=+0.007816  ratio=1.01252  head_max_dparam=0.011841  clip_frac=0.500
+
+========================================================================
+  [DecisionPointObs] BASE FEATURE REPORT  (n=100 episodes, ep=50)
+========================================================================
+   #  Feature                   min    max    mean    std          trend  note
+  --------------------------------------------------------------------
+   0  path_left               0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+   1  path_forward            1.000  1.000  1.0000 0.0000   ↔ flat/noisy  
+   2  path_right              0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+   3  delta_left             -1.000 -1.000 -1.0000 0.0000   ↔ flat/noisy  
+   4  delta_forward           0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+   5  delta_right            -1.000 -1.000 -1.0000 0.0000   ↔ flat/noisy  
+   6  st_3                    0.000  0.000  0.0000 0.0000   ↔ flat/noisy  🟡 ready_to_depart 0% of steps
+   7  priority_rank           0.093  0.762  0.4089 0.2363   ↔ flat/noisy  🟡 no clear progress trend
+   8  is_pre_merge            1.000  1.000  1.0000 0.0000   ↔ flat/noisy  pre-merge 100% of steps
+   9  is_switch               0.000  0.000  0.0000 0.0000   ↔ flat/noisy  at switch 0% of steps
+  10  sp_left                 0.000  0.000  0.0000 0.0000   ↔ flat/noisy  used 0% of steps
+  11  sp_forward              1.000  1.000  1.0000 0.0000   ↔ flat/noisy  used 100% of steps
+  12  sp_right                0.000  0.000  0.0000 0.0000   ↔ flat/noisy  used 0% of steps
+  13  deadlock_risk           0.295  0.322  0.3154 0.0103   ↔ flat/noisy  mean risk=0.315
+  14  deadlock_distance_norm  0.000  0.929  0.7143 0.3586   ↔ flat/noisy  near-deadlock 80% of steps
+  15  steps_to_next_switch_norm  0.000  0.500  0.1000 0.2000   ↔ flat/noisy  mean prox=0.100
+  16  sp_improves_norm        0.000  0.000  0.0000 0.0000   ↔ flat/noisy  mean gain=0.000
+  17  last_action_left        0.000  0.000  0.0000 0.0000   ↔ flat/noisy  left 0% of steps
+  18  last_action_forward     0.000  0.000  0.0000 0.0000   ↔ flat/noisy  forward 0% of steps
+  19  last_action_right       0.000  0.000  0.0000 0.0000   ↔ flat/noisy  right 0% of steps
+  20  last_action_stop        0.000  1.000  0.8000 0.4000   ↔ flat/noisy  stop 80% of steps
+  21  action_matches_sp       0.500  0.500  0.5000 0.0000   ↔ flat/noisy  follow 0% / yield 100% / off 0%
+  22  spawn_active_density    0.800  0.800  0.8000 0.0000   ↔ flat/noisy  
+  23  spawn_pending_density   0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  24  spawn_is_ready          0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  25  global_conflict_pressure  0.100  0.100  0.1000 0.0000   ↔ flat/noisy  
+  26  my_priority_global      0.000  1.000  0.4000 0.3887   ↔ flat/noisy  
+  27  my_sp_blocked_score     0.000  0.200  0.1600 0.0800   ↔ flat/noisy  
+  28  sp_alternatives_avg_score  0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  29  expected_yield_count    0.000  1.000  0.4000 0.3887   ↔ flat/noisy  
+  30  vertex_conflict_left    0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  31  edge_conflict_left      0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  32  lane_density_left       0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  33  vertex_conflict_forward  0.000  1.000  0.8000 0.4000   ↔ flat/noisy  
+  34  edge_conflict_forward   0.000  1.000  0.4000 0.4899   ↔ flat/noisy  
+  35  lane_density_forward    0.000  1.000  0.6667 0.3651   ↔ flat/noisy  
+  36  vertex_conflict_right   0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  37  edge_conflict_right     0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  38  lane_density_right      0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+
+  priority_rank half-half: first=0.4089 → second=0.4089  Δ=+0.0000 ↔
+
+  Tree: nodes=6.4±3.2 [0,8]   edges=6.0±3.0 [0,8]
+========================================================================
+[Train[MAPPO]]    51/200 ( 25.5%)  agents:[ 1/ 5]  done= 48% [############_____________]  reward=   -61  eps=  5%  KL=+0.008  H=0.05  acts[N:0% L:0% F:25% R:0% S:74%]  (896s)
+[PPO-DEBUG] N=1244  adv=[-5.000,+4.664] std=0.984  ret=[-7.8,+5.0] mean=-4.5  mask_legal_avg=3.03  old_lp=[-4.681±2.829]
+[PPO-DEBUG] mb#1 grad_norm=4.69043  loss=+0.6457  p_loss=+0.1285  v_loss=+1.0383  ent=0.0950
+[PPO] KL early-stop at mb#8: approx_kl=0.0835 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=9  KL=+0.096816  ratio=0.92424  head_max_dparam=0.003226  clip_frac=0.347
+[Train[MAPPO]]    52/200 ( 26.0%)  agents:[ 3/ 5]  done= 49% [############_____________]  reward=   -61  eps=  5%  KL=+0.097  H=0.07  acts[N:0% L:1% F:34% R:0% S:65%]  (904s)
+[PPO-DEBUG] N=1578  adv=[-5.000,+5.000] std=0.847  ret=[-7.8,+4.6] mean=-5.2  mask_legal_avg=3.02  old_lp=[-5.930±2.424]
+[PPO-DEBUG] mb#1 grad_norm=3.72358  loss=+0.3988  p_loss=+0.0492  v_loss=+0.7013  ent=0.0495
+[PPO] KL early-stop at mb#8: approx_kl=0.0869 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=13  KL=+0.049615  ratio=1.01994  head_max_dparam=0.005516  clip_frac=0.378
+[Train[MAPPO]]    53/200 ( 26.5%)  agents:[ 2/ 5]  done= 49% [############_____________]  reward=   -61  eps=  5%  KL=+0.050  H=0.05  acts[N:0% L:0% F:40% R:0% S:59%]  (919s)
+[PPO-DEBUG] N=1548  adv=[-5.000,+5.000] std=0.976  ret=[-8.0,+4.7] mean=-5.2  mask_legal_avg=3.05  old_lp=[-5.686±2.506]
+[PPO-DEBUG] mb#1 grad_norm=2.26550  loss=+0.2550  p_loss=+0.0424  v_loss=+0.4274  ent=0.0524
+[PPO-DEBUG] DONE  n_mb=28  KL=+0.098508  ratio=0.91583  head_max_dparam=0.009071  clip_frac=0.679
+[Train[MAPPO]]    54/200 ( 27.0%)  agents:[ 2/ 5]  done= 48% [############_____________]  reward=   -63  eps=  5%  KL=+0.099  H=0.06  acts[N:0% L:0% F:40% R:0% S:59%]  (943s)
+[PPO-DEBUG] N=1197  adv=[-5.000,+5.000] std=1.000  ret=[-8.1,+5.1] mean=-4.7  mask_legal_avg=3.04  old_lp=[-5.422±2.917]
+[PPO-DEBUG] mb#1 grad_norm=11.61435  loss=+0.3308  p_loss=-0.0069  v_loss=+0.6780  ent=0.0691
+[PPO] KL early-stop at mb#16: approx_kl=0.1057 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=16  KL=+0.133076  ratio=0.89070  head_max_dparam=0.008578  clip_frac=0.593
+[Train[MAPPO]]    55/200 ( 27.5%)  agents:[ 3/ 5]  done= 48% [############_____________]  reward=   -63  eps=  5%  KL=+0.133  H=0.06  acts[N:0% L:1% F:40% R:1% S:59%]  (958s)
+[PPO-DEBUG] N=1289  adv=[-5.000,+5.000] std=0.990  ret=[-8.1,+4.9] mean=-4.6  mask_legal_avg=3.01  old_lp=[-5.544±3.189]
+[PPO-DEBUG] mb#1 grad_norm=10.32195  loss=+0.0898  p_loss=-0.1130  v_loss=+0.4080  ent=0.0600
+[PPO-DEBUG] DONE  n_mb=24  KL=+0.176555  ratio=0.85549  head_max_dparam=0.009904  clip_frac=0.710
+[Train[MAPPO]]    56/200 ( 28.0%)  agents:[ 3/ 5]  done= 49% [############_____________]  reward=   -61  eps=  5%  KL=+0.177  H=0.04  acts[N:0% L:0% F:41% R:0% S:58%]  (977s)
+[PPO-DEBUG] N=1380  adv=[-5.000,+5.000] std=0.904  ret=[-8.2,+4.5] mean=-4.1  mask_legal_avg=3.02  old_lp=[-5.395±3.518]
+[PPO-DEBUG] mb#1 grad_norm=4.17714  loss=+0.4558  p_loss=+0.0356  v_loss=+0.8422  ent=0.0448
+[PPO-DEBUG] DONE  n_mb=24  KL=+0.020026  ratio=0.98605  head_max_dparam=0.013599  clip_frac=0.310
+[Train[MAPPO]]    57/200 ( 28.5%)  agents:[ 3/ 5]  done= 50% [############_____________]  reward=   -60  eps=  5%  KL=+0.020  H=0.04  acts[N:0% L:0% F:39% R:0% S:60%]  (997s)
+[PPO-DEBUG] N=2407  adv=[-5.000,+3.331] std=0.880  ret=[-8.2,+1.1] mean=-5.6  mask_legal_avg=3.01  old_lp=[-6.561±2.329]
+[PPO-DEBUG] mb#1 grad_norm=8.56991  loss=+0.2450  p_loss=-0.0397  v_loss=+0.5711  ent=0.0418
+[PPO-DEBUG] DONE  n_mb=25  KL=-0.021901  ratio=1.07008  head_max_dparam=0.014982  clip_frac=0.632
+[Train[MAPPO]]    58/200 ( 29.0%)  agents:[ 0/ 5]  done= 49% [############_____________]  reward=   -61  eps=  5%  KL=-0.022  H=0.05  acts[N:0% L:0% F:29% R:0% S:71%]  (1023s)
+[PPO-DEBUG] N=1177  adv=[-3.316,+4.442] std=1.000  ret=[-8.3,+4.9] mean=-5.1  mask_legal_avg=3.03  old_lp=[-5.945±3.099]
+[PPO-DEBUG] mb#1 grad_norm=8.24455  loss=+0.5455  p_loss=+0.0763  v_loss=+0.9414  ent=0.0762
+[PPO-DEBUG] DONE  n_mb=12  KL=+0.129070  ratio=0.86454  head_max_dparam=0.010526  clip_frac=0.599
+[Train[MAPPO]]    59/200 ( 29.5%)  agents:[ 3/ 5]  done= 48% [############_____________]  reward=   -62  eps=  5%  KL=+0.129  H=0.06  acts[N:0% L:1% F:37% R:0% S:62%]  (1035s)
+[PPO-DEBUG] N=1931  adv=[-5.000,+4.849] std=0.900  ret=[-8.2,+4.5] mean=-5.5  mask_legal_avg=3.01  old_lp=[-6.514±2.213]
+[PPO-DEBUG] mb#1 grad_norm=3.62237  loss=+0.2162  p_loss=-0.0798  v_loss=+0.5931  ent=0.0266
+[PPO-DEBUG] DONE  n_mb=32  KL=+0.025846  ratio=0.98969  head_max_dparam=0.020769  clip_frac=0.687
+[ObsFnPerf] ep=60 interval=20 sample_every=8 get=2.008ms get_many=10.489ms local_search=1.765ms deadlock_profile=0.189ms base_features=0.000ms debug_overlay=0.000ms deadlock_calls_per_local_search=6.55
+[ObsFnPerfBase] transitions=0.000ms successors=0.000ms priority=0.000ms flags=0.000ms sp_hint=0.000ms
+[ObsFnPerfDetail] get_p50=2.274ms get_p95=3.261ms get_max=4.570ms get_many_p50=10.341ms get_many_p95=13.060ms get_many_max=124.827ms local_search_p50=1.648ms local_search_p95=2.526ms local_search_max=3.305ms
+[ObsFnPerfLocalSearch] nodes_mean=6.55 nodes_p95=8.00 edges_mean=5.58 edges_p95=7.00 seen_agents_mean=1.02 ms_per_node=0.2696 handles_per_get_many=5.00
+[ObsFnPerfGetMany] total_nodes_mean=25.25 total_nodes_p95=33.90 total_edges_mean=21.52 total_edges_p95=29.00
+[Train[MAPPO]]    60/200 ( 30.0%)  agents:[ 1/ 5]  done= 49% [############_____________]  reward=   -61  eps=  5%  KL=+0.026  H=0.03  acts[N:0% L:0% F:19% R:0% S:81%]  (1056s)
+[PPO-DEBUG] N=1683  adv=[-5.000,+5.000] std=0.993  ret=[-8.1,+5.2] mean=-4.8  mask_legal_avg=3.01  old_lp=[-5.073±2.834]
+[PPO-DEBUG] mb#1 grad_norm=6.84693  loss=+0.3284  p_loss=+0.0164  v_loss=+0.6267  ent=0.0702
+[PPO] KL early-stop at mb#16: approx_kl=0.0796 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=17  KL=+0.111193  ratio=0.90861  head_max_dparam=0.009216  clip_frac=0.494
+[Train[MAPPO]]    61/200 ( 30.5%)  agents:[ 2/ 5]  done= 48% [############_____________]  reward=   -63  eps=  5%  KL=+0.111  H=0.07  acts[N:0% L:0% F:29% R:0% S:71%]  (1074s)
+[PPO-DEBUG] N=592  adv=[-1.929,+5.000] std=0.996  ret=[-2.6,+4.6] mean=-0.3  mask_legal_avg=3.04  old_lp=[-0.625±1.390]
+[PPO-DEBUG] mb#1 grad_norm=41.25763  loss=+1.2023  p_loss=-0.0059  v_loss=+2.4260  ent=0.2399
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.070374  ratio=1.27663  head_max_dparam=0.002292  clip_frac=0.078
+[Train[MAPPO]]    62/200 ( 31.0%)  agents:[ 5/ 5]  done= 49% [############_____________]  reward=   -61  eps=  5%  KL=+0.070  H=0.23  acts[N:1% L:1% F:38% R:1% S:59%]  (1078s)
+[PPO-DEBUG] N=1188  adv=[-3.064,+5.000] std=0.983  ret=[-8.1,+4.6] mean=-4.2  mask_legal_avg=3.02  old_lp=[-4.892±3.473]
+[PPO-DEBUG] mb#1 grad_norm=7.20477  loss=+0.5328  p_loss=+0.0563  v_loss=+0.9561  ent=0.0780
+[PPO-DEBUG] DONE  n_mb=14  KL=+0.031694  ratio=1.06902  head_max_dparam=0.010815  clip_frac=0.391
+[Train[MAPPO]]    63/200 ( 31.5%)  agents:[ 3/ 5]  done= 48% [############_____________]  reward=   -63  eps=  5%  KL=+0.032  H=0.10  acts[N:0% L:0% F:26% R:0% S:73%]  (1091s)
+[PPO-DEBUG] N=1396  adv=[-4.721,+4.982] std=1.000  ret=[-7.9,+3.8] mean=-4.1  mask_legal_avg=3.02  old_lp=[-4.536±2.897]
+[PPO-DEBUG] mb#1 grad_norm=5.47455  loss=+0.4414  p_loss=-0.0118  v_loss=+0.9111  ent=0.1146
+[PPO] KL early-stop at mb#8: approx_kl=0.0938 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=9  KL=+0.047701  ratio=0.96879  head_max_dparam=0.006060  clip_frac=0.272
+[Train[MAPPO]]    64/200 ( 32.0%)  agents:[ 3/ 5]  done= 49% [############_____________]  reward=   -62  eps=  4%  KL=+0.048  H=0.10  acts[N:0% L:0% F:22% R:0% S:78%]  (1103s)
+[PPO-DEBUG] N=1957  adv=[-5.000,+4.036] std=0.928  ret=[-8.1,+4.4] mean=-5.2  mask_legal_avg=3.01  old_lp=[-6.091±2.796]
+[PPO-DEBUG] mb#1 grad_norm=6.65671  loss=+0.1935  p_loss=-0.0725  v_loss=+0.5345  ent=0.0654
+[PPO] KL early-stop at mb#24: approx_kl=0.0850 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=31  KL=+0.012907  ratio=1.02437  head_max_dparam=0.025013  clip_frac=0.551
+[Train[MAPPO]]    65/200 ( 32.5%)  agents:[ 1/ 5]  done= 48% [############_____________]  reward=   -63  eps=  4%  KL=+0.013  H=0.06  acts[N:0% L:0% F:25% R:0% S:75%]  (1128s)
+[PPO-DEBUG] N=383  adv=[-2.356,+2.844] std=1.001  ret=[-2.7,+5.3] mean=+0.2  mask_legal_avg=3.09  old_lp=[-0.704±1.551]
+[PPO-DEBUG] mb#1 grad_norm=51.27329  loss=+1.9684  p_loss=-0.0269  v_loss=+4.0017  ent=0.2773
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.014530  ratio=1.18543  head_max_dparam=0.003121  clip_frac=0.176
+[Train[MAPPO]]    66/200 ( 33.0%)  agents:[ 5/ 5]  done= 50% [############_____________]  reward=   -61  eps=  4%  KL=+0.015  H=0.21  acts[N:0% L:1% F:81% R:2% S:16%]  (1132s)
+[PPO-DEBUG] N=1582  adv=[-5.000,+5.000] std=0.909  ret=[-7.9,+4.9] mean=-4.9  mask_legal_avg=3.02  old_lp=[-6.208±2.529]
+[PPO-DEBUG] mb#1 grad_norm=11.11084  loss=+0.8642  p_loss=+0.1786  v_loss=+1.3731  ent=0.0521
+[PPO] KL early-stop at mb#24: approx_kl=0.0783 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=24  KL=+0.017935  ratio=1.01979  head_max_dparam=0.013355  clip_frac=0.414
+[Train[MAPPO]]    67/200 ( 33.5%)  agents:[ 2/ 5]  done= 48% [############_____________]  reward=   -63  eps=  4%  KL=+0.018  H=0.05  acts[N:0% L:0% F:27% R:0% S:73%]  (1152s)
+[PPO-DEBUG] N=1524  adv=[-5.000,+5.000] std=0.940  ret=[-8.0,+4.3] mean=-4.7  mask_legal_avg=3.01  old_lp=[-5.671±2.784]
+[PPO-DEBUG] mb#1 grad_norm=5.91801  loss=+0.3346  p_loss=-0.0199  v_loss=+0.7109  ent=0.0478
+[PPO-DEBUG] DONE  n_mb=24  KL=+0.050200  ratio=0.97474  head_max_dparam=0.014548  clip_frac=0.654
+[Train[MAPPO]]    68/200 ( 34.0%)  agents:[ 2/ 5]  done= 48% [############_____________]  reward=   -63  eps=  4%  KL=+0.050  H=0.05  acts[N:0% L:0% F:32% R:0% S:68%]  (1174s)
+[PPO-DEBUG] N=1147  adv=[-3.542,+5.000] std=0.992  ret=[-7.6,+4.8] mean=-3.9  mask_legal_avg=3.04  old_lp=[-5.236±2.770]
+[PPO-DEBUG] mb#1 grad_norm=11.80076  loss=+0.2308  p_loss=-0.0298  v_loss=+0.5242  ent=0.0755
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.119379  ratio=0.81164  head_max_dparam=0.003293  clip_frac=0.172
+[Train[MAPPO]]    69/200 ( 34.5%)  agents:[ 3/ 5]  done= 49% [############_____________]  reward=   -63  eps=  4%  KL=+0.119  H=0.05  acts[N:0% L:1% F:60% R:0% S:39%]  (1184s)
+[PPO-DEBUG] N=1998  adv=[-5.000,+5.000] std=0.992  ret=[-7.6,+4.6] mean=-3.4  mask_legal_avg=3.01  old_lp=[-3.753±2.513]
+[PPO-DEBUG] mb#1 grad_norm=33.67378  loss=+0.3358  p_loss=-0.0867  v_loss=+0.8530  ent=0.2004
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.083991  ratio=0.87672  head_max_dparam=0.002997  clip_frac=0.157
+[Train[MAPPO]]    70/200 ( 35.0%)  agents:[ 1/ 5]  done= 49% [############_____________]  reward=   -63  eps=  4%  KL=+0.084  H=0.17  acts[N:0% L:0% F:44% R:0% S:56%]  (1196s)
+[PPO-DEBUG] N=1299  adv=[-4.439,+5.000] std=0.993  ret=[-8.3,+5.1] mean=-4.4  mask_legal_avg=3.02  old_lp=[-4.654±2.859]
+[PPO-DEBUG] mb#1 grad_norm=7.27417  loss=+0.7356  p_loss=+0.0760  v_loss=+1.3226  ent=0.0880
+[PPO] KL early-stop at mb#8: approx_kl=0.1360 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=10  KL=+0.068870  ratio=1.07791  head_max_dparam=0.004137  clip_frac=0.256
+[Train[MAPPO]]    71/200 ( 35.5%)  agents:[ 3/ 5]  done= 49% [############_____________]  reward=   -63  eps=  4%  KL=+0.069  H=0.07  acts[N:0% L:1% F:19% R:0% S:80%]  (1206s)
+[PPO-DEBUG] N=364  adv=[-1.938,+5.000] std=0.995  ret=[-1.8,+5.1] mean=+0.4  mask_legal_avg=3.09  old_lp=[-0.467±1.594]
+[PPO-DEBUG] mb#1 grad_norm=52.03397  loss=+1.3615  p_loss=-0.0125  v_loss=+2.7540  ent=0.1494
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.024059  ratio=1.08839  head_max_dparam=0.002882  clip_frac=0.105
+[Train[MAPPO]]    72/200 ( 36.0%)  agents:[ 5/ 5]  done= 50% [#############____________]  reward=   -61  eps=  4%  KL=+0.024  H=0.09  acts[N:0% L:2% F:73% R:2% S:23%]  (1211s)
+[PPO-DEBUG] N=1568  adv=[-5.000,+5.000] std=0.962  ret=[-7.3,+4.8] mean=-4.2  mask_legal_avg=3.01  old_lp=[-4.903±1.908]
+[PPO-DEBUG] mb#1 grad_norm=20.18383  loss=+0.3928  p_loss=+0.0661  v_loss=+0.6551  ent=0.0416
+[PPO] KL early-stop at mb#16: approx_kl=0.0812 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=17  KL=-0.014540  ratio=1.06669  head_max_dparam=0.016766  clip_frac=0.561
+[Train[MAPPO]]    73/200 ( 36.5%)  agents:[ 2/ 5]  done= 50% [#############____________]  reward=   -61  eps=  4%  KL=-0.015  H=0.05  acts[N:0% L:0% F:43% R:0% S:56%]  (1226s)
+[PPO-DEBUG] N=2037  adv=[-5.000,+4.090] std=0.910  ret=[-8.2,+4.2] mean=-5.2  mask_legal_avg=3.01  old_lp=[-5.583±2.399]
+[PPO-DEBUG] mb#1 grad_norm=8.51188  loss=+0.1189  p_loss=-0.0583  v_loss=+0.3560  ent=0.0363
+[PPO-DEBUG] DONE  n_mb=26  KL=+0.033901  ratio=1.00116  head_max_dparam=0.018048  clip_frac=0.579
+[Train[MAPPO]]    74/200 ( 37.0%)  agents:[ 1/ 5]  done= 50% [############_____________]  reward=   -61  eps=  4%  KL=+0.034  H=0.05  acts[N:0% L:0% F:20% R:0% S:80%]  (1253s)
+[PPO-DEBUG] N=1369  adv=[-3.549,+5.000] std=0.957  ret=[-6.9,+4.9] mean=-3.0  mask_legal_avg=3.01  old_lp=[-1.324±1.500]
+[PPO-DEBUG] mb#1 grad_norm=13.63580  loss=+0.2266  p_loss=-0.0158  v_loss=+0.4968  ent=0.3039
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.086531  ratio=0.81786  head_max_dparam=0.001555  clip_frac=0.090
+[Train[MAPPO]]    75/200 ( 37.5%)  agents:[ 3/ 5]  done= 50% [#############____________]  reward=   -61  eps=  4%  KL=+0.087  H=0.28  acts[N:0% L:0% F:11% R:0% S:88%]  (1263s)
+[PPO-DEBUG] N=1617  adv=[-5.000,+5.000] std=0.985  ret=[-6.6,+5.0] mean=-3.3  mask_legal_avg=3.05  old_lp=[-1.934±2.511]
+[PPO-DEBUG] mb#1 grad_norm=9.56093  loss=+0.1938  p_loss=-0.0597  v_loss=+0.5196  ent=0.3152
+[PPO] KL early-stop at mb#8: approx_kl=0.0896 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.100403  ratio=0.88145  head_max_dparam=0.002768  clip_frac=0.284
+[Train[MAPPO]]    76/200 ( 38.0%)  agents:[ 2/ 5]  done= 51% [#############____________]  reward=   -60  eps=  4%  KL=+0.100  H=0.31  acts[N:0% L:0% F:54% R:2% S:43%]  (1275s)
+[PPO-DEBUG] N=2475  adv=[-5.000,+5.000] std=0.910  ret=[-8.3,-2.0] mean=-5.5  mask_legal_avg=3.01  old_lp=[-5.470±2.168]
+[PPO-DEBUG] mb#1 grad_norm=9.30699  loss=+0.0354  p_loss=-0.0643  v_loss=+0.2028  ent=0.0868
+[PPO-DEBUG] DONE  n_mb=20  KL=+0.067842  ratio=0.97355  head_max_dparam=0.009210  clip_frac=0.617
+[Train[MAPPO]]    77/200 ( 38.5%)  agents:[ 0/ 5]  done= 50% [############_____________]  reward=   -61  eps=  4%  KL=+0.068  H=0.09  acts[N:0% L:0% F:35% R:0% S:65%]  (1299s)
+[PPO-DEBUG] N=1643  adv=[-5.000,+5.000] std=0.948  ret=[-8.0,+4.8] mean=-4.8  mask_legal_avg=3.01  old_lp=[-4.483±3.153]
+[PPO-DEBUG] mb#1 grad_norm=9.67166  loss=+0.5873  p_loss=+0.0237  v_loss=+1.1341  ent=0.1718
+[PPO] KL early-stop at mb#8: approx_kl=0.0806 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=10  KL=+0.091324  ratio=0.89086  head_max_dparam=0.004092  clip_frac=0.379
+[Train[MAPPO]]    78/200 ( 39.0%)  agents:[ 2/ 5]  done= 50% [############_____________]  reward=   -61  eps=  4%  KL=+0.091  H=0.13  acts[N:0% L:0% F:42% R:0% S:57%]  (1311s)
+[PPO-DEBUG] N=518  adv=[-2.001,+3.008] std=1.001  ret=[-4.7,+5.2] mean=-1.8  mask_legal_avg=3.08  old_lp=[-1.538±2.031]
+[PPO-DEBUG] mb#1 grad_norm=60.73959  loss=+2.1383  p_loss=-0.0407  v_loss=+4.3735  ent=0.3871
+[PPO-DEBUG] DONE  n_mb=7  KL=-0.011595  ratio=1.12477  head_max_dparam=0.005546  clip_frac=0.316
+[Train[MAPPO]]    79/200 ( 39.5%)  agents:[ 5/ 5]  done= 52% [#############____________]  reward=   -59  eps=  4%  KL=-0.012  H=0.35  acts[N:1% L:1% F:46% R:1% S:51%]  (1317s)
+[PPO-DEBUG] N=529  adv=[-2.352,+3.165] std=1.001  ret=[-3.3,+4.8] mean=-0.7  mask_legal_avg=3.08  old_lp=[-0.826±1.942]
+[PPO-DEBUG] mb#1 grad_norm=37.69289  loss=+1.0796  p_loss=-0.0112  v_loss=+2.1904  ent=0.2216
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.013448  ratio=1.15327  head_max_dparam=0.004805  clip_frac=0.112
+[ObsFnPerf] ep=80 interval=20 sample_every=8 get=1.572ms get_many=8.414ms local_search=2.290ms deadlock_profile=0.170ms base_features=0.000ms debug_overlay=0.000ms deadlock_calls_per_local_search=7.57
+[ObsFnPerfBase] transitions=0.000ms successors=0.000ms priority=0.000ms flags=0.000ms sp_hint=0.000ms
+[ObsFnPerfDetail] get_p50=0.800ms get_p95=3.627ms get_max=6.156ms get_many_p50=6.630ms get_many_p95=15.484ms get_many_max=130.196ms local_search_p50=2.181ms local_search_p95=3.226ms local_search_max=5.478ms
+[ObsFnPerfLocalSearch] nodes_mean=7.57 nodes_p95=8.00 edges_mean=7.40 edges_p95=8.00 seen_agents_mean=0.48 ms_per_node=0.3026 handles_per_get_many=5.00
+[ObsFnPerfGetMany] total_nodes_mean=17.95 total_nodes_p95=39.00 total_edges_mean=17.58 total_edges_p95=39.00
+[Train[MAPPO]]    80/200 ( 40.0%)  agents:[ 5/ 5]  done= 54% [##############___________]  reward=   -56  eps=  4%  KL=+0.013  H=0.17  acts[N:0% L:1% F:53% R:0% S:45%]  (1322s)
+[PPO-DEBUG] N=1855  adv=[-5.000,+4.111] std=0.894  ret=[-8.1,+4.5] mean=-4.7  mask_legal_avg=3.01  old_lp=[-5.222±2.329]
+[PPO-DEBUG] mb#1 grad_norm=13.62043  loss=+0.3434  p_loss=+0.0156  v_loss=+0.6583  ent=0.0678
+[PPO-DEBUG] DONE  n_mb=11  KL=+0.055379  ratio=0.98804  head_max_dparam=0.005322  clip_frac=0.438
+[Train[MAPPO]]    81/200 ( 40.5%)  agents:[ 1/ 5]  done= 54% [#############____________]  reward=   -56  eps=  4%  KL=+0.055  H=0.07  acts[N:0% L:0% F:28% R:0% S:72%]  (1337s)
+[PPO-DEBUG] N=1589  adv=[-5.000,+5.000] std=0.992  ret=[-8.2,+4.8] mean=-5.1  mask_legal_avg=3.04  old_lp=[-5.900±2.497]
+[PPO-DEBUG] mb#1 grad_norm=9.15445  loss=+0.4119  p_loss=+0.1113  v_loss=+0.6038  ent=0.0633
+[PPO-DEBUG] DONE  n_mb=28  KL=+0.020179  ratio=1.00290  head_max_dparam=0.012306  clip_frac=0.633
+[Train[MAPPO]]    82/200 ( 41.0%)  agents:[ 2/ 5]  done= 53% [#############____________]  reward=   -57  eps=  4%  KL=+0.020  H=0.05  acts[N:0% L:0% F:20% R:0% S:79%]  (1366s)
+[PPO-DEBUG] N=1358  adv=[-2.513,+5.000] std=1.000  ret=[-7.0,+4.8] mean=-1.9  mask_legal_avg=3.03  old_lp=[-1.675±1.518]
+[PPO-DEBUG] mb#1 grad_norm=22.07712  loss=+0.7506  p_loss=-0.1228  v_loss=+1.7693  ent=0.5629
+[PPO] KL early-stop at mb#8: approx_kl=0.1462 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.091560  ratio=0.93694  head_max_dparam=0.003383  clip_frac=0.189
+[Train[MAPPO]]    83/200 ( 41.5%)  agents:[ 3/ 5]  done= 52% [#############____________]  reward=   -58  eps=  4%  KL=+0.092  H=0.51  acts[N:1% L:0% F:30% R:1% S:68%]  (1379s)
+[PPO-DEBUG] N=369  adv=[-2.433,+5.000] std=0.992  ret=[-3.0,+5.0] mean=+0.6  mask_legal_avg=3.12  old_lp=[-0.521±1.370]
+[PPO-DEBUG] mb#1 grad_norm=34.36734  loss=+1.1274  p_loss=-0.0023  v_loss=+2.2689  ent=0.2419
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.034257  ratio=1.18734  head_max_dparam=0.003085  clip_frac=0.143
+[Train[MAPPO]]    84/200 ( 42.0%)  agents:[ 5/ 5]  done= 53% [#############____________]  reward=   -58  eps=  4%  KL=+0.034  H=0.21  acts[N:0% L:3% F:61% R:1% S:36%]  (1384s)
+[PPO-DEBUG] N=1196  adv=[-4.853,+3.935] std=1.000  ret=[-8.1,+4.9] mean=-4.5  mask_legal_avg=3.04  old_lp=[-4.476±2.720]
+[PPO-DEBUG] mb#1 grad_norm=8.32022  loss=+0.3541  p_loss=+0.1022  v_loss=+0.5094  ent=0.1439
+[PPO-DEBUG] DONE  n_mb=12  KL=+0.049067  ratio=0.98076  head_max_dparam=0.004697  clip_frac=0.365
+[Train[MAPPO]]    85/200 ( 42.5%)  agents:[ 3/ 5]  done= 52% [#############____________]  reward=   -59  eps=  4%  KL=+0.049  H=0.16  acts[N:0% L:0% F:20% R:1% S:79%]  (1399s)
+[PPO-DEBUG] N=1947  adv=[-5.000,+5.000] std=0.939  ret=[-7.7,+3.5] mean=-4.2  mask_legal_avg=3.01  old_lp=[-4.348±3.398]
+[PPO-DEBUG] mb#1 grad_norm=11.38299  loss=+0.5708  p_loss=+0.0223  v_loss=+1.1027  ent=0.1424
+[PPO] KL early-stop at mb#16: approx_kl=0.1802 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=20  KL=+0.060565  ratio=1.00547  head_max_dparam=0.009026  clip_frac=0.466
+[Train[MAPPO]]    86/200 ( 43.0%)  agents:[ 2/ 5]  done= 51% [#############____________]  reward=   -61  eps=  4%  KL=+0.061  H=0.15  acts[N:0% L:0% F:26% R:0% S:74%]  (1423s)
+[PPO-DEBUG] N=650  adv=[-3.176,+3.294] std=1.001  ret=[-3.8,+4.9] mean=-0.6  mask_legal_avg=3.06  old_lp=[-1.512±2.436]
+[PPO-DEBUG] mb#1 grad_norm=29.15905  loss=+0.7580  p_loss=+0.0076  v_loss=+1.5135  ent=0.3199
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.009480  ratio=1.23257  head_max_dparam=0.003237  clip_frac=0.189
+[Train[MAPPO]]    87/200 ( 43.5%)  agents:[ 5/ 5]  done= 53% [#############____________]  reward=   -58  eps=  4%  KL=+0.009  H=0.32  acts[N:1% L:1% F:57% R:1% S:40%]  (1430s)
+[PPO-DEBUG] N=1579  adv=[-5.000,+5.000] std=0.922  ret=[-6.3,+4.8] mean=-3.9  mask_legal_avg=3.01  old_lp=[-4.743±3.335]
+[PPO-DEBUG] mb#1 grad_norm=12.81235  loss=+0.4418  p_loss=+0.0973  v_loss=+0.6968  ent=0.1940
+[PPO-DEBUG] DONE  n_mb=28  KL=+0.089793  ratio=0.92723  head_max_dparam=0.011716  clip_frac=0.557
+[Train[MAPPO]]    88/200 ( 44.0%)  agents:[ 2/ 5]  done= 53% [#############____________]  reward=   -58  eps=  4%  KL=+0.090  H=0.18  acts[N:0% L:0% F:29% R:0% S:70%]  (1456s)
+[PPO-DEBUG] N=1109  adv=[-5.000,+5.000] std=0.901  ret=[-6.8,+5.1] mean=-3.6  mask_legal_avg=3.01  old_lp=[-3.776±3.912]
+[PPO-DEBUG] mb#1 grad_norm=8.45306  loss=+0.4184  p_loss=+0.0839  v_loss=+0.6822  ent=0.3298
+[PPO-DEBUG] DONE  n_mb=17  KL=+0.140965  ratio=0.88197  head_max_dparam=0.008822  clip_frac=0.571
+[Train[MAPPO]]    89/200 ( 44.5%)  agents:[ 3/ 5]  done= 53% [#############____________]  reward=   -58  eps=  4%  KL=+0.141  H=0.31  acts[N:0% L:0% F:41% R:0% S:58%]  (1472s)
+[PPO-DEBUG] N=2023  adv=[-5.000,+4.298] std=0.960  ret=[-8.0,+3.9] mean=-3.5  mask_legal_avg=3.01  old_lp=[-2.989±2.547]
+[PPO-DEBUG] mb#1 grad_norm=7.04970  loss=+0.3140  p_loss=+0.0548  v_loss=+0.5282  ent=0.2472
+[PPO] KL early-stop at mb#8: approx_kl=0.1000 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.045822  ratio=1.02803  head_max_dparam=0.001871  clip_frac=0.259
+[Train[MAPPO]]    90/200 ( 45.0%)  agents:[ 2/ 5]  done= 52% [#############____________]  reward=   -60  eps=  4%  KL=+0.046  H=0.27  acts[N:0% L:0% F:18% R:0% S:82%]  (1488s)
+[PPO-DEBUG] N=2029  adv=[-5.000,+3.359] std=0.974  ret=[-7.6,+4.6] mean=-4.1  mask_legal_avg=3.20  old_lp=[-4.538±2.938]
+[PPO-DEBUG] mb#1 grad_norm=7.64501  loss=+0.2234  p_loss=-0.0068  v_loss=+0.4673  ent=0.1736
+[PPO-DEBUG] DONE  n_mb=11  KL=+0.034836  ratio=1.04147  head_max_dparam=0.007803  clip_frac=0.398
+[Train[MAPPO]]    91/200 ( 45.5%)  agents:[ 1/ 5]  done= 52% [#############____________]  reward=   -60  eps=  4%  KL=+0.035  H=0.20  acts[N:0% L:0% F:33% R:8% S:59%]  (1504s)
+[PPO-DEBUG] N=539  adv=[-3.958,+3.481] std=1.001  ret=[-3.3,+4.6] mean=-0.2  mask_legal_avg=3.08  old_lp=[-0.827±1.633]
+[PPO-DEBUG] mb#1 grad_norm=27.88244  loss=+1.0512  p_loss=-0.0064  v_loss=+2.1295  ent=0.3596
+[PPO-DEBUG] DONE  n_mb=12  KL=-0.031184  ratio=1.11902  head_max_dparam=0.007811  clip_frac=0.287
+[Train[MAPPO]]    92/200 ( 46.0%)  agents:[ 5/ 5]  done= 54% [#############____________]  reward=   -56  eps=  4%  KL=-0.031  H=0.36  acts[N:2% L:1% F:39% R:1% S:57%]  (1512s)
+[PPO-DEBUG] N=2043  adv=[-5.000,+4.829] std=0.998  ret=[-5.4,+2.5] mean=-1.4  mask_legal_avg=3.04  old_lp=[-1.138±1.255]
+[PPO-DEBUG] mb#1 grad_norm=15.55731  loss=+0.2495  p_loss=-0.0017  v_loss=+0.5218  ent=0.4833
+[PPO] KL early-stop at mb#8: approx_kl=0.0881 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=10  KL=+0.107184  ratio=1.00064  head_max_dparam=0.004532  clip_frac=0.359
+[Train[MAPPO]]    93/200 ( 46.5%)  agents:[ 2/ 5]  done= 52% [#############____________]  reward=   -58  eps=  4%  KL=+0.107  H=0.45  acts[N:0% L:0% F:12% R:2% S:85%]  (1527s)
+[PPO-DEBUG] N=1560  adv=[-5.000,+5.000] std=0.988  ret=[-7.6,+5.2] mean=-4.3  mask_legal_avg=3.01  old_lp=[-5.561±2.472]
+[PPO-DEBUG] mb#1 grad_norm=10.05861  loss=+0.3077  p_loss=-0.0366  v_loss=+0.6914  ent=0.0693
+[PPO-DEBUG] DONE  n_mb=28  KL=+0.030172  ratio=0.99377  head_max_dparam=0.009809  clip_frac=0.652
+[Train[MAPPO]]    94/200 ( 47.0%)  agents:[ 2/ 5]  done= 51% [#############____________]  reward=   -60  eps=  4%  KL=+0.030  H=0.06  acts[N:6% L:0% F:13% R:0% S:81%]  (1548s)
+[PPO-DEBUG] N=2387  adv=[-5.000,+4.615] std=0.980  ret=[-7.3,-0.3] mean=-3.3  mask_legal_avg=3.06  old_lp=[-3.653±3.535]
+[PPO-DEBUG] mb#1 grad_norm=8.91643  loss=+0.0312  p_loss=-0.1485  v_loss=+0.3709  ent=0.2898
+[PPO-DEBUG] DONE  n_mb=14  KL=+0.046909  ratio=0.96577  head_max_dparam=0.008881  clip_frac=0.444
+[Train[MAPPO]]    95/200 ( 47.5%)  agents:[ 0/ 5]  done= 49% [############_____________]  reward=   -62  eps=  4%  KL=+0.047  H=0.27  acts[N:0% L:1% F:19% R:2% S:78%]  (1567s)
+[PPO-DEBUG] N=2375  adv=[-5.000,+2.984] std=0.870  ret=[-7.2,+0.3] mean=-3.8  mask_legal_avg=3.00  old_lp=[-3.777±2.404]
+[PPO-DEBUG] mb#1 grad_norm=15.40238  loss=+0.3929  p_loss=+0.0108  v_loss=+0.7706  ent=0.1611
+[PPO] KL early-stop at mb#8: approx_kl=0.0815 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=10  KL=+0.047329  ratio=1.08851  head_max_dparam=0.003113  clip_frac=0.351
+[Train[MAPPO]]    96/200 ( 48.0%)  agents:[ 0/ 5]  done= 48% [############_____________]  reward=   -63  eps=  4%  KL=+0.047  H=0.18  acts[N:0% L:0% F:11% R:0% S:89%]  (1583s)
+[PPO-DEBUG] N=963  adv=[-4.371,+4.387] std=1.001  ret=[-2.9,+4.6] mean=-0.8  mask_legal_avg=3.05  old_lp=[-1.188±1.824]
+[PPO-DEBUG] mb#1 grad_norm=13.37069  loss=+0.3577  p_loss=-0.0023  v_loss=+0.7336  ent=0.3402
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.015762  ratio=1.11210  head_max_dparam=0.001553  clip_frac=0.126
+[Train[MAPPO]]    97/200 ( 48.5%)  agents:[ 5/ 5]  done= 49% [############_____________]  reward=   -62  eps=  4%  KL=+0.016  H=0.32  acts[N:0% L:1% F:37% R:1% S:61%]  (1591s)
+[PPO-DEBUG] N=2000  adv=[-5.000,+5.000] std=0.959  ret=[-7.9,+4.9] mean=-4.6  mask_legal_avg=3.01  old_lp=[-4.074±2.694]
+[PPO-DEBUG] mb#1 grad_norm=8.56979  loss=+0.2229  p_loss=+0.0046  v_loss=+0.4412  ent=0.1129
+[PPO-DEBUG] DONE  n_mb=22  KL=+0.084691  ratio=0.96007  head_max_dparam=0.006118  clip_frac=0.555
+[Train[MAPPO]]    98/200 ( 49.0%)  agents:[ 1/ 5]  done= 49% [############_____________]  reward=   -62  eps=  4%  KL=+0.085  H=0.11  acts[N:0% L:0% F:11% R:0% S:88%]  (1613s)
+[PPO-DEBUG] N=1206  adv=[-3.518,+5.000] std=0.987  ret=[-8.0,+5.0] mean=-4.4  mask_legal_avg=3.02  old_lp=[-4.625±2.495]
+[PPO-DEBUG] mb#1 grad_norm=10.37601  loss=+0.3712  p_loss=+0.0636  v_loss=+0.6198  ent=0.1123
+[PPO] KL early-stop at mb#8: approx_kl=0.0825 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=11  KL=+0.167343  ratio=0.83252  head_max_dparam=0.004828  clip_frac=0.547
+[Train[MAPPO]]    99/200 ( 49.5%)  agents:[ 3/ 5]  done= 50% [#############____________]  reward=   -60  eps=  4%  KL=+0.167  H=0.11  acts[N:0% L:0% F:17% R:0% S:82%]  (1625s)
+[PPO-DEBUG] N=1539  adv=[-4.356,+3.724] std=1.000  ret=[-4.3,+5.0] mean=-2.1  mask_legal_avg=3.02  old_lp=[-2.891±3.187]
+[PPO-DEBUG] mb#1 grad_norm=13.58383  loss=+0.4085  p_loss=+0.0345  v_loss=+0.7612  ent=0.3306
+[PPO-DEBUG] DONE  n_mb=14  KL=+0.030772  ratio=1.06047  head_max_dparam=0.007688  clip_frac=0.467
+[ObsFnPerf] ep=100 interval=20 sample_every=8 get=1.794ms get_many=9.060ms local_search=2.238ms deadlock_profile=0.196ms base_features=0.000ms debug_overlay=0.000ms deadlock_calls_per_local_search=7.28
+[ObsFnPerfBase] transitions=0.000ms successors=0.000ms priority=0.000ms flags=0.000ms sp_hint=0.000ms
+[ObsFnPerfDetail] get_p50=2.438ms get_p95=3.548ms get_max=6.490ms get_many_p50=8.821ms get_many_p95=12.679ms get_many_max=15.591ms local_search_p50=2.170ms local_search_p95=3.008ms local_search_max=5.992ms
+[ObsFnPerfLocalSearch] nodes_mean=7.28 nodes_p95=8.00 edges_mean=7.15 edges_p95=8.00 seen_agents_mean=0.82 ms_per_node=0.3076 handles_per_get_many=5.00
+[ObsFnPerfGetMany] total_nodes_mean=22.27 total_nodes_p95=32.00 total_edges_mean=21.89 total_edges_p95=30.00
+[Train[MAPPO]]   100/200 ( 50.0%)  agents:[ 3/ 5]  done= 50% [#############____________]  reward=   -59  eps=  4%  KL=+0.031  H=0.32  acts[N:0% L:1% F:26% R:0% S:73%]  (1639s)
+
+[Train] Mid-training eval at episode 100 ...
+>> Environment:Flatland:RailEnv
+[Env] Using 324 cached environments at /home/u216993/workspace/ai4realnet/aiAdrian_flatland/flatland_solver_policy/example/flatland_rail_env/generated_envs/simple_marl
+Load environments from disk. #  324  loaded.
+[reward] Using OutcomeBasedReward (step=-1, deadlock=-5, done=+50+saved, all_done=+100, fail=-200, scale=0.01)
+
+[Eval] MAPPOPolicy  x  10 episodes
+------------------------------------------------------------
+[Eval[MAPPOPolicy]] starting (10 iterations)
+>> DeadLockAvoidancePolicy
+[Eval[MAPPOPolicy]]     1/10 ( 10.0%)  agents:[ 5/ 5]  done=100% [#########################]  deadlock=  0%  steps= 135  reward=   +25.9  (2s)
+[Eval[MAPPOPolicy]]     2/10 ( 20.0%)  agents:[ 4/ 5]  done= 90% [######################___]  deadlock=  0%  steps= 317  reward=   +18.3  (6s)
+[Eval[MAPPOPolicy]]     3/10 ( 30.0%)  agents:[ 3/ 5]  done= 80% [####################_____]  deadlock=  0%  steps= 378  reward=   +11.8  (12s)
+[Eval[MAPPOPolicy]]     4/10 ( 40.0%)  agents:[ 4/ 5]  done= 80% [####################_____]  deadlock=  0%  steps= 408  reward=   +11.3  (15s)
+[Eval[MAPPOPolicy]]     5/10 ( 50.0%)  agents:[ 2/ 5]  done= 72% [##################_______]  deadlock=  8%  steps= 426  reward=    -1.4  (23s)
+[Eval[MAPPOPolicy]]     6/10 ( 60.0%)  agents:[ 2/ 5]  done= 67% [#################________]  deadlock= 13%  steps= 438  reward=   -11.3  (31s)
+[Eval[MAPPOPolicy]]     7/10 ( 70.0%)  agents:[ 1/ 5]  done= 60% [###############__________]  deadlock= 17%  steps= 447  reward=   -19.8  (42s)
+[Eval[MAPPOPolicy]]     8/10 ( 80.0%)  agents:[ 5/ 5]  done= 65% [################_________]  deadlock= 15%  steps= 416  reward=   -14.4  (44s)
+[Eval[MAPPOPolicy]]     9/10 ( 90.0%)  agents:[ 1/ 5]  done= 60% [###############__________]  deadlock= 18%  steps= 426  reward=   -20.4  (54s)
+
+========================================================================
+  [DecisionPointObs] BASE FEATURE REPORT  (n=100 episodes, ep=9)
+========================================================================
+   #  Feature                   min    max    mean    std          trend  note
+  --------------------------------------------------------------------
+   0  path_left               0.000  1.000  0.0700 0.2551   ↔ flat/noisy  
+   1  path_forward            0.000  1.000  0.7060 0.4556   ↔ flat/noisy  
+   2  path_right              0.000  1.000  0.2360 0.4246   ↔ flat/noisy  
+   3  delta_left             -1.000  0.000 -0.9304 0.2537   ↔ flat/noisy  
+   4  delta_forward          -1.000  0.000 -0.2980 0.4574   ↔ flat/noisy  
+   5  delta_right            -1.000  0.000 -0.7669 0.4220   ↔ flat/noisy  
+   6  st_3                    0.000  0.000  0.0000 0.0000   ↔ flat/noisy  🟡 ready_to_depart 0% of steps
+   7  priority_rank           0.016  0.872  0.5203 0.2693    ↓ mono-fall  ✅ agent approaching goal
+   8  is_pre_merge            0.000  1.000  0.7740 0.4182   ↔ flat/noisy  pre-merge 77% of steps
+   9  is_switch               0.000  1.000  0.0120 0.1089   ↔ flat/noisy  at switch 1% of steps
+  10  sp_left                 0.000  1.000  0.0680 0.2517   ↔ flat/noisy  used 7% of steps
+  11  sp_forward              0.000  1.000  0.7020 0.4574   ↔ flat/noisy  used 70% of steps
+  12  sp_right                0.000  1.000  0.2300 0.4208   ↔ flat/noisy  used 23% of steps
+  13  deadlock_risk           0.066  0.370  0.2386 0.0682   ↔ flat/noisy  mean risk=0.239
+  14  deadlock_distance_norm  0.000  0.000  0.0000 0.0000   ↔ flat/noisy  near-deadlock 0% of steps
+  15  steps_to_next_switch_norm  0.000  1.000  0.4647 0.3253   ↔ flat/noisy  mean prox=0.465
+  16  sp_improves_norm        0.000  1.000  0.0073 0.0790   ↔ flat/noisy  mean gain=0.007
+  17  last_action_left        0.000  1.000  0.0040 0.0631   ↔ flat/noisy  left 0% of steps
+  18  last_action_forward     0.000  1.000  0.1460 0.3531   ↔ flat/noisy  forward 15% of steps
+  19  last_action_right       0.000  0.000  0.0000 0.0000   ↔ flat/noisy  right 0% of steps
+  20  last_action_stop        0.000  1.000  0.6500 0.4770   ↔ flat/noisy  stop 65% of steps
+  21  action_matches_sp       0.000  1.000  0.5310 0.1912   ↔ flat/noisy  follow 11% / yield 85% / off 4%
+  22  spawn_active_density    0.800  0.800  0.8000 0.0000   ↔ flat/noisy  
+  23  spawn_pending_density   0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  24  spawn_is_ready          0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  25  global_conflict_pressure  0.000  0.050  0.0005 0.0050   ↔ flat/noisy  
+  26  my_priority_global      0.000  1.000  0.4007 0.3895   ↔ flat/noisy  
+  27  my_sp_blocked_score     0.000  0.200  0.0008 0.0126   ↔ flat/noisy  
+  28  sp_alternatives_avg_score  0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  29  expected_yield_count    0.000  0.333  0.0707 0.1362   ↔ flat/noisy  
+  30  vertex_conflict_left    0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  31  edge_conflict_left      0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  32  lane_density_left       0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  33  vertex_conflict_forward  0.000  0.200  0.0004 0.0089   ↔ flat/noisy  
+  34  edge_conflict_forward   0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  35  lane_density_forward    0.000  0.333  0.0680 0.1343   ↔ flat/noisy  
+  36  vertex_conflict_right   0.000  0.800  0.1600 0.3200   ↔ flat/noisy  
+  37  edge_conflict_right     0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  38  lane_density_right      0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+
+  priority_rank half-half: first=0.5385 → second=0.5022  Δ=-0.0362 ↓
+
+  Tree: nodes=6.0±3.1 [0,8]   edges=5.7±3.1 [0,9]
+========================================================================
+[Eval[MAPPOPolicy]]    10/10 (100.0%)  agents:[ 1/ 5]  done= 56% [##############___________]  deadlock= 18%  steps= 433  reward=   -22.7  (64s)
+------------------------------------------------------------
+[Eval]  MAPPOPolicy  RESULT  (63.8s)
+  done_rate     = 0.560  (+/-0.307)
+  deadlock_rate = 0.180
+  episode_len   = 433.0
+  total_reward  = -22.73
+
+[Save] /home/u216993/workspace/ai4realnet/aiAdrian_flatland/flatland_solver_policy/example/flatland_rail_env/mappo_checkpoint_conflict_aware.pt
+[PPO-DEBUG] N=608  adv=[-3.022,+4.114] std=1.001  ret=[-3.0,+4.8] mean=-0.5  mask_legal_avg=3.07  old_lp=[-1.792±2.633]
+[PPO-DEBUG] mb#1 grad_norm=22.71953  loss=+0.6153  p_loss=+0.0300  v_loss=+1.1843  ent=0.3458
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.013813  ratio=1.18807  head_max_dparam=0.004512  clip_frac=0.181
+
+========================================================================
+  [DecisionPointObs] BASE FEATURE REPORT  (n=100 episodes, ep=100)
+========================================================================
+   #  Feature                   min    max    mean    std          trend  note
+  --------------------------------------------------------------------
+   0  path_left               0.000  1.000  0.0920 0.2890   ↔ flat/noisy  
+   1  path_forward            0.000  1.000  0.4720 0.4992   ↔ flat/noisy  
+   2  path_right              0.000  1.000  0.1720 0.3774   ↔ flat/noisy  
+   3  delta_left             -1.000  0.000 -0.9109 0.2837   ↔ flat/noisy  
+   4  delta_forward          -1.000  0.000 -0.5360 0.4987   ↔ flat/noisy  
+   5  delta_right            -1.000  0.000 -0.8320 0.3739   ↔ flat/noisy  
+   6  st_3                    0.000  0.000  0.0000 0.0000   ↔ flat/noisy  🟡 ready_to_depart 0% of steps
+   7  priority_rank           0.005  1.000  0.6012 0.3642    ↓ mono-fall  ✅ agent approaching goal
+   8  is_pre_merge            0.000  1.000  0.6840 0.4649   ↔ flat/noisy  pre-merge 68% of steps
+   9  is_switch               0.000  1.000  0.0180 0.1330   ↔ flat/noisy  at switch 2% of steps
+  10  sp_left                 0.000  1.000  0.0860 0.2804   ↔ flat/noisy  used 9% of steps
+  11  sp_forward              0.000  1.000  0.4640 0.4987   ↔ flat/noisy  used 46% of steps
+  12  sp_right                0.000  1.000  0.1680 0.3739   ↔ flat/noisy  used 17% of steps
+  13  deadlock_risk           0.068  0.338  0.1617 0.0716   ↔ flat/noisy  mean risk=0.162
+  14  deadlock_distance_norm  0.000  1.000  0.2876 0.4500   ↔ flat/noisy  near-deadlock 29% of steps
+  15  steps_to_next_switch_norm  0.000  1.000  0.4205 0.4246   ↔ flat/noisy  mean prox=0.421
+  16  sp_improves_norm        0.000  1.000  0.0149 0.1182   ↔ flat/noisy  mean gain=0.015
+  17  last_action_left        0.000  1.000  0.0040 0.0631   ↔ flat/noisy  left 0% of steps
+  18  last_action_forward     0.000  1.000  0.2560 0.4364   ↔ flat/noisy  forward 26% of steps
+  19  last_action_right       0.000  1.000  0.0040 0.0631   ↔ flat/noisy  right 0% of steps
+  20  last_action_stop        0.000  1.000  0.2500 0.4330   ↔ flat/noisy  stop 25% of steps
+  21  action_matches_sp       0.000  1.000  0.5520 0.2516   ↔ flat/noisy  follow 18% / yield 74% / off 8%
+  22  spawn_active_density    0.000  0.600  0.5080 0.1309   ↔ flat/noisy  
+  23  spawn_pending_density   0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  24  spawn_is_ready          0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  25  global_conflict_pressure  0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  26  my_priority_global      0.000  1.000  0.2830 0.4152   ↔ flat/noisy  
+  27  my_sp_blocked_score     0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  28  sp_alternatives_avg_score  0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  29  expected_yield_count    0.000  1.000  0.1050 0.2598   ↔ flat/noisy  
+  30  vertex_conflict_left    0.000  0.800  0.0400 0.1720   ↔ flat/noisy  
+  31  edge_conflict_left      0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  32  lane_density_left       0.000  0.333  0.0020 0.0257   ↔ flat/noisy  
+  33  vertex_conflict_forward  0.000  0.800  0.0528 0.1937   ↔ flat/noisy  
+  34  edge_conflict_forward   0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  35  lane_density_forward    0.000  0.333  0.0327 0.0991   ↔ flat/noisy  
+  36  vertex_conflict_right   0.000  0.600  0.0028 0.0368   ↔ flat/noisy  
+  37  edge_conflict_right     0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  38  lane_density_right      0.000  0.667  0.0393 0.1535   ↔ flat/noisy  
+
+  priority_rank half-half: first=0.5812 → second=0.6212  Δ=+0.0400 ↑
+
+  Tree: nodes=4.0±3.9 [0,8]   edges=4.0±4.0 [0,10]
+========================================================================
+[Train[MAPPO]]   101/200 ( 50.5%)  agents:[ 5/ 5]  done= 52% [#############____________]  reward=   -56  eps=  4%  KL=+0.014  H=0.33  acts[N:0% L:1% F:46% R:1% S:52%]  (1708s)
+[PPO-DEBUG] N=439  adv=[-2.090,+3.344] std=1.001  ret=[-1.8,+5.1] mean=+0.5  mask_legal_avg=3.05  old_lp=[-0.884±1.668]
+[PPO-DEBUG] mb#1 grad_norm=26.67038  loss=+0.6890  p_loss=-0.0570  v_loss=+1.5040  ent=0.3020
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.033319  ratio=1.17852  head_max_dparam=0.007549  clip_frac=0.235
+[Train[MAPPO]]   102/200 ( 51.0%)  agents:[ 5/ 5]  done= 53% [#############____________]  reward=   -55  eps=  4%  KL=+0.033  H=0.29  acts[N:0% L:2% F:42% R:0% S:56%]  (1713s)
+[PPO-DEBUG] N=1611  adv=[-5.000,+5.000] std=0.964  ret=[-4.4,+5.3] mean=-1.9  mask_legal_avg=3.01  old_lp=[-3.540±2.537]
+[PPO-DEBUG] mb#1 grad_norm=24.95066  loss=+0.3302  p_loss=-0.0436  v_loss=+0.7567  ent=0.2277
+[PPO] KL early-stop at mb#8: approx_kl=0.1349 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.131179  ratio=0.82974  head_max_dparam=0.003465  clip_frac=0.156
+[Train[MAPPO]]   103/200 ( 51.5%)  agents:[ 2/ 5]  done= 53% [#############____________]  reward=   -55  eps=  4%  KL=+0.131  H=0.21  acts[N:0% L:0% F:32% R:0% S:67%]  (1724s)
+[PPO-DEBUG] N=2431  adv=[-5.000,+2.991] std=0.938  ret=[-6.1,+0.9] mean=-2.7  mask_legal_avg=3.01  old_lp=[-4.098±3.305]
+[PPO-DEBUG] mb#1 grad_norm=20.46542  loss=+0.3944  p_loss=+0.0019  v_loss=+0.7931  ent=0.2028
+[PPO] KL early-stop at mb#24: approx_kl=0.0973 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=24  KL=+0.065908  ratio=0.98050  head_max_dparam=0.015459  clip_frac=0.603
+[Train[MAPPO]]   104/200 ( 52.0%)  agents:[ 0/ 5]  done= 52% [#############____________]  reward=   -56  eps=  4%  KL=+0.066  H=0.21  acts[N:0% L:0% F:17% R:0% S:82%]  (1745s)
+[PPO-DEBUG] N=1526  adv=[-4.146,+5.000] std=0.988  ret=[-6.6,+4.9] mean=-2.8  mask_legal_avg=3.01  old_lp=[-4.204±2.917]
+[PPO-DEBUG] mb#1 grad_norm=11.02204  loss=+0.1249  p_loss=-0.0672  v_loss=+0.3929  ent=0.2212
+[PPO-DEBUG] DONE  n_mb=19  KL=+0.039184  ratio=1.01131  head_max_dparam=0.007184  clip_frac=0.657
+[Train[MAPPO]]   105/200 ( 52.5%)  agents:[ 2/ 5]  done= 52% [#############____________]  reward=   -56  eps=  4%  KL=+0.039  H=0.22  acts[N:0% L:1% F:19% R:0% S:81%]  (1765s)
+[PPO-DEBUG] N=1766  adv=[-3.807,+4.871] std=1.000  ret=[-5.4,+4.9] mean=-2.0  mask_legal_avg=3.02  old_lp=[-3.380±3.149]
+[PPO-DEBUG] mb#1 grad_norm=15.76634  loss=+0.2628  p_loss=+0.0283  v_loss=+0.4781  ent=0.2293
+[PPO-DEBUG] DONE  n_mb=12  KL=+0.123511  ratio=0.96667  head_max_dparam=0.005121  clip_frac=0.483
+[Train[MAPPO]]   106/200 ( 53.0%)  agents:[ 2/ 5]  done= 51% [#############____________]  reward=   -56  eps=  4%  KL=+0.124  H=0.20  acts[N:0% L:1% F:16% R:0% S:82%]  (1779s)
+[PPO-DEBUG] N=1882  adv=[-5.000,+4.651] std=0.961  ret=[-7.3,+4.6] mean=-2.9  mask_legal_avg=3.02  old_lp=[-3.445±3.069]
+[PPO-DEBUG] mb#1 grad_norm=9.57034  loss=+0.3701  p_loss=+0.0054  v_loss=+0.7347  ent=0.1328
+[PPO-DEBUG] DONE  n_mb=12  KL=+0.030520  ratio=1.06415  head_max_dparam=0.006600  clip_frac=0.370
+[Train[MAPPO]]   107/200 ( 53.5%)  agents:[ 2/ 5]  done= 51% [#############____________]  reward=   -57  eps=  4%  KL=+0.031  H=0.12  acts[N:0% L:0% F:16% R:0% S:83%]  (1792s)
+[PPO-DEBUG] N=664  adv=[-2.669,+5.000] std=0.989  ret=[-1.8,+4.3] mean=-0.2  mask_legal_avg=3.04  old_lp=[-0.942±1.735]
+[PPO-DEBUG] mb#1 grad_norm=25.83523  loss=+0.3607  p_loss=-0.0262  v_loss=+0.7855  ent=0.2931
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.074416  ratio=1.26546  head_max_dparam=0.001603  clip_frac=0.066
+[Train[MAPPO]]   108/200 ( 54.0%)  agents:[ 5/ 5]  done= 53% [#############____________]  reward=   -54  eps=  4%  KL=+0.074  H=0.28  acts[N:0% L:1% F:41% R:1% S:57%]  (1797s)
+[PPO-DEBUG] N=1052  adv=[-3.608,+5.000] std=0.995  ret=[-2.2,+4.0] mean=-0.4  mask_legal_avg=3.07  old_lp=[-2.018±2.702]
+[PPO-DEBUG] mb#1 grad_norm=12.79042  loss=+0.4627  p_loss=-0.0075  v_loss=+0.9535  ent=0.3280
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.064481  ratio=1.29677  head_max_dparam=0.001405  clip_frac=0.098
+[Train[MAPPO]]   109/200 ( 54.5%)  agents:[ 5/ 5]  done= 54% [#############____________]  reward=   -52  eps=  4%  KL=+0.064  H=0.32  acts[N:0% L:1% F:41% R:1% S:56%]  (1806s)
+[PPO-DEBUG] N=1697  adv=[-5.000,+5.000] std=0.950  ret=[-7.5,+4.6] mean=-3.4  mask_legal_avg=3.01  old_lp=[-3.863±3.168]
+[PPO-DEBUG] mb#1 grad_norm=5.06540  loss=+0.2778  p_loss=+0.0650  v_loss=+0.4298  ent=0.1065
+[PPO-DEBUG] DONE  n_mb=11  KL=+0.123427  ratio=0.88495  head_max_dparam=0.003970  clip_frac=0.395
+[Train[MAPPO]]   110/200 ( 55.0%)  agents:[ 3/ 5]  done= 54% [##############___________]  reward=   -51  eps=  4%  KL=+0.123  H=0.10  acts[N:1% L:0% F:13% R:0% S:86%]  (1820s)
+[PPO-DEBUG] N=2450  adv=[-5.000,+3.380] std=0.966  ret=[-7.5,+1.5] mean=-3.6  mask_legal_avg=3.01  old_lp=[-5.112±3.093]
+[PPO-DEBUG] mb#1 grad_norm=8.22940  loss=+0.1877  p_loss=-0.0759  v_loss=+0.5310  ent=0.0937
+[PPO] KL early-stop at mb#16: approx_kl=0.0922 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=17  KL=+0.030567  ratio=1.02574  head_max_dparam=0.009810  clip_frac=0.439
+[Train[MAPPO]]   111/200 ( 55.5%)  agents:[ 0/ 5]  done= 54% [#############____________]  reward=   -52  eps=  4%  KL=+0.031  H=0.12  acts[N:0% L:0% F:14% R:0% S:86%]  (1840s)
+[PPO-DEBUG] N=1243  adv=[-5.000,+5.000] std=0.993  ret=[-5.7,+4.9] mean=-2.8  mask_legal_avg=3.02  old_lp=[-3.359±2.781]
+[PPO-DEBUG] mb#1 grad_norm=12.75904  loss=+0.4360  p_loss=+0.0008  v_loss=+0.8816  ent=0.2818
+[PPO] KL early-stop at mb#8: approx_kl=0.0999 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.084079  ratio=0.95108  head_max_dparam=0.004648  clip_frac=0.385
+[Train[MAPPO]]   112/200 ( 56.0%)  agents:[ 3/ 5]  done= 53% [#############____________]  reward=   -53  eps=  4%  KL=+0.084  H=0.25  acts[N:0% L:1% F:17% R:0% S:82%]  (1848s)
+[PPO-DEBUG] N=1998  adv=[-5.000,+5.000] std=0.996  ret=[-6.8,+4.8] mean=-2.8  mask_legal_avg=3.05  old_lp=[-3.694±3.580]
+[PPO-DEBUG] mb#1 grad_norm=15.04514  loss=+0.2782  p_loss=+0.0483  v_loss=+0.4660  ent=0.1574
+[PPO-DEBUG] DONE  n_mb=32  KL=+0.118319  ratio=0.91391  head_max_dparam=0.018495  clip_frac=0.591
+[Train[MAPPO]]   113/200 ( 56.5%)  agents:[ 1/ 5]  done= 52% [#############____________]  reward=   -54  eps=  4%  KL=+0.118  H=0.12  acts[N:0% L:1% F:25% R:0% S:74%]  (1875s)
+[PPO-DEBUG] N=1310  adv=[-4.495,+5.000] std=0.996  ret=[-7.2,+5.0] mean=-3.7  mask_legal_avg=3.02  old_lp=[-4.648±3.900]
+[PPO-DEBUG] mb#1 grad_norm=5.52649  loss=+0.3867  p_loss=+0.0462  v_loss=+0.6892  ent=0.2070
+[PPO] KL early-stop at mb#8: approx_kl=0.1050 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=10  KL=+0.087761  ratio=0.94442  head_max_dparam=0.006346  clip_frac=0.396
+[Train[MAPPO]]   114/200 ( 57.0%)  agents:[ 3/ 5]  done= 52% [#############____________]  reward=   -54  eps=  4%  KL=+0.088  H=0.19  acts[N:0% L:0% F:29% R:1% S:70%]  (1886s)
+[PPO-DEBUG] N=2485  adv=[-5.000,+5.000] std=0.970  ret=[-7.9,+0.6] mean=-3.6  mask_legal_avg=3.03  old_lp=[-2.725±2.983]
+[PPO-DEBUG] mb#1 grad_norm=11.94480  loss=+0.2974  p_loss=+0.0103  v_loss=+0.5838  ent=0.2383
+[PPO] KL early-stop at mb#8: approx_kl=0.0913 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=9  KL=+0.063276  ratio=0.94870  head_max_dparam=0.004085  clip_frac=0.269
+[Train[MAPPO]]   115/200 ( 57.5%)  agents:[ 0/ 5]  done= 52% [#############____________]  reward=   -54  eps=  4%  KL=+0.063  H=0.25  acts[N:0% L:0% F:8% R:1% S:91%]  (1900s)
+[PPO-DEBUG] N=1140  adv=[-5.000,+4.659] std=0.998  ret=[-8.3,+5.1] mean=-4.7  mask_legal_avg=3.02  old_lp=[-3.911±2.538]
+[PPO-DEBUG] mb#1 grad_norm=19.30340  loss=+0.3344  p_loss=-0.0381  v_loss=+0.7506  ent=0.1426
+[PPO] KL early-stop at mb#8: approx_kl=0.1079 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=10  KL=+0.066532  ratio=1.01766  head_max_dparam=0.004176  clip_frac=0.472
+[Train[MAPPO]]   116/200 ( 58.0%)  agents:[ 3/ 5]  done= 51% [#############____________]  reward=   -55  eps=  4%  KL=+0.067  H=0.13  acts[N:0% L:0% F:18% R:1% S:81%]  (1911s)
+[PPO-DEBUG] N=710  adv=[-4.110,+4.419] std=1.001  ret=[-1.9,+4.4] mean=-0.1  mask_legal_avg=3.05  old_lp=[-0.851±2.030]
+[PPO-DEBUG] mb#1 grad_norm=26.95719  loss=+0.5399  p_loss=-0.0149  v_loss=+1.1198  ent=0.2527
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.219699  ratio=1.41171  head_max_dparam=0.002581  clip_frac=0.067
+[Train[MAPPO]]   117/200 ( 58.5%)  agents:[ 5/ 5]  done= 52% [#############____________]  reward=   -53  eps=  4%  KL=+0.220  H=0.18  acts[N:0% L:1% F:41% R:1% S:56%]  (1917s)
+[PPO-DEBUG] N=1562  adv=[-5.000,+5.000] std=0.980  ret=[-8.5,+4.9] mean=-3.3  mask_legal_avg=3.02  old_lp=[-2.274±2.780]
+[PPO-DEBUG] mb#1 grad_norm=5.66864  loss=+0.3721  p_loss=+0.0580  v_loss=+0.6349  ent=0.1643
+[PPO-DEBUG] DONE  n_mb=28  KL=+0.059933  ratio=0.97244  head_max_dparam=0.007918  clip_frac=0.496
+[Train[MAPPO]]   118/200 ( 59.0%)  agents:[ 2/ 5]  done= 52% [#############____________]  reward=   -53  eps=  4%  KL=+0.060  H=0.17  acts[N:0% L:0% F:13% R:0% S:86%]  (1938s)
+[PPO-DEBUG] N=1295  adv=[-4.872,+3.566] std=1.000  ret=[-3.2,+4.8] mean=-0.8  mask_legal_avg=3.02  old_lp=[-0.695±1.686]
+[PPO-DEBUG] mb#1 grad_norm=7.82343  loss=+0.2405  p_loss=-0.0468  v_loss=+0.5810  ent=0.1620
+[PPO-DEBUG] DONE  n_mb=22  KL=+0.024337  ratio=1.00708  head_max_dparam=0.015541  clip_frac=0.233
+[Train[MAPPO]]   119/200 ( 59.5%)  agents:[ 4/ 5]  done= 52% [#############____________]  reward=   -52  eps=  4%  KL=+0.024  H=0.15  acts[N:0% L:0% F:34% R:1% S:65%]  (1953s)
+[PPO-DEBUG] N=2032  adv=[-5.000,+4.525] std=0.980  ret=[-7.6,+4.3] mean=-3.7  mask_legal_avg=3.02  old_lp=[-2.768±2.883]
+[PPO-DEBUG] mb#1 grad_norm=14.08733  loss=+0.2387  p_loss=+0.0392  v_loss=+0.4064  ent=0.1902
+[PPO-DEBUG] DONE  n_mb=26  KL=+0.061222  ratio=0.98231  head_max_dparam=0.015320  clip_frac=0.530
+[ObsFnPerf] ep=120 interval=20 sample_every=8 get=2.481ms get_many=12.931ms local_search=2.407ms deadlock_profile=0.184ms base_features=0.000ms debug_overlay=0.000ms deadlock_calls_per_local_search=7.81
+[ObsFnPerfBase] transitions=0.000ms successors=0.000ms priority=0.000ms flags=0.000ms sp_hint=0.000ms
+[ObsFnPerfDetail] get_p50=2.745ms get_p95=4.054ms get_max=5.979ms get_many_p50=12.543ms get_many_p95=16.368ms get_many_max=158.725ms local_search_p50=2.307ms local_search_p95=3.326ms local_search_max=5.034ms
+[ObsFnPerfLocalSearch] nodes_mean=7.81 nodes_p95=8.00 edges_mean=8.06 edges_p95=10.00 seen_agents_mean=1.84 ms_per_node=0.3081 handles_per_get_many=5.00
+[ObsFnPerfGetMany] total_nodes_mean=31.71 total_nodes_p95=39.00 total_edges_mean=32.72 total_edges_p95=40.00
+[Train[MAPPO]]   120/200 ( 60.0%)  agents:[ 1/ 5]  done= 52% [#############____________]  reward=   -51  eps=  4%  KL=+0.061  H=0.18  acts[N:0% L:0% F:14% R:0% S:86%]  (1980s)
+[PPO-DEBUG] N=793  adv=[-3.104,+4.689] std=1.001  ret=[-3.5,+4.9] mean=-0.1  mask_legal_avg=3.12  old_lp=[-0.432±1.234]
+[PPO-DEBUG] mb#1 grad_norm=20.04609  loss=+0.4756  p_loss=-0.0496  v_loss=+1.0606  ent=0.2544
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.021901  ratio=1.16773  head_max_dparam=0.002517  clip_frac=0.161
+[Train[MAPPO]]   121/200 ( 60.5%)  agents:[ 5/ 5]  done= 53% [#############____________]  reward=   -50  eps=  4%  KL=+0.022  H=0.21  acts[N:3% L:5% F:44% R:1% S:47%]  (1986s)
+[PPO-DEBUG] N=1979  adv=[-5.000,+5.000] std=0.990  ret=[-7.7,+5.0] mean=-3.2  mask_legal_avg=3.02  old_lp=[-1.851±2.702]
+[PPO-DEBUG] mb#1 grad_norm=17.13720  loss=+0.3522  p_loss=+0.0203  v_loss=+0.6776  ent=0.3454
+[PPO-DEBUG] DONE  n_mb=14  KL=+0.069584  ratio=0.98934  head_max_dparam=0.006010  clip_frac=0.410
+[Train[MAPPO]]   122/200 ( 61.0%)  agents:[ 1/ 5]  done= 52% [#############____________]  reward=   -52  eps=  4%  KL=+0.070  H=0.30  acts[N:0% L:0% F:11% R:0% S:88%]  (2003s)
+[PPO-DEBUG] N=1330  adv=[-3.740,+5.000] std=0.940  ret=[-8.0,+4.3] mean=-3.9  mask_legal_avg=3.03  old_lp=[-2.962±3.475]
+[PPO-DEBUG] mb#1 grad_norm=8.36875  loss=+0.2659  p_loss=-0.0459  v_loss=+0.6344  ent=0.2657
+[PPO] KL early-stop at mb#8: approx_kl=0.1197 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=12  KL=+0.051427  ratio=1.05601  head_max_dparam=0.005062  clip_frac=0.302
+[Train[MAPPO]]   123/200 ( 61.5%)  agents:[ 3/ 5]  done= 52% [#############____________]  reward=   -52  eps=  4%  KL=+0.051  H=0.27  acts[N:0% L:1% F:24% R:0% S:75%]  (2016s)
+[PPO-DEBUG] N=2183  adv=[-5.000,+5.000] std=0.957  ret=[-7.7,+3.1] mean=-4.4  mask_legal_avg=3.01  old_lp=[-2.464±3.713]
+[PPO-DEBUG] mb#1 grad_norm=13.46546  loss=+0.3271  p_loss=+0.0783  v_loss=+0.5095  ent=0.2996
+[PPO-DEBUG] DONE  n_mb=30  KL=-0.012926  ratio=1.03926  head_max_dparam=0.013897  clip_frac=0.449
+[Train[MAPPO]]   124/200 ( 62.0%)  agents:[ 1/ 5]  done= 52% [#############____________]  reward=   -52  eps=  4%  KL=-0.013  H=0.33  acts[N:0% L:0% F:13% R:0% S:86%]  (2042s)
+[PPO-DEBUG] N=1225  adv=[-4.205,+4.742] std=1.000  ret=[-4.7,+3.4] mean=-1.1  mask_legal_avg=3.09  old_lp=[-0.341±1.173]
+[PPO-DEBUG] mb#1 grad_norm=8.92383  loss=+0.5100  p_loss=+0.0264  v_loss=+0.9750  ent=0.1989
+[PPO-DEBUG] DONE  n_mb=20  KL=-0.040097  ratio=1.08512  head_max_dparam=0.015827  clip_frac=0.201
+[Train[MAPPO]]   125/200 ( 62.5%)  agents:[ 5/ 5]  done= 53% [#############____________]  reward=   -50  eps=  4%  KL=-0.040  H=0.17  acts[N:0% L:1% F:18% R:0% S:80%]  (2057s)
+[PPO-DEBUG] N=1300  adv=[-5.000,+5.000] std=0.963  ret=[-7.9,+5.0] mean=-3.5  mask_legal_avg=3.01  old_lp=[-1.281±1.644]
+[PPO-DEBUG] mb#1 grad_norm=9.37551  loss=+0.2133  p_loss=-0.0577  v_loss=+0.5555  ent=0.3356
+[PPO] KL early-stop at mb#8: approx_kl=0.1124 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=9  KL=+0.130876  ratio=0.85123  head_max_dparam=0.002954  clip_frac=0.267
+[Train[MAPPO]]   126/200 ( 63.0%)  agents:[ 3/ 5]  done= 53% [#############____________]  reward=   -50  eps=  4%  KL=+0.131  H=0.28  acts[N:0% L:1% F:13% R:0% S:86%]  (2068s)
+[PPO-DEBUG] N=560  adv=[-4.322,+3.144] std=1.001  ret=[-1.4,+5.0] mean=+0.6  mask_legal_avg=3.07  old_lp=[-0.257±1.167]
+[PPO-DEBUG] mb#1 grad_norm=15.77614  loss=+0.5220  p_loss=-0.0688  v_loss=+1.1887  ent=0.1769
+[PPO-DEBUG] DONE  n_mb=12  KL=-0.027291  ratio=1.03995  head_max_dparam=0.009770  clip_frac=0.178
+[Train[MAPPO]]   127/200 ( 63.5%)  agents:[ 5/ 5]  done= 55% [##############___________]  reward=   -47  eps=  4%  KL=-0.027  H=0.14  acts[N:0% L:2% F:49% R:1% S:47%]  (2075s)
+[PPO-DEBUG] N=505  adv=[-2.667,+3.947] std=1.001  ret=[-1.3,+4.9] mean=+1.2  mask_legal_avg=3.07  old_lp=[-0.365±1.359]
+[PPO-DEBUG] mb#1 grad_norm=20.27577  loss=+0.2967  p_loss=-0.0809  v_loss=+0.7611  ent=0.1442
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.059687  ratio=1.14822  head_max_dparam=0.003344  clip_frac=0.053
+[Train[MAPPO]]   128/200 ( 64.0%)  agents:[ 5/ 5]  done= 56% [##############___________]  reward=   -45  eps=  4%  KL=+0.060  H=0.14  acts[N:0% L:2% F:62% R:2% S:35%]  (2080s)
+[PPO-DEBUG] N=1714  adv=[-5.000,+5.000] std=0.973  ret=[-8.1,+4.7] mean=-3.3  mask_legal_avg=3.01  old_lp=[-2.176±1.942]
+[PPO-DEBUG] mb#1 grad_norm=6.88426  loss=+0.3901  p_loss=+0.0934  v_loss=+0.6016  ent=0.2073
+[PPO-DEBUG] DONE  n_mb=21  KL=+0.012803  ratio=1.04758  head_max_dparam=0.009360  clip_frac=0.551
+[Train[MAPPO]]   129/200 ( 64.5%)  agents:[ 3/ 5]  done= 56% [##############___________]  reward=   -46  eps=  4%  KL=+0.013  H=0.24  acts[N:0% L:1% F:14% R:0% S:85%]  (2100s)
+[PPO-DEBUG] N=2478  adv=[-5.000,+3.164] std=0.925  ret=[-8.1,+1.2] mean=-3.9  mask_legal_avg=3.02  old_lp=[-2.933±3.496]
+[PPO-DEBUG] mb#1 grad_norm=12.08699  loss=+0.3136  p_loss=-0.0337  v_loss=+0.6997  ent=0.1271
+[PPO-DEBUG] DONE  n_mb=20  KL=-0.017586  ratio=1.10707  head_max_dparam=0.008240  clip_frac=0.376
+[Train[MAPPO]]   130/200 ( 65.0%)  agents:[ 0/ 5]  done= 54% [#############____________]  reward=   -49  eps=  4%  KL=-0.018  H=0.17  acts[N:0% L:0% F:24% R:0% S:76%]  (2124s)
+[PPO-DEBUG] N=578  adv=[-3.620,+3.809] std=1.001  ret=[-2.4,+4.6] mean=-0.3  mask_legal_avg=3.07  old_lp=[-0.734±1.629]
+[PPO-DEBUG] mb#1 grad_norm=20.37462  loss=+0.7121  p_loss=-0.0140  v_loss=+1.4630  ent=0.2746
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.028278  ratio=1.21976  head_max_dparam=0.002334  clip_frac=0.165
+[Train[MAPPO]]   131/200 ( 65.5%)  agents:[ 5/ 5]  done= 55% [##############___________]  reward=   -47  eps=  4%  KL=+0.028  H=0.22  acts[N:0% L:2% F:59% R:0% S:39%]  (2129s)
+[PPO-DEBUG] N=1328  adv=[-5.000,+4.119] std=0.998  ret=[-8.3,+5.1] mean=-4.3  mask_legal_avg=3.02  old_lp=[-1.485±1.529]
+[PPO-DEBUG] mb#1 grad_norm=5.66933  loss=+0.4789  p_loss=+0.0913  v_loss=+0.7909  ent=0.3944
+[PPO-DEBUG] DONE  n_mb=21  KL=+0.093813  ratio=0.94205  head_max_dparam=0.007378  clip_frac=0.618
+[Train[MAPPO]]   132/200 ( 66.0%)  agents:[ 3/ 5]  done= 56% [##############___________]  reward=   -46  eps=  4%  KL=+0.094  H=0.36  acts[N:0% L:0% F:15% R:1% S:84%]  (2147s)
+[PPO-DEBUG] N=1996  adv=[-5.000,+5.000] std=0.955  ret=[-8.1,+4.9] mean=-4.9  mask_legal_avg=3.01  old_lp=[-2.737±3.903]
+[PPO-DEBUG] mb#1 grad_norm=7.03589  loss=+0.1326  p_loss=-0.0294  v_loss=+0.3399  ent=0.3995
+[PPO-DEBUG] DONE  n_mb=32  KL=-0.027848  ratio=1.04881  head_max_dparam=0.009381  clip_frac=0.482
+[Train[MAPPO]]   133/200 ( 66.5%)  agents:[ 1/ 5]  done= 55% [##############___________]  reward=   -47  eps=  4%  KL=-0.028  H=0.39  acts[N:0% L:0% F:19% R:0% S:81%]  (2178s)
+[PPO-DEBUG] N=1988  adv=[-5.000,+5.000] std=0.966  ret=[-7.8,+4.4] mean=-3.9  mask_legal_avg=3.03  old_lp=[-1.950±3.446]
+[PPO-DEBUG] mb#1 grad_norm=5.62285  loss=+0.2902  p_loss=+0.0715  v_loss=+0.4447  ent=0.1839
+[PPO] KL early-stop at mb#8: approx_kl=0.1500 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=14  KL=+0.077653  ratio=0.99729  head_max_dparam=0.004571  clip_frac=0.263
+[Train[MAPPO]]   134/200 ( 67.0%)  agents:[ 1/ 5]  done= 53% [#############____________]  reward=   -49  eps=  4%  KL=+0.078  H=0.18  acts[N:0% L:0% F:12% R:0% S:88%]  (2196s)
+[PPO-DEBUG] N=1582  adv=[-4.362,+5.000] std=0.986  ret=[-8.3,+5.2] mean=-4.0  mask_legal_avg=3.02  old_lp=[-2.022±2.242]
+[PPO-DEBUG] mb#1 grad_norm=5.90145  loss=+0.5256  p_loss=+0.0428  v_loss=+0.9761  ent=0.2626
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.078336  ratio=1.08742  head_max_dparam=0.002271  clip_frac=0.120
+[Train[MAPPO]]   135/200 ( 67.5%)  agents:[ 2/ 5]  done= 53% [#############____________]  reward=   -50  eps=  4%  KL=+0.078  H=0.25  acts[N:0% L:1% F:20% R:0% S:79%]  (2208s)
+[PPO-DEBUG] N=751  adv=[-3.276,+5.000] std=0.998  ret=[-3.2,+4.7] mean=-0.5  mask_legal_avg=3.03  old_lp=[-0.692±1.618]
+[PPO-DEBUG] mb#1 grad_norm=15.69744  loss=+0.5657  p_loss=-0.0632  v_loss=+1.2628  ent=0.1232
+[PPO] KL early-stop at mb#8: approx_kl=0.1007 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.028537  ratio=1.06511  head_max_dparam=0.006930  clip_frac=0.145
+[Train[MAPPO]]   136/200 ( 68.0%)  agents:[ 5/ 5]  done= 54% [##############___________]  reward=   -47  eps=  4%  KL=+0.029  H=0.13  acts[N:0% L:1% F:62% R:0% S:37%]  (2215s)
+[PPO-DEBUG] N=1359  adv=[-5.000,+3.727] std=0.914  ret=[-8.4,+4.7] mean=-4.1  mask_legal_avg=3.02  old_lp=[-1.215±1.700]
+[PPO-DEBUG] mb#1 grad_norm=4.12922  loss=+0.2600  p_loss=-0.0291  v_loss=+0.5902  ent=0.2973
+[PPO-DEBUG] DONE  n_mb=24  KL=+0.045862  ratio=0.97258  head_max_dparam=0.008840  clip_frac=0.480
+[Train[MAPPO]]   137/200 ( 68.5%)  agents:[ 3/ 5]  done= 53% [#############____________]  reward=   -49  eps=  4%  KL=+0.046  H=0.33  acts[N:0% L:0% F:17% R:0% S:82%]  (2233s)
+[PPO-DEBUG] N=2094  adv=[-5.000,+4.939] std=0.923  ret=[-7.6,+4.2] mean=-4.1  mask_legal_avg=3.00  old_lp=[-2.791±2.959]
+[PPO-DEBUG] mb#1 grad_norm=11.84461  loss=+0.2398  p_loss=-0.0692  v_loss=+0.6309  ent=0.3196
+[PPO] KL early-stop at mb#8: approx_kl=0.1367 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=10  KL=+0.097440  ratio=0.86692  head_max_dparam=0.002596  clip_frac=0.331
+[Train[MAPPO]]   138/200 ( 69.0%)  agents:[ 1/ 5]  done= 53% [#############____________]  reward=   -50  eps=  4%  KL=+0.097  H=0.29  acts[N:0% L:0% F:11% R:0% S:89%]  (2247s)
+[PPO-DEBUG] N=1246  adv=[-5.000,+5.000] std=0.988  ret=[-7.9,+4.9] mean=-3.9  mask_legal_avg=3.04  old_lp=[-1.469±2.105]
+[PPO-DEBUG] mb#1 grad_norm=8.52003  loss=+0.3204  p_loss=+0.0466  v_loss=+0.5562  ent=0.2182
+[PPO-DEBUG] DONE  n_mb=18  KL=+0.054902  ratio=0.97455  head_max_dparam=0.006121  clip_frac=0.327
+[Train[MAPPO]]   139/200 ( 69.5%)  agents:[ 3/ 5]  done= 53% [#############____________]  reward=   -50  eps=  4%  KL=+0.055  H=0.19  acts[N:0% L:0% F:17% R:0% S:83%]  (2262s)
+[PPO-DEBUG] N=706  adv=[-3.154,+4.863] std=1.001  ret=[-3.1,+4.5] mean=-0.9  mask_legal_avg=3.06  old_lp=[-0.841±1.426]
+[PPO-DEBUG] mb#1 grad_norm=30.52874  loss=+0.5043  p_loss=+0.0133  v_loss=+0.9909  ent=0.2222
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.038901  ratio=1.17094  head_max_dparam=0.001709  clip_frac=0.140
+[ObsFnPerf] ep=140 interval=20 sample_every=8 get=1.221ms get_many=6.132ms local_search=2.606ms deadlock_profile=0.186ms base_features=0.000ms debug_overlay=0.000ms deadlock_calls_per_local_search=7.20
+[ObsFnPerfBase] transitions=0.000ms successors=0.000ms priority=0.000ms flags=0.000ms sp_hint=0.000ms
+[ObsFnPerfDetail] get_p50=0.466ms get_p95=4.149ms get_max=4.927ms get_many_p50=5.320ms get_many_p95=10.640ms get_many_max=13.844ms local_search_p50=2.630ms local_search_p95=3.765ms local_search_max=4.247ms
+[ObsFnPerfLocalSearch] nodes_mean=7.20 nodes_p95=8.00 edges_mean=7.03 edges_p95=9.00 seen_agents_mean=0.11 ms_per_node=0.3622 handles_per_get_many=5.00
+[ObsFnPerfGetMany] total_nodes_mean=11.61 total_nodes_p95=21.00 total_edges_mean=11.31 total_edges_p95=20.00
+[Train[MAPPO]]   140/200 ( 70.0%)  agents:[ 5/ 5]  done= 54% [##############___________]  reward=   -48  eps=  4%  KL=+0.039  H=0.23  acts[N:0% L:0% F:40% R:1% S:59%]  (2268s)
+[PPO-DEBUG] N=1598  adv=[-5.000,+4.986] std=0.976  ret=[-8.1,+4.8] mean=-3.7  mask_legal_avg=3.03  old_lp=[-2.097±3.120]
+[PPO-DEBUG] mb#1 grad_norm=6.52065  loss=+0.2175  p_loss=-0.0229  v_loss=+0.4885  ent=0.1926
+[PPO] KL early-stop at mb#16: approx_kl=0.0882 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=17  KL=+0.088636  ratio=0.95462  head_max_dparam=0.005704  clip_frac=0.344
+[Train[MAPPO]]   141/200 ( 70.5%)  agents:[ 2/ 5]  done= 54% [##############___________]  reward=   -48  eps=  4%  KL=+0.089  H=0.20  acts[N:0% L:0% F:22% R:1% S:77%]  (2287s)
+[PPO-DEBUG] N=1567  adv=[-5.000,+5.000] std=0.933  ret=[-6.6,+5.1] mean=-3.3  mask_legal_avg=3.01  old_lp=[-2.486±3.602]
+[PPO-DEBUG] mb#1 grad_norm=20.06846  loss=+0.3683  p_loss=-0.1053  v_loss=+0.9532  ent=0.1522
+[PPO] KL early-stop at mb#8: approx_kl=0.0866 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.092500  ratio=0.88212  head_max_dparam=0.002133  clip_frac=0.116
+[Train[MAPPO]]   142/200 ( 71.0%)  agents:[ 2/ 5]  done= 53% [#############____________]  reward=   -50  eps=  4%  KL=+0.092  H=0.16  acts[N:0% L:0% F:36% R:0% S:64%]  (2296s)
+[PPO-DEBUG] N=1529  adv=[-5.000,+4.250] std=0.940  ret=[-8.3,+5.3] mean=-4.0  mask_legal_avg=3.04  old_lp=[-3.433±4.213]
+[PPO-DEBUG] mb#1 grad_norm=3.31494  loss=+0.3383  p_loss=+0.0239  v_loss=+0.6364  ent=0.1923
+[PPO-DEBUG] DONE  n_mb=24  KL=+0.059372  ratio=0.96576  head_max_dparam=0.018183  clip_frac=0.407
+[Train[MAPPO]]   143/200 ( 71.5%)  agents:[ 3/ 5]  done= 54% [#############____________]  reward=   -49  eps=  4%  KL=+0.059  H=0.20  acts[N:0% L:0% F:29% R:0% S:70%]  (2318s)
+[PPO-DEBUG] N=1689  adv=[-5.000,+5.000] std=0.985  ret=[-8.2,+5.1] mean=-4.0  mask_legal_avg=3.01  old_lp=[-1.988±2.710]
+[PPO-DEBUG] mb#1 grad_norm=7.40847  loss=+0.2928  p_loss=-0.0525  v_loss=+0.6977  ent=0.1755
+[PPO] KL early-stop at mb#8: approx_kl=0.1583 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=10  KL=+0.057019  ratio=1.16537  head_max_dparam=0.003972  clip_frac=0.145
+[Train[MAPPO]]   144/200 ( 72.0%)  agents:[ 2/ 5]  done= 54% [#############____________]  reward=   -49  eps=  4%  KL=+0.057  H=0.17  acts[N:0% L:0% F:20% R:0% S:80%]  (2330s)
+[PPO-DEBUG] N=2042  adv=[-5.000,+5.000] std=0.979  ret=[-8.4,+4.6] mean=-4.2  mask_legal_avg=3.06  old_lp=[-1.654±2.472]
+[PPO-DEBUG] mb#1 grad_norm=5.90696  loss=+0.3713  p_loss=+0.0062  v_loss=+0.7372  ent=0.1762
+[PPO-DEBUG] DONE  n_mb=11  KL=+0.009633  ratio=1.09097  head_max_dparam=0.006789  clip_frac=0.179
+[Train[MAPPO]]   145/200 ( 72.5%)  agents:[ 1/ 5]  done= 54% [##############___________]  reward=   -49  eps=  4%  KL=+0.010  H=0.16  acts[N:0% L:0% F:21% R:2% S:77%]  (2345s)
+[PPO-DEBUG] N=545  adv=[-3.175,+5.000] std=0.997  ret=[-2.9,+4.7] mean=-0.0  mask_legal_avg=3.07  old_lp=[-0.509±1.922]
+[PPO-DEBUG] mb#1 grad_norm=26.81468  loss=+0.6022  p_loss=-0.0595  v_loss=+1.3305  ent=0.1759
+[PPO] KL early-stop at mb#8: approx_kl=0.3147 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.077129  ratio=1.12160  head_max_dparam=0.005229  clip_frac=0.105
+[Train[MAPPO]]   146/200 ( 73.0%)  agents:[ 5/ 5]  done= 56% [##############___________]  reward=   -46  eps=  4%  KL=+0.077  H=0.12  acts[N:0% L:0% F:55% R:2% S:43%]  (2351s)
+[PPO-DEBUG] N=2463  adv=[-5.000,+5.000] std=0.974  ret=[-8.4,+1.2] mean=-4.9  mask_legal_avg=3.01  old_lp=[-3.347±3.740]
+[PPO-DEBUG] mb#1 grad_norm=10.92376  loss=+0.2009  p_loss=-0.0314  v_loss=+0.4710  ent=0.1553
+[PPO-DEBUG] DONE  n_mb=7  KL=+0.015308  ratio=1.21701  head_max_dparam=0.002884  clip_frac=0.158
+[Train[MAPPO]]   147/200 ( 73.5%)  agents:[ 0/ 5]  done= 54% [##############___________]  reward=   -49  eps=  4%  KL=+0.015  H=0.16  acts[N:0% L:0% F:30% R:0% S:70%]  (2367s)
+[PPO-DEBUG] N=1235  adv=[-4.061,+5.000] std=0.997  ret=[-5.8,+4.9] mean=-1.9  mask_legal_avg=3.03  old_lp=[-1.892±2.445]
+[PPO-DEBUG] mb#1 grad_norm=45.71328  loss=+0.5147  p_loss=+0.0016  v_loss=+1.0296  ent=0.0833
+[PPO] KL early-stop at mb#2: approx_kl=0.1531 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=5  KL=+0.121885  ratio=0.81380  head_max_dparam=0.000717  clip_frac=0.000
+[Train[MAPPO]]   148/200 ( 74.0%)  agents:[ 3/ 5]  done= 55% [##############___________]  reward=   -48  eps=  4%  KL=+0.122  H=0.08  acts[N:0% L:0% F:49% R:0% S:50%]  (2376s)
+[PPO-DEBUG] N=2466  adv=[-5.000,+5.000] std=0.972  ret=[-7.6,+1.6] mean=-3.2  mask_legal_avg=3.04  old_lp=[-1.062±2.308]
+[PPO-DEBUG] mb#1 grad_norm=5.51860  loss=+0.1818  p_loss=-0.0697  v_loss=+0.5070  ent=0.0979
+[PPO] KL early-stop at mb#16: approx_kl=0.0953 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=16  KL=+0.019997  ratio=1.04549  head_max_dparam=0.007453  clip_frac=0.187
+[Train[MAPPO]]   149/200 ( 74.5%)  agents:[ 0/ 5]  done= 54% [#############____________]  reward=   -48  eps=  4%  KL=+0.020  H=0.12  acts[N:5% L:1% F:17% R:0% S:77%]  (2398s)
+[PPO-DEBUG] N=1587  adv=[-5.000,+5.000] std=0.999  ret=[-8.2,+5.1] mean=-4.3  mask_legal_avg=3.03  old_lp=[-1.934±3.005]
+[PPO-DEBUG] mb#1 grad_norm=4.77448  loss=+0.0914  p_loss=-0.1533  v_loss=+0.4967  ent=0.1813
+[PPO-DEBUG] DONE  n_mb=20  KL=-0.065619  ratio=1.13133  head_max_dparam=0.016976  clip_frac=0.307
+[Train[MAPPO]]   150/200 ( 75.0%)  agents:[ 2/ 5]  done= 53% [#############____________]  reward=   -50  eps=  4%  KL=-0.066  H=0.14  acts[N:0% L:0% F:18% R:0% S:81%]  (2416s)
+[PPO-DEBUG] N=1299  adv=[-5.000,+5.000] std=0.996  ret=[-6.0,+4.6] mean=-2.3  mask_legal_avg=3.04  old_lp=[-2.161±3.096]
+[PPO-DEBUG] mb#1 grad_norm=18.98521  loss=+0.3452  p_loss=-0.0020  v_loss=+0.6980  ent=0.0908
+[PPO-DEBUG] DONE  n_mb=6  KL=+0.119808  ratio=0.84015  head_max_dparam=0.001981  clip_frac=0.062
+
+========================================================================
+  [DecisionPointObs] BASE FEATURE REPORT  (n=100 episodes, ep=150)
+========================================================================
+   #  Feature                   min    max    mean    std          trend  note
+  --------------------------------------------------------------------
+   0  path_left               0.000  1.000  0.2000 0.4000   ↔ flat/noisy  
+   1  path_forward            0.000  1.000  0.2000 0.4000   ↔ flat/noisy  
+   2  path_right              0.000  1.000  0.2000 0.4000   ↔ flat/noisy  
+   3  delta_left             -1.000  0.000 -0.8000 0.4000   ↔ flat/noisy  
+   4  delta_forward          -1.000  0.000 -0.8000 0.4000   ↔ flat/noisy  
+   5  delta_right            -1.000  0.000 -0.8000 0.4000   ↔ flat/noisy  
+   6  st_3                    0.000  0.000  0.0000 0.0000   ↔ flat/noisy  🟡 ready_to_depart 0% of steps
+   7  priority_rank           0.024  1.000  0.6605 0.3672   ↔ flat/noisy  🟡 no clear progress trend
+   8  is_pre_merge            0.000  1.000  0.4000 0.4899   ↔ flat/noisy  pre-merge 40% of steps
+   9  is_switch               0.000  0.000  0.0000 0.0000   ↔ flat/noisy  at switch 0% of steps
+  10  sp_left                 0.000  1.000  0.2000 0.4000   ↔ flat/noisy  used 20% of steps
+  11  sp_forward              0.000  1.000  0.2000 0.4000   ↔ flat/noisy  used 20% of steps
+  12  sp_right                0.000  1.000  0.2000 0.4000   ↔ flat/noisy  used 20% of steps
+  13  deadlock_risk           0.175  0.250  0.2189 0.0311   ↔ flat/noisy  mean risk=0.219
+  14  deadlock_distance_norm  0.000  1.000  0.4000 0.4899   ↔ flat/noisy  near-deadlock 40% of steps
+  15  steps_to_next_switch_norm  0.500  1.000  0.7750 0.2291   ↔ flat/noisy  mean prox=0.775
+  16  sp_improves_norm        0.000  0.000  0.0000 0.0000   ↔ flat/noisy  mean gain=0.000
+  17  last_action_left        0.000  0.000  0.0000 0.0000   ↔ flat/noisy  left 0% of steps
+  18  last_action_forward     0.000  0.000  0.0000 0.0000   ↔ flat/noisy  forward 0% of steps
+  19  last_action_right       0.000  0.000  0.0000 0.0000   ↔ flat/noisy  right 0% of steps
+  20  last_action_stop        0.000  1.000  0.4000 0.4899   ↔ flat/noisy  stop 40% of steps
+  21  action_matches_sp       0.500  0.500  0.5000 0.0000   ↔ flat/noisy  follow 0% / yield 100% / off 0%
+  22  spawn_active_density    0.400  0.400  0.4000 0.0000   ↔ flat/noisy  
+  23  spawn_pending_density   0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  24  spawn_is_ready          0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  25  global_conflict_pressure  0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  26  my_priority_global      0.000  1.000  0.2000 0.4000   ↔ flat/noisy  
+  27  my_sp_blocked_score     0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  28  sp_alternatives_avg_score  0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  29  expected_yield_count    0.000  1.000  0.2000 0.4000   ↔ flat/noisy  
+  30  vertex_conflict_left    0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  31  edge_conflict_left      0.000  1.000  0.2000 0.4000   ↔ flat/noisy  
+  32  lane_density_left       0.000  0.333  0.0667 0.1333   ↔ flat/noisy  
+  33  vertex_conflict_forward  0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  34  edge_conflict_forward   0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  35  lane_density_forward    0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  36  vertex_conflict_right   0.000  0.000  0.0000 0.0000   ↔ flat/noisy  
+  37  edge_conflict_right     0.000  1.000  0.2000 0.4000   ↔ flat/noisy  
+  38  lane_density_right      0.000  0.333  0.0667 0.1333   ↔ flat/noisy  
+
+  priority_rank half-half: first=0.6605 → second=0.6605  Δ=+0.0000 ↔
+
+  Tree: nodes=3.2±3.9 [0,8]   edges=3.2±4.0 [0,9]
+========================================================================
+[Train[MAPPO]]   151/200 ( 75.5%)  agents:[ 3/ 5]  done= 52% [#############____________]  reward=   -51  eps=  4%  KL=+0.120  H=0.10  acts[N:0% L:1% F:23% R:0% S:76%]  (2426s)
+[PPO-DEBUG] N=549  adv=[-3.175,+4.160] std=1.001  ret=[-2.0,+4.9] mean=-0.1  mask_legal_avg=3.10  old_lp=[-0.297±1.455]
+[PPO-DEBUG] mb#1 grad_norm=15.62884  loss=+0.6922  p_loss=+0.0324  v_loss=+1.3244  ent=0.1180
+[PPO] KL early-stop at mb#8: approx_kl=0.1959 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.080913  ratio=1.00034  head_max_dparam=0.007403  clip_frac=0.109
+[Train[MAPPO]]   152/200 ( 76.0%)  agents:[ 5/ 5]  done= 52% [#############____________]  reward=   -51  eps=  4%  KL=+0.081  H=0.19  acts[N:0% L:1% F:49% R:2% S:49%]  (2432s)
+[PPO-DEBUG] N=1180  adv=[-5.000,+5.000] std=0.988  ret=[-2.6,+5.1] mean=-0.3  mask_legal_avg=3.16  old_lp=[-0.375±1.479]
+[PPO-DEBUG] mb#1 grad_norm=4.86540  loss=+0.4170  p_loss=-0.0003  v_loss=+0.8395  ent=0.1225
+[PPO] KL early-stop at mb#8: approx_kl=0.0773 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.037759  ratio=1.09270  head_max_dparam=0.004820  clip_frac=0.031
+[Train[MAPPO]]   153/200 ( 76.5%)  agents:[ 3/ 5]  done= 53% [#############____________]  reward=   -49  eps=  4%  KL=+0.038  H=0.12  acts[N:0% L:1% F:56% R:1% S:42%]  (2443s)
+[PPO-DEBUG] N=1687  adv=[-5.000,+5.000] std=0.970  ret=[-8.2,+4.6] mean=-3.2  mask_legal_avg=3.05  old_lp=[-1.487±2.026]
+[PPO-DEBUG] mb#1 grad_norm=5.49524  loss=+0.5653  p_loss=-0.0443  v_loss=+1.2270  ent=0.1949
+[PPO-DEBUG] DONE  n_mb=24  KL=-0.048964  ratio=1.08941  head_max_dparam=0.018959  clip_frac=0.392
+[Train[MAPPO]]   154/200 ( 77.0%)  agents:[ 2/ 5]  done= 54% [#############____________]  reward=   -48  eps=  4%  KL=-0.049  H=0.20  acts[N:0% L:1% F:23% R:0% S:76%]  (2467s)
+[PPO-DEBUG] N=1636  adv=[-5.000,+4.443] std=0.934  ret=[-7.6,+5.0] mean=-4.0  mask_legal_avg=3.02  old_lp=[-2.460±4.066]
+[PPO-DEBUG] mb#1 grad_norm=9.10079  loss=+0.5426  p_loss=+0.1269  v_loss=+0.8355  ent=0.0991
+[PPO-DEBUG] DONE  n_mb=18  KL=+0.049984  ratio=1.00333  head_max_dparam=0.006325  clip_frac=0.210
+[Train[MAPPO]]   155/200 ( 77.5%)  agents:[ 2/ 5]  done= 54% [#############____________]  reward=   -48  eps=  4%  KL=+0.050  H=0.11  acts[N:0% L:0% F:29% R:0% S:71%]  (2485s)
+[PPO-DEBUG] N=764  adv=[-3.661,+3.449] std=1.001  ret=[-2.8,+4.4] mean=+0.1  mask_legal_avg=3.07  old_lp=[-0.785±1.710]
+[PPO-DEBUG] mb#1 grad_norm=9.87969  loss=+0.6514  p_loss=+0.0455  v_loss=+1.2202  ent=0.2113
+[PPO] KL early-stop at mb#8: approx_kl=0.0984 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=9  KL=+0.029489  ratio=1.00810  head_max_dparam=0.005635  clip_frac=0.186
+[Train[MAPPO]]   156/200 ( 78.0%)  agents:[ 5/ 5]  done= 55% [##############___________]  reward=   -47  eps=  4%  KL=+0.029  H=0.21  acts[N:0% L:1% F:62% R:1% S:35%]  (2493s)
+[PPO-DEBUG] N=445  adv=[-3.544,+3.657] std=1.001  ret=[-1.1,+5.2] mean=+0.8  mask_legal_avg=3.09  old_lp=[-0.647±1.749]
+[PPO-DEBUG] mb#1 grad_norm=15.43385  loss=+0.5921  p_loss=-0.0678  v_loss=+1.3304  ent=0.2657
+[PPO-DEBUG] DONE  n_mb=6  KL=-0.000958  ratio=1.12516  head_max_dparam=0.003170  clip_frac=0.122
+[Train[MAPPO]]   157/200 ( 78.5%)  agents:[ 5/ 5]  done= 56% [##############___________]  reward=   -45  eps=  4%  KL=-0.001  H=0.27  acts[N:0% L:1% F:66% R:2% S:31%]  (2499s)
+[PPO-DEBUG] N=1892  adv=[-5.000,+4.486] std=0.982  ret=[-7.8,+5.2] mean=-4.5  mask_legal_avg=3.01  old_lp=[-1.429±1.988]
+[PPO-DEBUG] mb#1 grad_norm=16.98919  loss=+0.3475  p_loss=-0.0101  v_loss=+0.7263  ent=0.2772
+[PPO-DEBUG] DONE  n_mb=12  KL=+0.012206  ratio=1.03985  head_max_dparam=0.007021  clip_frac=0.277
+[Train[MAPPO]]   158/200 ( 79.0%)  agents:[ 1/ 5]  done= 54% [##############___________]  reward=   -47  eps=  4%  KL=+0.012  H=0.28  acts[N:0% L:0% F:9% R:0% S:91%]  (2516s)
+[PPO-DEBUG] N=1505  adv=[-5.000,+4.513] std=0.972  ret=[-6.9,+5.2] mean=-2.9  mask_legal_avg=3.03  old_lp=[-3.152±4.224]
+[PPO-DEBUG] mb#1 grad_norm=10.38804  loss=+0.2480  p_loss=-0.0355  v_loss=+0.5739  ent=0.1690
+[PPO-DEBUG] DONE  n_mb=19  KL=+0.028494  ratio=1.00012  head_max_dparam=0.006771  clip_frac=0.420
+[Train[MAPPO]]   159/200 ( 79.5%)  agents:[ 2/ 5]  done= 53% [#############____________]  reward=   -48  eps=  4%  KL=+0.028  H=0.16  acts[N:0% L:0% F:37% R:0% S:62%]  (2534s)
+[PPO-DEBUG] N=935  adv=[-3.263,+4.268] std=1.001  ret=[-3.8,+4.9] mean=-0.4  mask_legal_avg=3.06  old_lp=[-0.883±1.971]
+[PPO-DEBUG] mb#1 grad_norm=9.23978  loss=+0.8064  p_loss=+0.0382  v_loss=+1.5466  ent=0.2530
+[PPO] KL early-stop at mb#8: approx_kl=0.1015 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=8  KL=+0.007370  ratio=1.10053  head_max_dparam=0.002191  clip_frac=0.129
+[ObsFnPerf] ep=160 interval=20 sample_every=8 get=1.823ms get_many=9.521ms local_search=2.147ms deadlock_profile=0.193ms base_features=0.000ms debug_overlay=0.000ms deadlock_calls_per_local_search=7.26
+[ObsFnPerfBase] transitions=0.000ms successors=0.000ms priority=0.000ms flags=0.000ms sp_hint=0.000ms
+[ObsFnPerfDetail] get_p50=1.555ms get_p95=4.079ms get_max=6.604ms get_many_p50=9.252ms get_many_p95=14.113ms get_many_max=162.689ms local_search_p50=2.203ms local_search_p95=3.375ms local_search_max=5.351ms
+[ObsFnPerfLocalSearch] nodes_mean=7.26 nodes_p95=8.00 edges_mean=6.69 edges_p95=8.00 seen_agents_mean=0.50 ms_per_node=0.2958 handles_per_get_many=5.00
+[ObsFnPerfGetMany] total_nodes_mean=19.01 total_nodes_p95=32.00 total_edges_mean=17.58 total_edges_p95=31.00
+[Train[MAPPO]]   160/200 ( 80.0%)  agents:[ 5/ 5]  done= 54% [##############___________]  reward=   -47  eps=  4%  KL=+0.007  H=0.24  acts[N:0% L:1% F:42% R:1% S:55%]  (2543s)
+[PPO-DEBUG] N=1166  adv=[-5.000,+5.000] std=0.989  ret=[-2.8,+5.1] mean=-0.3  mask_legal_avg=3.05  old_lp=[-0.665±1.848]
+[PPO-DEBUG] mb#1 grad_norm=8.20132  loss=+0.2624  p_loss=+0.0212  v_loss=+0.4886  ent=0.1549
+[PPO-DEBUG] DONE  n_mb=14  KL=+0.001731  ratio=1.05242  head_max_dparam=0.006284  clip_frac=0.200
+[Train[MAPPO]]   161/200 ( 80.5%)  agents:[ 4/ 5]  done= 56% [##############___________]  reward=   -45  eps=  4%  KL=+0.002  H=0.16  acts[N:14% L:1% F:31% R:1% S:54%]  (2555s)
+[PPO-DEBUG] N=486  adv=[-3.693,+4.434] std=1.001  ret=[-0.9,+5.0] mean=+0.8  mask_legal_avg=3.05  old_lp=[-0.664±1.555]
+[PPO-DEBUG] mb#1 grad_norm=12.51015  loss=+0.3682  p_loss=+0.0140  v_loss=+0.7209  ent=0.3109
+[PPO] KL early-stop at mb#8: approx_kl=0.0803 > 0.075 (skip update)
+[PPO-DEBUG] DONE  n_mb=8  KL=-0.021054  ratio=1.05939  head_max_dparam=0.005258  clip_frac=0.267
+[Train[MAPPO]]   162/200 ( 81.0%)  agents:[ 5/ 5]  done= 56% [##############___________]  reward=   -44  eps=  4%  KL=-0.021  H=0.31  acts[N:0% L:0% F:51% R:2% S:47%]  (2561s)
+[PPO-DEBUG] N=1530  adv=[-5.000,+4.907] std=0.989  ret=[-4.8,+5.1] mean=-1.6  mask_legal_avg=3.14  old_lp=[-2.693±3.782]
+[PPO-DEBUG] mb#1 grad_norm=12.92744  loss=+0.2944  p_loss=+0.0172  v_loss=+0.5598  ent=0.1342
+[PPO-DEBUG] DONE  n_mb=22  KL=+0.055663  ratio=0.97206  head_max_dparam=0.013260  clip_frac=0.366
+[Train[MAPPO]]   163/200 ( 81.5%)  agents:[ 2/ 5]  done= 57% [##############___________]  reward=   -43  eps=  4%  KL=+0.056  H=0.16  acts[N:0% L:2% F:43% R:0% S:55%]  (2583s)
