@@ -37,6 +37,8 @@ from marl_attention_temporal_observation.spawn_aware_observation import SpawnAwa
 from marl_attention_temporal_observation.conflict_aware_observation import ConflictAwareObservation
 from marl_attention_temporal_observation.decision_point_utils import DecisionPointUtils
 
+from rendering.flatland.flatland_simple_renderer import FlatlandSimpleRenderer  # noqa: E402
+
 
 # =============================================================================
 # OBSERVATION REGISTRY
@@ -113,7 +115,7 @@ def _print_observation_info() -> None:
 
 
 from flatland_rail_env_persister import RailEnvironmentPersistable
-from reward_shaper import SimpleRewardShaper
+from reward_shaper import SimpleRewardShaper, DLAImitationReward, OutcomeBasedReward
 from mappo_policy import MAPPOPolicy
 from tb_logger import TBLogger
 
@@ -146,21 +148,37 @@ def _mappo_checkpoint_path() -> str:
     """MAPPO checkpoint path is observation-specific to avoid dim mismatches."""
     return os.path.join(_THIS_DIR, f"mappo_checkpoint_{_get_selected_observation_key()}.pt")
 
-REWARD_DONE_BONUS = 50.0          # was 5.0 — make goal-arrival much more attractive
-REWARD_ALL_DONE_BONUS = 100.0     # was 10.0
-REWARD_DEADLOCK_PENALTY = 0.05    # was 0.1 — slightly less punishing
-REWARD_STEP_PENALTY = 0.01        # was 0.0 — STOP forever now costs something
-REWARD_FINAL_NOT_SOLVED = 1.0     # was 0.1 — incentive to actually solve
+# ── Existing reward components ─────────────────────────────────────────
+REWARD_DONE_BONUS = 100.0
+REWARD_ALL_DONE_BONUS = 200.0
+REWARD_DEADLOCK_PENALTY = 0.05    # mild
+REWARD_STEP_PENALTY = 0.05
+REWARD_FINAL_NOT_SOLVED = 1.0     # last 5 steps if not done
+
+# ── NEW: targeted shaping to break STOP-mode-collapse ──────────────────
+# Insight: previously, step_penalty applied uniformly → agents preferred
+# STOP because moving carried risk (deadlock_penalty) but standing was
+# only mildly penalised. We now (a) only penalise STOP when forward is
+# legal AND free ("useless STOP"), and (b) reward shortest-path progress
+# to densify the reward signal that was previously sparse (goal-only).
+REWARD_USELESS_STOP_PENALTY = 0.10   # cost of choosing STOP when F is free
+REWARD_PROGRESS_BONUS = 0.05
+
+# ── DAgger-style imitation maintenance ─────────────────────────────────
+# Soft penalty per decision-point step where MAPPO deviates from DLA's
+# recommendation. Combined with HIGHER deadlock penalty, this trains the
+# policy: "Stay close to DLA, only deviate to avoid deadlock or improve."
+REWARD_DLA_DEVIATION_PENALTY = 0.05
 
 MAPPO_HIDDEN = 64
-MAPPO_LR =  3e-5
+MAPPO_LR =  3e-4
 MAPPO_GAMMA = 0.99
 MAPPO_GAE_LAMBDA = 0.95
-MAPPO_CLIP_EPS = 0.10    
-MAPPO_ENTROPY = 0.005 
+MAPPO_CLIP_EPS = 0.05   
+MAPPO_ENTROPY = 0.02
 MAPPO_VALUE_COEF = 0.5
-MAPPO_GRAD_CLIP = 0.5
-MAPPO_PPO_EPOCHS = 1
+MAPPO_GRAD_CLIP = 5.0
+MAPPO_PPO_EPOCHS = 4
 MAPPO_BATCH_SIZE = 256
  
 EPS_START = 0.05  # Lower exploration when warmstarted from BC (was 0.30)
@@ -384,19 +402,57 @@ def build_environment(
 # =============================================================================
 # Solver setup.
 # =============================================================================
-def setup_solver(env: Environment, policy: Policy) -> FlatlandSolver:
-    solver = FlatlandSolver(env, policy)
+def setup_solver(env: Environment, policy: Policy, do_render: bool = False) -> FlatlandSolver:
+    solver = FlatlandSolver(env, 
+                            policy,
+                            FlatlandSimpleRenderer(env) if do_render else None
+        )
+ 
 
     if hasattr(solver, "set_max_steps"):
         solver.set_max_steps(MAX_EPISODE_STEPS)
 
-    shaper = SimpleRewardShaper(
-        step_penalty=REWARD_STEP_PENALTY,
-        done_bonus=REWARD_DONE_BONUS,
-                all_done_bonus=REWARD_ALL_DONE_BONUS,
-        deadlock_penalty=REWARD_DEADLOCK_PENALTY,
-        final_not_solved_penalty=REWARD_FINAL_NOT_SOLVED,
-    )
+    reward_kind = os.environ.get("REWARD_KIND", "outcome_based").lower()
+
+    if reward_kind == "outcome_based":
+        shaper = OutcomeBasedReward(
+            step_penalty=1.0,         # -1 per step (time pressure)
+            deadlock_penalty=5.0,     # -5 per step in deadlock
+            done_bonus=50.0,          # +50 flat on arrival
+            time_saved_factor=1.0,    # +1 per step saved
+            all_done_bonus=100.0,     # +100 per agent if all done (team!)
+            fail_penalty=200.0,       # -200 per agent not done
+            match_bonus=0.5,          # tiny DLA hint at decision points
+            reward_scale=0.01,        # PPO stability
+        )
+        print("[reward] Using OutcomeBasedReward "
+              "(step=-1, deadlock=-5, done=+50+saved, all_done=+100, fail=-200, scale=0.01)")
+    elif reward_kind == "dla_imitation":
+        shaper = DLAImitationReward(
+            match_bonus=1.0,
+            deviation_penalty=-1.0,
+            all_done_bonus=10.0,
+            fail_extra_offset=10.0,
+            reward_scale=0.05,
+        )
+        print("[reward] Using DLAImitationReward "
+              "(match=+1, deviate=-1, all_done=+10, fail=-(max+10), scale=0.05)")
+    else:
+        shaper = SimpleRewardShaper(
+            step_penalty=REWARD_STEP_PENALTY,
+            done_bonus=REWARD_DONE_BONUS,
+            all_done_bonus=REWARD_ALL_DONE_BONUS,
+            deadlock_penalty=REWARD_DEADLOCK_PENALTY,
+            final_not_solved_penalty=REWARD_FINAL_NOT_SOLVED,
+            useless_stop_penalty=REWARD_USELESS_STOP_PENALTY,
+            progress_bonus=REWARD_PROGRESS_BONUS,
+            dla_deviation_penalty=REWARD_DLA_DEVIATION_PENALTY,
+            dla_decay_steps=200,
+            done_decay_steps=0,
+            stop_yields_to_dla_forward=True,
+        )
+        print("[reward] Using SimpleRewardShaper (legacy)")
+
     solver.set_reward_shaper(shaper)
     return solver
 
@@ -427,9 +483,10 @@ def run_eval(
     seed_offset: int = 10000,
     verbose: bool = True,
     tb_logger: Optional["TBLogger"] = None,
+    do_render: bool = False
 ) -> Dict[str, float]:
     env = build_environment()
-    solver = setup_solver(env, policy)
+    solver = setup_solver(env, policy, do_render)
 
     done_rates: List[float] = []
     deadlock_rates: List[float] = []
@@ -442,7 +499,21 @@ def run_eval(
 
     bar = _make_progress_bar(total=n_episodes, desc=f"Eval[{policy.get_name()}]")
 
+    # Schedule a feature-report at the LAST eval episode.
+    # The observation builder consumes _force_feature_report at episode end.
+    # We arm it at episode N-1 so it fires when the very last episode flushes.
+    try:
+        from marl_attention_temporal_observation.decision_point_observation import (
+            DecisionPointObservation,
+        )
+        _force_obs_class = DecisionPointObservation
+    except Exception:
+        _force_obs_class = None
+
     for ep in range(n_episodes):
+        # Arm force-flag for the LAST episode.
+        if _force_obs_class is not None and ep == n_episodes - 1:
+            _force_obs_class._force_feature_report = True
         ep_seed = seed_offset + ep
         np.random.seed(ep_seed)
         random.seed(ep_seed)
@@ -469,6 +540,16 @@ def run_eval(
                 episode_len=float(np.mean(steps_list)),
                 total_reward=float(np.mean(rewards)),
             )
+            # DLA-deviation stats → TensorBoard
+            _shaper = getattr(solver, '_reward_shaper', None) or getattr(solver, 'reward_shaper', None)
+            if _shaper is not None:
+                _calls = getattr(_shaper, '_diag_dla_calls', 0)
+                if _calls > 0:
+                    _dev = _shaper._diag_dla_deviate
+                    _rate = _dev / max(1, _calls)
+                    tb_logger.log_scalar("shaper/dla_dev_rate", _rate, ep)
+                    tb_logger.log_scalar("shaper/dla_deviate_count", _dev, ep)
+                    tb_logger.log_scalar("shaper/dla_calls", _calls, ep)
 
         # Bar visualization based on running done-rate
         BAR_LEN = 25
@@ -482,6 +563,16 @@ def run_eval(
         # This-episode agent count
         ep_done_n = int(round(float(tot_terminate) * N_AGENTS))
 
+        # DLA-deviation stats from the reward shaper (DAgger)
+        shaper = getattr(solver, '_reward_shaper', None) or getattr(solver, 'reward_shaper', None)
+        dla_str = ""
+        if shaper is not None:
+            calls = getattr(shaper, '_diag_dla_calls', 0)
+            if calls > 0:
+                deviate = shaper._diag_dla_deviate
+                dev_rate = deviate / max(1, calls)
+                dla_str = f"  DLA[dev:{deviate:>3d}/{calls:>3d} ({dev_rate:>3.0%})]"
+
         bar.set_postfix_str(
             f"agents:[{ep_done_n:>2d}/{N_AGENTS:>2d}]  "
             f"done={current_done:>4.0%} "
@@ -489,6 +580,7 @@ def run_eval(
             f"deadlock={current_dlk:>4.0%}  "
             f"steps={current_len:>4.0f}  "
             f"reward={current_rew:>+8.1f}"
+            f"{dla_str}"
         )
 
         bar.update(1)
@@ -736,6 +828,28 @@ def run_train(n_episodes: int = 2000):
             ppo_stats=policy.last_train_stats,
         )
 
+        # DLA-deviation stats → TensorBoard
+        _shaper = getattr(solver, '_reward_shaper', None) or getattr(solver, 'reward_shaper', None)
+        if _shaper is not None:
+            _calls = getattr(_shaper, '_diag_dla_calls', 0)
+            if _calls > 0:
+                _dev = _shaper._diag_dla_deviate
+                _rate = _dev / max(1, _calls)
+                _cost = -_dev * _shaper.dla_deviation_penalty
+                train_logger.log_scalar("shaper/dla_dev_rate", _rate, ep)
+                train_logger.log_scalar("shaper/dla_deviate_count", _dev, ep)
+                train_logger.log_scalar("shaper/dla_calls", _calls, ep)
+                train_logger.log_scalar("shaper/dla_penalty_cost", _cost, ep)
+
+        # Action distribution → TensorBoard
+        _ad = getattr(policy, 'last_action_dist', None)
+        if _ad is not None:
+            train_logger.log_scalar("actions/do_nothing",  float(_ad.get(0, 0.0)), ep)
+            train_logger.log_scalar("actions/move_left",   float(_ad.get(1, 0.0)), ep)
+            train_logger.log_scalar("actions/move_forward",float(_ad.get(2, 0.0)), ep)
+            train_logger.log_scalar("actions/move_right",  float(_ad.get(3, 0.0)), ep)
+            train_logger.log_scalar("actions/stop",        float(_ad.get(4, 0.0)), ep)
+
         # Bar visualization based on running done-rate
         BAR_LEN = 25
         b = int(np.round(BAR_LEN * recent_done_now))
@@ -745,6 +859,16 @@ def run_train(n_episodes: int = 2000):
 
         # This-episode agent count
         ep_done_n = int(round(float(tot_terminate) * N_AGENTS))
+
+        # DLA-deviation stats from the reward shaper (DAgger)
+        shaper = getattr(solver, '_reward_shaper', None) or getattr(solver, 'reward_shaper', None)
+        dla_str = ""
+        if shaper is not None:
+            calls = getattr(shaper, '_diag_dla_calls', 0)
+            if calls > 0:
+                deviate = shaper._diag_dla_deviate
+                dev_rate = deviate / max(1, calls)
+                dla_str = f"  DLA[dev:{deviate:>3d}/{calls:>3d} ({dev_rate:>3.0%})]"
 
         # Action distribution: [DO_NOTHING, LEFT, FORWARD, RIGHT, STOP]
         ad = getattr(policy, 'last_action_dist', {0: 0, 1: 0, 2: 0, 3: 0, 4: 0})
@@ -763,10 +887,12 @@ def run_train(n_episodes: int = 2000):
             f"KL={stats.get('kl', 0):>+6.3f}  "
             f"H={stats.get('ent', 0):>4.2f}  "
             f"{act_str}"
+            f"{dla_str}"
         )
 
 
         bar.update(1)
+
 
         if (ep + 1) % 100 == 0:
             print(f"\n[Train] Mid-training eval at episode {ep+1} ...")
@@ -793,7 +919,7 @@ def run_train(n_episodes: int = 2000):
 # =============================================================================
 # Eval-only mode.
 # =============================================================================
-def run_eval_mode(policy_name: str, n_episodes: int = EVAL_EPISODES):
+def run_eval_mode(policy_name: str, n_episodes: int = EVAL_EPISODES, do_render: bool = False):
     print("\n" + "=" * 70)
     print(f"EVAL MODE  ({policy_name}, {n_episodes} episodes)")
     print("=" * 70)
@@ -821,7 +947,7 @@ def run_eval_mode(policy_name: str, n_episodes: int = EVAL_EPISODES):
 
     logger = TBLogger(run_name=f"eval_{policy_name}_{_get_selected_observation_key()}")
     try:
-        return run_eval(policy, n_episodes=n_episodes, tb_logger=logger)
+        return run_eval(policy, n_episodes=n_episodes, tb_logger=logger, do_render=do_render)
     finally:
         logger.close()
 
@@ -839,7 +965,12 @@ def main():
     parser.add_argument("--episodes", type=int, default=None)
     parser.add_argument("--bc-epochs", type=int, default=10)
     parser.add_argument("--seed", type=int, default=SEED)
-
+    parser.add_argument(
+        '--render',
+        action='store_true',
+        dest='render',
+        help='Enable FlatlandSimpleRenderer during evaluation/training runs'
+    )
     # Observation selector — choose which observation builder to use.
     obs_help_lines = ["Observation builder to use:"]
     for key, entry in sorted(OBSERVATION_REGISTRY.items()):
@@ -870,7 +1001,8 @@ def main():
 
     if args.mode == "eval":
         n_ep = args.episodes if args.episodes is not None else EVAL_EPISODES
-        run_eval_mode(args.policy, n_episodes=n_ep)
+        do_render = args.render if args.render is not None else False
+        run_eval_mode(args.policy, n_episodes=n_ep, do_render=do_render)
     elif args.mode == "bc":
         n_demo_ep = args.episodes if args.episodes is not None else 200
         run_bc(n_demo_episodes=n_demo_ep, n_bc_epochs=args.bc_epochs)
@@ -885,13 +1017,36 @@ if __name__ == "__main__":
 
 
 '''
->> DeadLockAvoidancePolicy
-=== Cell-type distribution over full DLA episode ===
+>> Baseline : DeadLockAvoidancePolicy
+
+=========================================================================================================
+Cell-type distribution over full DLA episode
+=========================================================================================================
 Total agent-step samples: 255
   FORWARD_ONLY   :   127 ( 49.8%)
   OUTSIDE        :    44 ( 17.3%)
   SWITCH         :    33 ( 12.9%)
   DONE           :    31 ( 12.2%)
   MERGING        :    20 (  7.8%)
-=== Cell-type distribution at DLA decision points ===
+=========================================================================================================
+Cell-type distribution at DLA decision points
+=========================================================================================================
+
+
+>> Baseline : DeadLockAvoidancePolicy
+
+=========================================================================================================
+DLA ACTION DISTRIBUTION  (50 ep, 19111 samples)
+=========================================================================================================
+CELL_TYPE           DO_NOTHING      MOVE_LEFT      MOVE_FORWARD     MOVE_RIGHT      STOP_MOVING     TOTAL
+---------------------------------------------------------------------------------------------------------
+SWITCH               0 (  0.0%)    300 ( 14.5%)   1480 ( 71.4%)    256 ( 12.3%)     37 (  1.8%)      2073
+MERGING              0 (  0.0%)      0 (  0.0%)    938 ( 40.0%)      0 (  0.0%)   1409 ( 60.0%)      2347
+FORWARD_ONLY         0 (  0.0%)      0 (  0.0%)  11535 ( 81.3%)      0 (  0.0%)   2660 ( 18.7%)     14195
+OUTSIDE              0 (  0.0%)      0 (  0.0%)    257 ( 51.8%)      0 (  0.0%)    239 ( 48.2%)       496
+
+=========================================================================================================
+DECISION POINTS ONLY (SWITCH + MERGING + PRE_M)
+=========================================================================================================
+
 '''

@@ -791,10 +791,36 @@ class MAPPOPolicy(LearningPolicy):
     def _train_ppo(self):
         data = self._build_tensors_from_buffer()
         if data is None:
+            print("[PPO-DEBUG] _build_tensors returned None — NO UPDATE")
             return
 
         N = data["act"].shape[0]
+
+        # ─── DIAGNOSTIC: input signal stats ──────────────────────────
+        with torch.no_grad():
+            adv_min = float(data["adv"].min())
+            adv_max = float(data["adv"].max())
+            adv_std = float(data["adv"].std())
+            ret_min = float(data["ret"].min())
+            ret_max = float(data["ret"].max())
+            ret_mean = float(data["ret"].mean())
+            mask_avg_legal = float(data["mask"].sum(dim=-1).mean())
+            old_lp_mean = float(data["old_lp"].mean())
+            old_lp_std = float(data["old_lp"].std())
+            print(f"[PPO-DEBUG] N={N}  "
+                  f"adv=[{adv_min:+.3f},{adv_max:+.3f}] std={adv_std:.3f}  "
+                  f"ret=[{ret_min:+.1f},{ret_max:+.1f}] mean={ret_mean:+.1f}  "
+                  f"mask_legal_avg={mask_avg_legal:.2f}  "
+                  f"old_lp=[{old_lp_mean:+.3f}±{old_lp_std:.3f}]")
+
+        # ─── Snapshot params BEFORE update (to verify they change) ───
+        with torch.no_grad():
+            param_snapshot = []
+            for p in self.head.parameters():
+                param_snapshot.append(p.detach().clone())
+
         stats = {"v_loss": [], "p_loss": [], "ent": [], "kl": [], "ratio": [], "clip_frac": []}
+        n_minibatches = 0
 
         for _ in range(self.ppo_epochs):
             idx = np.random.permutation(N)
@@ -802,6 +828,7 @@ class MAPPOPolicy(LearningPolicy):
                 mb = idx[start:start + self.batch_size]
                 if len(mb) < 8:
                     continue
+                n_minibatches += 1
 
                 b_base = data["base"][mb]
                 b_pool = data["pool"][mb]
@@ -827,6 +854,23 @@ class MAPPOPolicy(LearningPolicy):
 
                 self.optimizer.zero_grad()
                 loss.backward()
+
+                # ─── DIAGNOSTIC: gradient norms ──────────────────────
+                if n_minibatches == 1:  # only first minibatch per update
+                    total_grad_norm = 0.0
+                    for p in (list(self.base_encoder.parameters())
+                              + list(self.tree_encoder.parameters())
+                              + list(self.fuse.parameters())
+                              + list(self.head.parameters())):
+                        if p.grad is not None:
+                            total_grad_norm += float(p.grad.data.norm(2).item() ** 2)
+                    total_grad_norm = total_grad_norm ** 0.5
+                    print(f"[PPO-DEBUG] mb#1 grad_norm={total_grad_norm:.5f}  "
+                          f"loss={float(loss.item()):+.4f}  "
+                          f"p_loss={float(p_loss.item()):+.4f}  "
+                          f"v_loss={float(v_loss.item()):+.4f}  "
+                          f"ent={float(ent.item()):.4f}")
+
                 torch.nn.utils.clip_grad_norm_(
                     list(self.base_encoder.parameters())
                     + list(self.tree_encoder.parameters())
@@ -847,7 +891,21 @@ class MAPPOPolicy(LearningPolicy):
                 stats["ratio"].append(float(ratio.mean().item()))
                 stats["clip_frac"].append(float(clip_frac))
 
+        # ─── DIAGNOSTIC: did params actually change? ─────────────────
+        with torch.no_grad():
+            max_param_change = 0.0
+            for p_old, p_new in zip(param_snapshot, self.head.parameters()):
+                diff = float((p_new - p_old).abs().max().item())
+                if diff > max_param_change:
+                    max_param_change = diff
+
         self.last_train_stats = {k: float(np.mean(v)) if v else 0.0 for k, v in stats.items()}
+
+        print(f"[PPO-DEBUG] DONE  n_mb={n_minibatches}  "
+              f"KL={self.last_train_stats.get('kl', 0):+.6f}  "
+              f"ratio={self.last_train_stats.get('ratio', 0):.5f}  "
+              f"head_max_dparam={max_param_change:.6f}  "
+              f"clip_frac={self.last_train_stats.get('clip_frac', 0):.3f}")
 
     # -------------------------------------------------------------------------
     # Behavior Cloning warmstart from expert (action) demonstrations.

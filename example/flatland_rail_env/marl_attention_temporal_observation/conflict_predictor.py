@@ -87,45 +87,61 @@ class ConflictPredictor:
             self._predicted_paths[agent.handle] = path
 
             if path:
-                # Track SP distance at agent's starting position for priority calc.
-                start_pos = path[0]
-                start_dir = (
-                    agent.direction
-                    if agent.direction is not None
-                    else agent.initial_direction
-                )
-                if start_dir is not None:
-                    d = float(distance_map[agent.handle, start_pos[0], start_pos[1], int(start_dir)])
-                    self._sp_distance_at_start[agent.handle] = d if np.isfinite(d) else float("inf")
-                else:
-                    self._sp_distance_at_start[agent.handle] = float("inf")
+                # path entries are (row, col, direction).
+                # Use the direction from path[0] — guaranteed legal by
+                # construction (it's the agent's actual heading or initial).
+                start_r, start_c, start_dir = path[0]
+                d = float(distance_map[agent.handle, start_r, start_c, int(start_dir)])
+
+                # Fallback: at PRE_MERGE/MERGING the agent's current direction
+                # may produce inf distance. Try min over all 4 dirs.
+                if not np.isfinite(d):
+                    all_dists = [
+                        float(distance_map[agent.handle, start_r, start_c, int(dd)])
+                        for dd in range(4)
+                    ]
+                    finite = [x for x in all_dists if np.isfinite(x)]
+                    d = min(finite) if finite else float("inf")
+
+                self._sp_distance_at_start[agent.handle] = d
 
                 if agent.state in (TrainState.MOVING, TrainState.STOPPED):
                     self._n_active_agents += 1
 
-                # Fill reservation tables
-                for t, pos in enumerate(path):
-                    self._vertex_res[(pos[0], pos[1], t)].append(agent.handle)
+                # Fill reservation tables.
+                # Path entries are now (r, c, dir) — slice the (r, c) part.
+                for t, entry in enumerate(path):
+                    pos_r, pos_c = entry[0], entry[1]
+                    self._vertex_res[(pos_r, pos_c, t)].append(agent.handle)
                     if t > 0:
-                        prev = path[t - 1]
-                        self._edge_res[(prev[0], prev[1], pos[0], pos[1], t)].append(agent.handle)
+                        prev_r, prev_c = path[t - 1][0], path[t - 1][1]
+                        self._edge_res[
+                            (prev_r, prev_c, pos_r, pos_c, t)
+                        ].append(agent.handle)
 
         # Global conflict counter
         self._n_predicted_conflicts = sum(
             1 for users in self._vertex_res.values() if len(users) > 1
         )
 
+
         self._last_update_step = current_step
 
-    def _project_path(self, agent, distance_map) -> List[Tuple[int, int]]:
+    def _project_path(self, agent, distance_map) -> List[Tuple[int, int, int]]:
         """Project agent's K-step trajectory along shortest path.
-        
+
+        Returns:
+            List of (row, col, direction) tuples. Direction is the heading
+            WITH WHICH the agent ENTERS that cell (i.e., direction[t] is the
+            direction taken at step t-1 to reach pos[t]).
+            For path[0] (start), direction is the agent's current/initial heading.
+
         Strategy:
-          1. WAITING / DONE / no-direction → empty path (agent does not move).
-          2. READY_TO_DEPART → use initial_position/direction.
-          3. MOVING / STOPPED → use current position/direction.
-          4. At each step, pick the direction that minimizes distance_map.
-          5. Stop early if no valid transition or out-of-bounds.
+        1. WAITING / DONE / no-direction → empty path (agent does not move).
+        2. READY_TO_DEPART → use initial_position/direction.
+        3. MOVING / STOPPED → use current position/direction.
+        4. At each step, pick the direction that minimizes distance_map.
+        5. Stop early if no valid transition or out-of-bounds.
         """
         # Filter inactive agents
         if agent.state in (TrainState.DONE,):
@@ -146,7 +162,11 @@ class ConflictPredictor:
         if pos is None or direction is None:
             return []
 
-        path: List[Tuple[int, int]] = [(int(pos[0]), int(pos[1]))]
+        # Path entries are (row, col, direction-arriving-here).
+        # path[0] uses the agent's current heading.
+        path: List[Tuple[int, int, int]] = [
+            (int(pos[0]), int(pos[1]), int(direction))
+        ]
         cur_pos = (int(pos[0]), int(pos[1]))
         cur_dir = int(direction)
 
@@ -175,11 +195,13 @@ class ConflictPredictor:
                 break
 
             next_pos = get_new_position(cur_pos, best_dir)
-            path.append((int(next_pos[0]), int(next_pos[1])))
+            # NEW: store direction with which we entered this cell
+            path.append((int(next_pos[0]), int(next_pos[1]), int(best_dir)))
             cur_pos = (int(next_pos[0]), int(next_pos[1]))
             cur_dir = int(best_dir)
 
         return path
+
 
     # ─────────────────────────────────────────────────────────────────────
     # Local conflict queries
@@ -258,28 +280,20 @@ class ConflictPredictor:
         return float(np.clip(self._n_predicted_conflicts / max(1, max_possible), 0.0, 1.0))
 
     def my_priority_global(self, my_handle: int) -> float:
-        """Rank by remaining shortest-path distance.
-        
-        Returns:
-            1.0 → I have the SHORTEST remaining distance (highest priority to move)
-            0.0 → I have the LONGEST remaining distance (yield to others)
-        """
+        """Rank by remaining shortest-path distance."""
         my_d = self._sp_distance_at_start.get(my_handle, float("inf"))
+                
         if not np.isfinite(my_d):
             return 0.0
-
-        # Collect finite distances of all agents
         finite_distances = [
             d for d in self._sp_distance_at_start.values() if np.isfinite(d)
         ]
         if len(finite_distances) <= 1:
-            return 1.0  # only me → highest priority by default
-
-        # Smaller distance → higher priority. Map to [0, 1].
+            return 1.0
         sorted_dists = sorted(finite_distances)
-        rank_idx = sorted_dists.index(my_d)  # 0 = shortest distance
-        # Invert: rank 0 → 1.0, rank N-1 → 0.0
+        rank_idx = sorted_dists.index(my_d)
         return float(1.0 - rank_idx / max(1, len(sorted_dists) - 1))
+
 
     def my_sp_blocked_score(self, my_handle: int) -> float:
         """How much of my predicted path is occupied by other agents' predictions?
@@ -314,7 +328,9 @@ class ConflictPredictor:
         my_path = self._predicted_paths.get(my_handle, [])
         if len(my_path) <= 1:
             return 0.0
-        my_path_set = set(my_path)
+        # Build set over (r, c) only — direction-agnostic for overlap detection.
+        # (Path entries are now (r, c, dir) tuples; we strip dir here.)
+        my_path_set = {(p[0], p[1]) for p in my_path}
 
         my_d = self._sp_distance_at_start.get(my_handle, float("inf"))
         if not np.isfinite(my_d):
@@ -337,7 +353,7 @@ class ConflictPredictor:
                 continue  # not higher priority → my yield doesn't help them strategically
 
             # Check overlap
-            other_path_set = set(path)
+            other_path_set = {(p[0], p[1]) for p in path}
             if my_path_set & other_path_set:
                 n_benefit += 1
 

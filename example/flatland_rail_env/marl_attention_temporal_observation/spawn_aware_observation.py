@@ -52,6 +52,19 @@ class SpawnAwareObservation(DecisionPointObservation):
     BASE_OBS_SIZE = DecisionPointObservation.BASE_OBS_SIZE + SPAWN_FEATURE_DIM
     OBS_SIZE = BASE_OBS_SIZE
 
+    # ─── FEATURE SPECS ─────────────────────────────────────────────────
+    # Extend parent specs (22 dim) with 3 spawn-density features at indices
+    # 22-24. Required by the BASE FEATURE REPORT to correctly map column
+    # indices to feature names in the 25-dim observation vector.
+    BASE_FEATURE_SPECS = list(DecisionPointObservation.BASE_FEATURE_SPECS) + [
+        (22, "spawn_active_density",
+         "[0,1] fraction of agents currently on the rail (not done)"),
+        (23, "spawn_pending_density",
+         "[0,1] fraction of agents WAITING / READY_TO_DEPART"),
+        (24, "spawn_is_ready",
+         "1 if THIS agent is READY_TO_DEPART/WAITING, else 0"),
+    ]
+
     # Indices of the new features (for clarity / debugging)
     IDX_ACTIVE_DENSITY = 22
     IDX_PENDING_DENSITY = 23

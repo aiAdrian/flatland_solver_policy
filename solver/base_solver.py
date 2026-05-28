@@ -147,9 +147,14 @@ class BaseSolver:
         pass
 
     def _notify_observation_builder_episode_end(self, episode: int, training_mode: bool):
-        """Notify obs_builder once per episode so it can emit periodic summaries."""
-        if not training_mode:
-            return
+        """Notify obs_builder once per episode so it can emit periodic summaries.
+        
+        Called for both training and eval, so feature reports are visible
+        also during eval-only runs.
+        """
+        # Note: previously gated on training_mode=True, but feature reports
+        # are equally useful (and cheap) during eval. Removed the gate.
+
 
         raw_env = getattr(self.env, 'raw_env', None)
         if raw_env is None:

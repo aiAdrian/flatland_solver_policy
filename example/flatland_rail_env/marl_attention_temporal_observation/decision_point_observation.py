@@ -1634,8 +1634,23 @@ class DecisionPointObservation(ObservationBuilder):
             if len(type(self)._last_100_tree_stats) > 100:
                 type(self)._last_100_tree_stats.pop(0)
 
-        # --- Ausgabe nur am Ende jeder 50. Episode ---
-        if is_end_of_episode and episode_count is not None and episode_count > 0 and episode_count % 50 == 0:
+        # --- Ausgabe alle 50 Episoden + IMMER am letzten Episode-Ende ---
+        # Note: "last episode" = letzte Episode des aktuellen Runs.
+        # We rely on env attribute or external flag — easiest: also trigger
+        # when the buffer is "full" (100 episodes accumulated) OR via a
+        # forced-flag we expose.
+        is_periodic = (
+            episode_count is not None
+            and episode_count > 0
+            and episode_count % 50 == 0
+        )
+        is_forced = bool(getattr(type(self), "_force_feature_report", False))
+        if is_end_of_episode and (is_periodic or is_forced):
+            # consume the force-flag so it only fires once
+            if is_forced:
+                type(self)._force_feature_report = False
+            feature_names = [name for _, name, _ in type(self).BASE_FEATURE_SPECS]
+            last_feats = type(self)._last_100_features
             feature_names = [name for _, name, _ in type(self).BASE_FEATURE_SPECS]
             last_feats = type(self)._last_100_features
             last_trees = type(self)._last_100_tree_stats
@@ -1902,4 +1917,3 @@ class DecisionPointObservation(ObservationBuilder):
         if best_idx is not None:
             best_hint[best_idx] = 1.0
         return best_hint
-
