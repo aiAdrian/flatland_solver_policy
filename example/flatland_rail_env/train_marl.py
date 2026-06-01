@@ -115,7 +115,12 @@ def _print_observation_info() -> None:
 
 
 from flatland_rail_env_persister import RailEnvironmentPersistable
-from reward_shaper import SimpleRewardShaper, DLAImitationReward, OutcomeBasedReward
+from reward_shaper import (
+    SimpleRewardShaper,
+    DLAImitationReward,
+    OutcomeBasedReward,
+    CounterfactualCTDEReward,
+)
 from mappo_policy import MAPPOPolicy
 from tb_logger import TBLogger
 
@@ -127,7 +132,8 @@ N_AGENTS = 5
 GRID_W = 30
 GRID_H = 40
 N_CITIES = 3
-NUM_ENVS = 18
+NUM_ENVS = 5  # envs per agent-count → total = NUM_ENVS * len(AGENT_CURRICULUM)
+AGENT_CURRICULUM = [1, 2, 3, 4, 5, 7, 10, 15, 20]  # diverse training distribution
 MAX_RAILS_BETWEEN_CITIES = 2
 MAX_RAIL_PAIRS_IN_CITY = 2
 
@@ -138,7 +144,8 @@ EVAL_EPISODES = 20
 SEED = 42
 DEVICE = "cpu"
 
-ENV_CACHE_DIR = os.path.join(_THIS_DIR, "generated_envs", "simple_marl")
+ENV_CACHE_DIR = os.path.join(_THIS_DIR, "generated_envs", "curriculum_mixed")
+DLA_BASELINE_CACHE_PATH = os.path.join(_THIS_DIR, "dla_baseline_cache.pkl")
 def _bc_checkpoint_path() -> str:
     """BC checkpoint path is observation-specific to avoid dim mismatches."""
     return os.path.join(_THIS_DIR, f"bc_checkpoint_{_get_selected_observation_key()}.pt")
@@ -171,11 +178,11 @@ REWARD_PROGRESS_BONUS = 0.05
 REWARD_DLA_DEVIATION_PENALTY = 0.05
 
 MAPPO_HIDDEN = 64
-MAPPO_LR =  3e-4
+MAPPO_LR = 5e-5  # PATCHED: was 3e-4, post-BC finetune
 MAPPO_GAMMA = 0.99
 MAPPO_GAE_LAMBDA = 0.95
 MAPPO_CLIP_EPS = 0.05   
-MAPPO_ENTROPY = 0.02
+MAPPO_ENTROPY = 0.005  # PATCHED: was 0.02, post-BC finetune
 MAPPO_VALUE_COEF = 0.5
 MAPPO_GRAD_CLIP = 5.0
 MAPPO_PPO_EPOCHS = 4
@@ -315,7 +322,8 @@ class DLAWrapper(Policy):
 
     def reset(self, env: Environment):
         self.env = env
-        self.dla = DeadLockAvoidancePolicy(env.raw_env, action_size=5, enable_eps=False)
+        if self.dla is None:
+            self.dla = DeadLockAvoidancePolicy(env.raw_env, action_size=5, enable_eps=False)
         self.dla.reset(env)
 
     def start_step(self, train: bool):
@@ -338,6 +346,91 @@ class DLAWrapper(Policy):
 
     def clone(self):
         return DLAWrapper()
+
+
+# =============================================================================
+# DLABaselineRecorder — DLA wrapper that records per-env baseline data.
+# -----------------------------------------------------------------------------
+# Used by `--mode eval --policy dla` to populate the DLA baseline cache
+# consumed by CounterfactualCTDEReward in MARL training.
+#
+# Per env: records (done_set, steps_per_agent, n_agents) keyed by env fingerprint.
+# =============================================================================
+class DLABaselineRecorder(Policy):
+    """DLA wrapper that records per-agent arrival times for baseline cache."""
+
+    def __init__(self):
+        super().__init__()
+        self.dla = DLAWrapper()
+        self.env: Optional[Environment] = None
+        # Per-env cache: fingerprint → {done_set, steps_per_agent, n_agents}
+        self.cache: Dict[int, Dict[str, Any]] = {}
+        # Per-episode tracking
+        self._current_step: int = 0
+        self._arrival_step: Dict[int, int] = {}
+        self._was_done: Dict[int, bool] = {}
+
+    def get_name(self):
+        # Same as DLA so logs/eval_summary show "DeadLockAvoidancePolicy"
+        return "DeadLockAvoidancePolicy"
+
+    def reset(self, env: Environment):
+        self.env = env
+        self.dla.reset(env)
+        n = len(env.raw_env.agents)
+        self._current_step = 0
+        self._arrival_step = {}
+        self._was_done = {h: False for h in range(n)}
+
+    def start_step(self, train: bool):
+        self._current_step += 1
+        self.dla.start_step(train)
+
+    def end_episode(self, train: bool):
+        # Snapshot final state into cache
+        from reward_shaper import CounterfactualCTDEReward
+        raw = self.env.raw_env
+        fp = CounterfactualCTDEReward.env_fingerprint(raw)
+        max_steps = int(raw._max_episode_steps)
+
+        # Final arrival check
+        for h, agent in enumerate(raw.agents):
+            if agent.state == TrainState.DONE and not self._was_done.get(h, False):
+                self._arrival_step[h] = self._current_step
+                self._was_done[h] = True
+
+        done_set = {h for h in range(len(raw.agents)) if self._was_done.get(h, False)}
+        steps_per_agent = {
+            h: self._arrival_step.get(h, max_steps) for h in range(len(raw.agents))
+        }
+
+        self.cache[fp] = {
+            'done_set': set(done_set),
+            'steps_per_agent': dict(steps_per_agent),
+            'n_agents': len(raw.agents),
+        }
+
+        self.dla.end_episode(train)
+
+    def act(self, handle, state, eps=0.0):
+        # Track arrivals BEFORE acting (state of THIS step)
+        for h, agent in enumerate(self.env.raw_env.agents):
+            if agent.state == TrainState.DONE and not self._was_done.get(h, False):
+                self._arrival_step[h] = self._current_step
+                self._was_done[h] = True
+        return int(self.dla.act(handle, state, eps))
+
+    def step(self, handle, state, action, reward, next_state, done, agent_finished=None):
+        pass
+
+    def save(self, filename):
+        pass
+
+    def load(self, filename):
+        pass
+
+    def clone(self):
+        return DLABaselineRecorder()
 
 
 # =============================================================================
@@ -374,11 +467,15 @@ def build_environment(
     os.makedirs(env_cache_dir, exist_ok=True)
     n_cached = len(os.listdir(env_cache_dir)) if os.path.isdir(env_cache_dir) else 0
 
-    if n_cached < num_envs:
-        print(f"[Env] Generating {num_envs} environments to {env_cache_dir} ...")
+    # Use module-level AGENT_CURRICULUM
+    expected_total = num_envs * len(AGENT_CURRICULUM)
+    if n_cached < expected_total:
+        print(f"[Env] Generating {expected_total} envs ({num_envs} per agent-count) "
+              f"to {env_cache_dir} ...")
+        print(f"[Env] Agent counts: {AGENT_CURRICULUM}")
         env.generate_and_persist_environments(
             generate_nbr_env=num_envs,
-            generate_agents_per_env=[n_agents] * num_envs,
+            generate_agents_per_env=AGENT_CURRICULUM,
             path=env_cache_dir,
             overwrite_existing=False,
         )
@@ -413,13 +510,34 @@ def setup_solver(env: Environment, policy: Policy, do_render: bool = False) -> F
         solver.set_max_steps(MAX_EPISODE_STEPS)
 
     reward_kind = os.environ.get("REWARD_KIND", "outcome_based").lower()
+    shaper = None  # initialized below based on final reward_kind
 
-    if reward_kind == "outcome_based":
+    if reward_kind == "counterfactual_ctde":
+        if not os.path.exists(DLA_BASELINE_CACHE_PATH):
+            print(f"[reward] WARNING: no DLA cache at {DLA_BASELINE_CACHE_PATH}")
+            print(f"[reward] Run: python train_marl.py --mode precompute_dla")
+            print(f"[reward] Falling back to OutcomeBasedReward...")
+            reward_kind = "outcome_based"
+        else:
+            import pickle
+            with open(DLA_BASELINE_CACHE_PATH, 'rb') as f:
+                dla_cache = pickle.load(f)
+            shaper = CounterfactualCTDEReward(
+                all_done_bonus=2.0,
+                step_penalty=0.01,
+                reward_scale=1.0,
+                dla_cache=dla_cache,
+                verbose=False,
+            )
+            print(f"[reward] Using CounterfactualCTDEReward "
+                  f"(CTDE, {len(dla_cache)} DLA cache entries)")
+
+    if reward_kind == "outcome_based" and shaper is None:
         shaper = OutcomeBasedReward(
-            step_penalty=1.0,         # -1 per step (time pressure)
+            step_penalty=1.5,         # PATCHED: was 1.0 → mehr Speed-Pressure
             deadlock_penalty=5.0,     # -5 per step in deadlock
             done_bonus=50.0,          # +50 flat on arrival
-            time_saved_factor=1.0,    # +1 per step saved
+            time_saved_factor=2.0,    # PATCHED: was 1.0 → Bonus für kurze Eps verdoppeln
             all_done_bonus=100.0,     # +100 per agent if all done (team!)
             fail_penalty=200.0,       # -200 per agent not done
             match_bonus=0.5,          # tiny DLA hint at decision points
@@ -437,7 +555,7 @@ def setup_solver(env: Environment, policy: Policy, do_render: bool = False) -> F
         )
         print("[reward] Using DLAImitationReward "
               "(match=+1, deviate=-1, all_done=+10, fail=-(max+10), scale=0.05)")
-    else:
+    elif shaper is None:
         shaper = SimpleRewardShaper(
             step_penalty=REWARD_STEP_PENALTY,
             done_bonus=REWARD_DONE_BONUS,
@@ -483,7 +601,8 @@ def run_eval(
     seed_offset: int = 10000,
     verbose: bool = True,
     tb_logger: Optional["TBLogger"] = None,
-    do_render: bool = False
+    do_render: bool = False,
+    save_baseline_cache: Optional[str] = None,
 ) -> Dict[str, float]:
     env = build_environment()
     solver = setup_solver(env, policy, do_render)
@@ -532,6 +651,7 @@ def run_eval(
         steps_list.append(int(tot_steps))
         deadlock_rates.append(_count_deadlock_rate(env))
 
+        n_agents_ep = len(env.raw_env.agents)
         if tb_logger is not None:
             tb_logger.log_eval_episode(
                 step=ep,
@@ -540,6 +660,8 @@ def run_eval(
                 episode_len=float(np.mean(steps_list)),
                 total_reward=float(np.mean(rewards)),
             )
+            tb_logger.log_scalar("env/n_agents", n_agents_ep, ep)
+            tb_logger.log_scalar("env/done_count", int(round(float(tot_terminate) * n_agents_ep)), ep)
             # DLA-deviation stats → TensorBoard
             _shaper = getattr(solver, '_reward_shaper', None) or getattr(solver, 'reward_shaper', None)
             if _shaper is not None:
@@ -560,8 +682,8 @@ def run_eval(
         b = int(np.round(BAR_LEN * current_done))
         done_bar = '#' * b + '_' * (BAR_LEN - b)
 
-        # This-episode agent count
-        ep_done_n = int(round(float(tot_terminate) * N_AGENTS))
+        # This-episode agent count (real, not hardcoded)
+        ep_done_n = int(round(float(tot_terminate) * n_agents_ep))
 
         # DLA-deviation stats from the reward shaper (DAgger)
         shaper = getattr(solver, '_reward_shaper', None) or getattr(solver, 'reward_shaper', None)
@@ -574,7 +696,7 @@ def run_eval(
                 dla_str = f"  DLA[dev:{deviate:>3d}/{calls:>3d} ({dev_rate:>3.0%})]"
 
         bar.set_postfix_str(
-            f"agents:[{ep_done_n:>2d}/{N_AGENTS:>2d}]  "
+            f"agents:[{ep_done_n:>2d}/{n_agents_ep:>2d}]  "
             f"done={current_done:>4.0%} "
             f"[{done_bar}]  "
             f"deadlock={current_dlk:>4.0%}  "
@@ -609,6 +731,15 @@ def run_eval(
             total_reward=mean_rew,
             n_episodes=len(done_rates),
         )
+
+    # Save baseline cache if requested (DLA-eval used as MARL counterfactual baseline)
+    if save_baseline_cache is not None and isinstance(policy, DLABaselineRecorder):
+        import pickle
+        os.makedirs(os.path.dirname(save_baseline_cache) or ".", exist_ok=True)
+        with open(save_baseline_cache, 'wb') as f:
+            pickle.dump(policy.cache, f)
+        print(f"[Eval] Saved DLA baseline cache: {save_baseline_cache} "
+              f"({len(policy.cache)} unique envs)")
 
     return {
         "done_rate": mean_done,
@@ -820,6 +951,7 @@ def run_train(n_episodes: int = 2000):
         recent_done_now = float(np.mean(done_history[-50:]))
         recent_rew_now = float(np.mean(reward_history[-50:]))
 
+        n_agents_ep = len(env.raw_env.agents)
         train_logger.log_train_episode(
             episode=ep,
             done_50=recent_done_now,
@@ -827,6 +959,8 @@ def run_train(n_episodes: int = 2000):
             eps=eps,
             ppo_stats=policy.last_train_stats,
         )
+        train_logger.log_scalar("env/n_agents", n_agents_ep, ep)
+        train_logger.log_scalar("env/done_count", int(round(float(tot_terminate) * n_agents_ep)), ep)
 
         # DLA-deviation stats → TensorBoard
         _shaper = getattr(solver, '_reward_shaper', None) or getattr(solver, 'reward_shaper', None)
@@ -857,8 +991,8 @@ def run_train(n_episodes: int = 2000):
 
         stats = policy.last_train_stats
 
-        # This-episode agent count
-        ep_done_n = int(round(float(tot_terminate) * N_AGENTS))
+        # This-episode agent count (real, not hardcoded)
+        ep_done_n = int(round(float(tot_terminate) * n_agents_ep))
 
         # DLA-deviation stats from the reward shaper (DAgger)
         shaper = getattr(solver, '_reward_shaper', None) or getattr(solver, 'reward_shaper', None)
@@ -879,7 +1013,7 @@ def run_train(n_episodes: int = 2000):
                    f"S:{ad.get(4,0):.0%}]")
 
         bar.set_postfix_str(
-            f"agents:[{ep_done_n:>2d}/{N_AGENTS:>2d}]  "
+            f"agents:[{ep_done_n:>2d}/{n_agents_ep:>2d}]  "
             f"done={recent_done_now:>4.0%} "
             f"[{done_bar}]  "
             f"reward={recent_rew_now:>+6.0f}  "
@@ -927,7 +1061,9 @@ def run_eval_mode(policy_name: str, n_episodes: int = EVAL_EPISODES, do_render: 
     if policy_name == "random":
         policy = RandomPolicy()
     elif policy_name == "dla":
-        policy = DLAWrapper()
+        # Use Recorder variant: tracks per-env (done_set, steps_per_agent)
+        # and auto-saves to DLA_BASELINE_CACHE_PATH for use by CFReward.
+        policy = DLABaselineRecorder()
     elif policy_name == "mappo":
         policy = MAPPOPolicy(
             base_dim=_get_observation_base_dim(),
@@ -946,8 +1082,22 @@ def run_eval_mode(policy_name: str, n_episodes: int = EVAL_EPISODES, do_render: 
         raise ValueError(f"Unknown policy: {policy_name}")
 
     logger = TBLogger(run_name=f"eval_{policy_name}_{_get_selected_observation_key()}")
+    # Save cache ONLY when explicitly enabled (e.g. by precompute_dla mode).
+    # Prevents accidental overwrites during regular eval runs.
+    save_cache = None
+    if policy_name == "dla" and os.environ.get("SAVE_DLA_CACHE") == "1":
+        save_cache = DLA_BASELINE_CACHE_PATH
+        print(f"[Eval] DLA + SAVE_DLA_CACHE=1 → will save cache to {save_cache}")
+    elif policy_name == "dla":
+        print(f"[Eval] DLA mode (read-only — set SAVE_DLA_CACHE=1 to write cache)")
     try:
-        return run_eval(policy, n_episodes=n_episodes, tb_logger=logger, do_render=do_render)
+        return run_eval(
+            policy,
+            n_episodes=n_episodes,
+            tb_logger=logger,
+            do_render=do_render,
+            save_baseline_cache=save_cache,
+        )
     finally:
         logger.close()
 
@@ -960,7 +1110,7 @@ def main():
         description="Flatland MARL — simple training/eval",
         formatter_class=argparse.RawTextHelpFormatter,
     )
-    parser.add_argument("--mode", choices=["eval", "bc", "train"], required=True)
+    parser.add_argument("--mode", choices=["eval", "bc", "train", "precompute_dla"], required=True)
     parser.add_argument("--policy", choices=["random", "dla", "mappo"], default="mappo")
     parser.add_argument("--episodes", type=int, default=None)
     parser.add_argument("--bc-epochs", type=int, default=10)
@@ -1006,6 +1156,29 @@ def main():
     elif args.mode == "bc":
         n_demo_ep = args.episodes if args.episodes is not None else 200
         run_bc(n_demo_episodes=n_demo_ep, n_bc_epochs=args.bc_epochs)
+    elif args.mode == "precompute_dla":
+        # Run DLA over EVERY cached env. Build env FIRST (triggers generation
+        # if needed), THEN count what's actually on disk. --episodes is ignored.
+        from glob import glob
+
+        # Trigger generation if cache is empty
+        _tmp_env = build_environment()
+        del _tmp_env
+
+        n_cached = len(glob(os.path.join(ENV_CACHE_DIR, "*.pkl")))
+        if n_cached == 0:
+            print(f"[precompute_dla] ERROR: no envs in {ENV_CACHE_DIR}")
+            sys.exit(1)
+
+        if args.episodes is not None:
+            print(f"[precompute_dla] Note: --episodes {args.episodes} IGNORED. "
+                  f"Running DLA over all {n_cached} cached envs.")
+        print(f"[precompute_dla] Running DLA over {n_cached} cached envs ...")
+        os.environ["SAVE_DLA_CACHE"] = "1"
+        try:
+            run_eval_mode("dla", n_episodes=n_cached)
+        finally:
+            os.environ.pop("SAVE_DLA_CACHE", None)
     elif args.mode == "train":
         n_ep = args.episodes if args.episodes is not None else 2000
         run_train(n_episodes=n_ep)

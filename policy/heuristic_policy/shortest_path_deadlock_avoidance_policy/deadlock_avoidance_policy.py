@@ -1,4 +1,5 @@
 from functools import lru_cache
+import traceback
 from typing import Union
 
 import matplotlib.pyplot as plt
@@ -125,6 +126,7 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
         self.agent_positions = None
 
     def get_name(self):
+        # callstack print
         return self.__class__.__name__
 
     def step(self, handle, state, action, reward, next_state, done):
@@ -146,6 +148,14 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
 
     def reset(self, env: Environment):
         self.env = env.get_raw_env()
+        if self.shortest_distance_walker is not None:
+            self.shortest_distance_walker.reset(self.env)
+        self.shortest_distance_walker = None
+        self.agent_positions = None
+        self.shortest_distance_walker = None
+
+    def reset_rail_env(self, env: RailEnv):
+        self.env = env
         if self.shortest_distance_walker is not None:
             self.shortest_distance_walker.reset(self.env)
         self.shortest_distance_walker = None

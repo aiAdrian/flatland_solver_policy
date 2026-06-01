@@ -13,7 +13,7 @@
 #   - DLAImitationReward:   pure DLA-imitation reward (decision-points only)
 # =============================================================================
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 import numpy as np
 from flatland.core.grid.grid4_utils import get_new_position
@@ -694,3 +694,394 @@ class OutcomeBasedReward:
             + d["all_done_bonus_total"] - d["fail_pen_total"]
         )
         return d
+
+# =============================================================================
+# CounterfactualCTDEReward — counterfactual reward gegen DLA-Baseline (CTDE)
+# -----------------------------------------------------------------------------
+# Per-agent reward AT EPISODE END:
+#   r(i) = (done_i ? +1 : -1)                          # ±1 base
+#        + done_i * (DLA_steps_i - MARL_steps_i)/DLA_steps_i  # time bonus
+#        - (done_DLA_count - done_MARL_count)          # global counterfactual
+#        + all_done_MARL * all_done_bonus              # team bonus
+#
+# Per-step reward: 0 (or tiny step_penalty for dense signal)
+#
+# Requires DLA-baseline cache (precomputed via precompute_dla_baseline()).
+# =============================================================================
+
+class CounterfactualCTDEReward:
+    """Counterfactual reward — encourages MARL to BEAT DLA.
+
+    Args:
+        all_done_bonus:   Bonus when ALL MARL agents reach goal. default +2.0
+        step_penalty:     Tiny per-step penalty (dense signal). default 0.0
+        reward_scale:     Uniform scaler for PPO stability. default 1.0
+        dla_cache:        Pre-computed dict {fingerprint → {done_set, steps_per_agent}}
+        verbose:          Log per-episode stats. default False
+    """
+
+    def __init__(
+        self,
+        all_done_bonus: float = 2.0,
+        step_penalty: float = 0.0,
+        reward_scale: float = 1.0,
+        dla_cache: Optional[Dict] = None,
+        verbose: bool = False,
+    ):
+        self.all_done_bonus = float(all_done_bonus)
+        self.step_penalty = float(step_penalty)
+        self.reward_scale = float(reward_scale)
+        self.verbose = verbose
+        
+        # DLA cache: fingerprint → {'done_set': set, 'steps_per_agent': dict}
+        self._dla_cache: Dict = dla_cache if dla_cache is not None else {}
+        self._dla: Optional[DeadLockAvoidancePolicy] = None  # for live-shadow fallback
+        
+        # Per-episode state (reset every episode)
+        self._terminal_given = False
+        self._last_episode_step = -1
+        self._marl_steps_to_done: Dict[int, int] = {}  # handle → step_when_done
+        self._was_done: Dict[int, bool] = {}            # handle → already-done flag
+        self._cached_dla_data: Optional[Dict] = None    # current episode's DLA-baseline
+        
+        # Aggregate diagnostics
+        self._diag = {
+            "n_marl_better": 0,    # MARL done_count > DLA
+            "n_marl_worse":  0,    # MARL done_count < DLA
+            "n_tied":        0,    # equal done_count
+            "n_all_done":    0,    # all MARL agents reached goal
+            "n_episodes":    0,
+            "n_cache_hits":  0,
+            "n_cache_misses": 0,   # forced live-rollout (slow)
+            "sum_reward":    0.0,
+            "sum_done_marl": 0,
+            "sum_done_dla":  0,
+        }
+
+    # ─────────────────────────────────────────────────────────
+    @staticmethod
+    def env_fingerprint(raw_env) -> str:
+        """Compute deterministic, process-stable hash for env identity.
+
+        Uses SHA1 over a stable string representation. The returned hex
+        digest is the same in every Python process — unlike Python's
+        builtin hash() which is randomized per-process.
+
+        We hash the agent layout (start + target + direction), which is
+        unique per cached env. We do NOT use raw_env.random_seed because
+        it's the constructor seed (typically 42 for ALL cached envs).
+        """
+        import hashlib
+        try:
+            parts = [
+                f"{raw_env.width}x{raw_env.height}",
+                f"n{len(raw_env.agents)}",
+            ]
+            for a in raw_env.agents:
+                parts.append(
+                    f"{int(a.initial_position[0])},{int(a.initial_position[1])}->"
+                    f"{int(a.target[0])},{int(a.target[1])}:"
+                    f"{int(a.initial_direction)}"
+                )
+            key = "|".join(parts)
+            return hashlib.sha1(key.encode("utf-8")).hexdigest()
+        except Exception:
+            return "unknown"
+
+    # ─────────────────────────────────────────────────────────
+    def _reset_episode(self, env: Environment):
+        raw = env.raw_env
+        n = len(raw.agents)
+        
+        self._terminal_given = False
+        self._marl_steps_to_done = {}
+        self._was_done = {i: False for i in range(n)}
+        
+        # Lookup DLA baseline for this env
+        fp = self.env_fingerprint(raw)
+        
+        if fp in self._dla_cache:
+            self._cached_dla_data = self._dla_cache[fp]
+            self._diag["n_cache_hits"] += 1
+        else:
+            self._diag["n_cache_misses"] += 1
+            if self.verbose:
+                print(f"[CFReward] CACHE MISS for fingerprint {fp} — using fallback "
+                      f"(DLA_steps=max_steps for all agents)")
+            # Fallback: assume DLA failed everywhere
+            max_steps = int(raw._max_episode_steps)
+            self._cached_dla_data = {
+                'done_set': set(),
+                'steps_per_agent': {a.handle: max_steps for a in raw.agents},
+            }
+
+    # ─────────────────────────────────────────────────────────
+    def __call__(self, reward, terminal, info, env: Environment, actions=None):
+        """Compute shaped reward dict for this step. Replaces env reward."""
+        raw = env.raw_env
+        cur_step = int(raw._elapsed_steps)
+        max_steps = int(raw._max_episode_steps)
+
+        # Episode reset detection (same logic as other shapers)
+        if (self._last_episode_step < 0 or
+                cur_step <= 1 or
+                cur_step < self._last_episode_step):
+            self._reset_episode(env)
+        self._last_episode_step = cur_step
+
+        # Initialize zero rewards
+        shaped: Dict[int, float] = {h: 0.0 for h in reward.keys()}
+
+        # ─── PER STEP: track when each MARL agent reaches goal ───────
+        for handle in env.get_agent_handles():
+            try:
+                agent = raw.agents[handle]
+            except (IndexError, KeyError):
+                continue
+            
+            # Active agent: small step penalty (optional)
+            if (agent.state > TrainState.WAITING and
+                    agent.state != TrainState.DONE):
+                shaped[handle] -= self.step_penalty
+            
+            # First-time DONE: record step
+            if agent.state == TrainState.DONE and not self._was_done.get(handle, False):
+                self._marl_steps_to_done[handle] = cur_step
+                self._was_done[handle] = True
+
+        # ─── TERMINAL: Counterfactual reward ─────────────────────────
+        all_term = (
+            terminal.get("__all__", False)
+            if isinstance(terminal, dict)
+            else bool(terminal)
+        )
+        is_final_step = (cur_step >= max_steps - 1)
+        episode_ending = (all_term or is_final_step) and not self._terminal_given
+
+        if episode_ending:
+            self._terminal_given = True
+            self._apply_counterfactual_reward(shaped, raw, max_steps)
+
+        # ─── Apply scale ──
+        if self.reward_scale != 1.0:
+            for h in shaped:
+                shaped[h] *= self.reward_scale
+
+        return shaped
+
+    # ─────────────────────────────────────────────────────────
+    def _apply_counterfactual_reward(self, shaped: Dict, raw_env, max_steps: int):
+        """Compute terminal counterfactual reward, mutates `shaped` dict."""
+        n_agents = len(raw_env.agents)
+        
+        # MARL final state
+        marl_done_set = {h for h, was in self._was_done.items() if was}
+        marl_done_count = len(marl_done_set)
+        all_done_marl = (marl_done_count == n_agents)
+        
+        # DLA baseline
+        dla_done_set = self._cached_dla_data['done_set']
+        dla_steps_dict = self._cached_dla_data['steps_per_agent']
+        dla_done_count = len(dla_done_set)
+        
+        # Global done diff (same for all agents — CTDE!)
+        done_diff = dla_done_count - marl_done_count  # positive = MARL worse
+        cf_term = -done_diff
+        
+        # All done bonus (same for all agents)
+        team_bonus = self.all_done_bonus if all_done_marl else 0.0
+        
+        # Per-agent reward
+        for agent in raw_env.agents:
+            handle = int(agent.handle)
+            done_marl = (handle in marl_done_set)
+            
+            # T1: base ±1
+            base = +1.0 if done_marl else -1.0
+            
+            # T2: time bonus (only if MARL done)
+            # T2: time bonus (only if MARL done)
+            time_bonus = 0.0
+            if done_marl:
+                marl_st = self._marl_steps_to_done.get(handle, max_steps)
+                # If DLA failed for this agent → use max_steps (favorable to MARL)
+                dla_st = float(dla_steps_dict.get(handle, max_steps))
+                time_bonus = (dla_st - marl_st) / max(dla_st, 1.0)
+                # Clamp to [-1, +1] for stability
+                time_bonus = max(-1.0, min(1.0, time_bonus))
+            
+            # T3: counterfactual diff (already computed, same for all)
+            # T4: team bonus (already computed, same for all)
+            
+            r = base + time_bonus + cf_term + team_bonus
+            shaped[handle] = shaped.get(handle, 0.0) + r
+        
+        # Aggregate diagnostics
+        self._diag["n_episodes"] += 1
+        self._diag["sum_done_marl"] += marl_done_count
+        self._diag["sum_done_dla"] += dla_done_count
+        if marl_done_count > dla_done_count:
+            self._diag["n_marl_better"] += 1
+        elif marl_done_count < dla_done_count:
+            self._diag["n_marl_worse"] += 1
+        else:
+            self._diag["n_tied"] += 1
+        if all_done_marl:
+            self._diag["n_all_done"] += 1
+        
+        # Track avg reward for diag
+        avg_r = sum(
+            shaped.get(int(a.handle), 0.0) for a in raw_env.agents
+        ) / max(n_agents, 1)
+        self._diag["sum_reward"] += avg_r
+        
+        if self.verbose:
+            print(f"[CFReward] ep={self._diag['n_episodes']}  "
+                  f"MARL_done={marl_done_count}/{n_agents}  "
+                  f"DLA_done={dla_done_count}/{n_agents}  "
+                  f"all_done_MARL={all_done_marl}  "
+                  f"avg_reward={avg_r:+.2f}")
+    
+    # ─────────────────────────────────────────────────────────
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """Return diagnostic stats for logging."""
+        n = max(self._diag["n_episodes"], 1)
+        cache_total = max(self._diag["n_cache_hits"] + self._diag["n_cache_misses"], 1)
+        return {
+            "marl_better_pct":  self._diag["n_marl_better"] / n,
+            "marl_worse_pct":   self._diag["n_marl_worse"] / n,
+            "tied_pct":         self._diag["n_tied"] / n,
+            "all_done_pct":     self._diag["n_all_done"] / n,
+            "avg_done_marl":    self._diag["sum_done_marl"] / n,
+            "avg_done_dla":     self._diag["sum_done_dla"] / n,
+            "avg_reward":       self._diag["sum_reward"] / n,
+            "cache_hit_rate":   self._diag["n_cache_hits"] / cache_total,
+            "n_episodes":       self._diag["n_episodes"],
+        }
+    
+    def reset_diagnostics(self):
+        for k in self._diag:
+            self._diag[k] = 0
+        self._diag["sum_reward"] = 0.0
+
+
+# =============================================================================
+# DLA Baseline Pre-compute (run once before CounterfactualCTDEReward)
+# =============================================================================
+def precompute_dla_baseline(
+    env: Environment,
+    cache_path: str = "dla_baseline_cache.pkl",
+    n_envs: Optional[int] = None,
+    verbose: bool = True,
+) -> Dict[int, Dict]:
+    """Run DLA on every cached env, store (done_set, steps_per_agent) keyed by fingerprint.
+    
+    Args:
+        env:        Loaded Flatland environment (with cached envs).
+        cache_path: Where to save/load the cache.
+        n_envs:     If set, only process first N envs (debug).
+        verbose:    Progress logging.
+    
+    Returns:
+        dict: {fingerprint: {'done_set': set, 'steps_per_agent': {handle: int}}}
+    """
+    import os
+    import pickle
+    import time
+    
+    if os.path.exists(cache_path):
+        if verbose:
+            print(f"[DLA-Baseline] Loading existing cache: {cache_path}")
+        with open(cache_path, 'rb') as f:
+            cache = pickle.load(f)
+        if verbose:
+            print(f"[DLA-Baseline] Loaded {len(cache)} cached entries.")
+        return cache
+    
+    cache: Dict[int, Dict] = {}
+    
+    # Access loaded env-pool
+    loaded_envs = getattr(env, '_loaded_env', None)
+    if loaded_envs is None or len(loaded_envs) == 0:
+        raise RuntimeError("[DLA-Baseline] env._loaded_env is empty. Call build_environment() first.")
+    
+    total = len(loaded_envs) if n_envs is None else min(n_envs, len(loaded_envs))
+    if verbose:
+        print(f"[DLA-Baseline] Pre-computing DLA rollouts for {total} envs...")
+    
+    t0 = time.perf_counter()
+    
+    dla = DeadLockAvoidancePolicy(raw, action_size=5, enable_eps=False)
+    for env_idx in range(total):
+        # Reset env to specific cached env
+        env._loaded_env_itr = env_idx
+        obs, info = env.reset()
+        raw = env.raw_env
+        
+        fp = CounterfactualCTDEReward.env_fingerprint(raw)
+        if fp in cache:
+            continue  # already done (e.g., duplicate seeds)
+        
+        # Initialize DLA for this env
+        dla.reset(env)
+        dla.start_step(False)
+        
+        max_steps = int(raw._max_episode_steps)
+        steps_per_agent: Dict[int, int] = {}
+        done_set = set()
+        
+        # Rollout DLA
+        for step_i in range(max_steps):
+            dla.start_step(False)
+            actions = {}
+            for h in env.get_agent_handles():
+                try:
+                    actions[h] = int(dla.act(h, None, eps=0.0))
+                except Exception:
+                    actions[h] = 0  # safe fallback
+            
+            obs, rewards, dones, info = env.step(actions)
+            
+            # Record newly-done agents
+            for h, ag in enumerate(raw.agents):
+                if ag.state == TrainState.DONE and h not in done_set:
+                    done_set.add(h)
+                    steps_per_agent[h] = step_i + 1
+            
+            if dones.get("__all__", False):
+                break
+        
+        # Fill in steps for not-done agents (use max_steps)
+        for ag in raw.agents:
+            h = int(ag.handle)
+            if h not in steps_per_agent:
+                steps_per_agent[h] = max_steps
+        
+        cache[fp] = {
+            'done_set': set(done_set),
+            'steps_per_agent': dict(steps_per_agent),
+            'n_agents': len(raw.agents),
+        }
+        
+        if verbose and (env_idx + 1) % 25 == 0:
+            elapsed = time.perf_counter() - t0
+            done_pct = len(done_set) / len(raw.agents)
+            print(f"  [{env_idx+1}/{total}]  fp={fp}  agents={len(raw.agents)}  "
+                  f"DLA_done={len(done_set)}/{len(raw.agents)} ({done_pct:.0%})  "
+                  f"({elapsed:.1f}s)")
+    
+    # Save cache
+    os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+    with open(cache_path, 'wb') as f:
+        pickle.dump(cache, f)
+    
+    elapsed = time.perf_counter() - t0
+    if verbose:
+        avg_done = sum(len(d['done_set']) for d in cache.values()) / max(len(cache), 1)
+        print(f"\n[DLA-Baseline] DONE in {elapsed:.1f}s")
+        print(f"  Cache size: {len(cache)} unique envs")
+        print(f"  Avg DLA done: {avg_done:.2f} agents per env")
+        print(f"  Saved: {cache_path}")
+    
+    return cache
+
