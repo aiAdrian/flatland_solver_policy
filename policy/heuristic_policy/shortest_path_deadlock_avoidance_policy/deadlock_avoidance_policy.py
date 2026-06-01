@@ -1,4 +1,5 @@
 from functools import lru_cache
+import traceback
 from typing import Union
 
 import matplotlib.pyplot as plt
@@ -125,6 +126,7 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
         self.agent_positions = None
 
     def get_name(self):
+        # callstack print
         return self.__class__.__name__
 
     def step(self, handle, state, action, reward, next_state, done):
@@ -133,6 +135,7 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
     def act(self, handle, state, eps=0.):
         # Epsilon-greedy action selection
         if self.enable_eps:
+            print("sssss")
             if np.random.random() < eps:
                 return np.random.choice(np.arange(self.action_size))
 
@@ -151,10 +154,18 @@ class DeadLockAvoidancePolicy(HeuristicPolicy):
         self.agent_positions = None
         self.shortest_distance_walker = None
 
+    def reset_rail_env(self, env: RailEnv):
+        self.env = env
+        if self.shortest_distance_walker is not None:
+            self.shortest_distance_walker.reset(self.env)
+        self.shortest_distance_walker = None
+        self.agent_positions = None
+        self.shortest_distance_walker = None
+
     def start_step(self, train):
         self._build_agent_position_map()
         self._shortest_distance_mapper()
-        self._extract_agent_can_move()
+        self._extract_agent_can_move() 
 
     def _build_agent_position_map(self):
         # build map with agent positions (only active agents)

@@ -18,6 +18,7 @@ class FlatlandSimpleRenderer(BaseRenderer):
         render_tool = RenderTool(self.env.get_raw_env(),
                                  agent_render_variant=agent_render_variant,
                                  show_debug=show_debug,
+                                 clear_debug_text=False,
                                  screen_width=int(np.round(self.env.get_raw_env().width * screen_width_scale)),
                                  screen_height=int(np.round(self.env.get_raw_env().height * screen_height_scale)))
         render_tool.reset()

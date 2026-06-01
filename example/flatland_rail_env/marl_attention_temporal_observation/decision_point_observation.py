@@ -1,0 +1,1933 @@
+"""Decision-point observation used by MAPPO.
+
+Idea provenance (high level, approximate):
+- ~80-90% from Flatland competition/benchmark practices: decision-point
+    reduction, shortest-path priors, and deadlock-aware coordination.
+    Sources:
+    * Laurent et al. (2021), Flatland Competition 2020: https://arxiv.org/abs/2103.16511
+    * Mohanty et al. (2020), Flatland-RL benchmark: https://arxiv.org/abs/2012.05893
+- ~10-20% project-specific engineering in this repo:
+    * corridor compression into edge payload features,
+    * explicit PRE_M node type,
+    * deadlock-distance profiling fields used by the MAPPO encoder.
+
+Communication-aware design (Etappe 1 + S1, 2026-05-21):
+    Indices 13-21 of the 22D base obs are intentionally placed in the SAME
+    vector that downstream encoders share between self and neighbours. This
+    follows the TarMAC pattern (Das et al. 2019, https://arxiv.org/abs/1810.11187)
+    of parameter-shared observation encoders, and the DIAL pattern of
+    differentiable inter-agent communication (Foerster et al. 2016,
+    https://arxiv.org/abs/1605.06676): instead of broadcasting bespoke
+    messages, neighbours' deadlock pressure and last actions flow through
+    the same encoder + spatial-attention path as self.
+
+Layout:
+- BASE_OBS_SIZE=22: local agent state (0-12) + deadlock/planning (13-16,
+    migrated from tree) + last-action broadcast (17-20) + sp-match (21).
+- TREE PAYLOAD: Decision-Point Graph with three node types:
+  - INIT (type=0): Agent initialization/spawn
+  - SWITCH (type=1): Route choice (num_transitions > 1)
+  - PRE_M (type=2): Pre-merge decision (forward vs wait)
+  
+  Corridors are compressed into edges. Merges modeled as edge context (merge_conflict flag).
+  Depth counts decision-point transitions, not cell hops.
+  
+  Each node contains deadlock_risk, deadlock_ahead, deadlock_hard_block signals.
+  Each edge contains merge_conflict flag and merge_incoming_degree for merge context.
+  
+- exported via env.dev_tree_dict[handle]
+"""
+
+# pyright: reportMissingImports=false
+
+import os
+import time
+from collections import deque
+from enum import IntEnum
+
+import numpy as np
+from flatland.core.env_observation_builder import ObservationBuilder
+from flatland.core.grid.grid4_utils import get_new_position
+from flatland.envs.fast_methods import fast_argmax, fast_count_nonzero
+from flatland.envs.step_utils.states import TrainState
+
+from marl_attention_temporal_observation.decision_point_utils import DecisionPointUtils
+
+_UNREACHABLE = float("inf") 
+
+
+class NodeType(IntEnum):
+    """Decision-point node types for local-search-tree.
+    
+    Nodes exist ONLY at real decision points:
+    - INIT: Agent spawn/entry (virtual decision)
+    - SWITCH: Multiple route choices (num_transitions > 1, not pre-merge)
+    - PRE_M: Pre-merge decision (agent chooses forward vs wait)
+    
+    MERGE is NOT a node—it's modeled as edge context (no agent decision possible).
+    Corridors are compressed into edges between decision nodes.
+    """
+    INIT = 0      # Initialization / agent spawn
+    SWITCH = 1    # Switch/route choice (num_transitions > 1)
+    PRE_M = 2     # Pre-merge decision (one exit, next node has multiple entries)
+
+
+class DecisionPointObservation(ObservationBuilder):
+    _get_many_call_count = 0
+    _last_100_features = []  # List of np.arrays (n_agents, n_features)
+    _last_100_tree_stats = []  # List of tree_stats pro Episode
+    _last_obs_fn_perf_report = None
+
+    # Export 22 base features (Etappe 1 + S1 — 2026-05-21):
+    # Indices 0-12: original 13D self-status (path/delta/state/priority/cell-flags/sp-hint).
+    # Indices 13-16: deadlock + planning info migrated from tree payload — flows to
+    #                neighbours via shared encoder (TarMAC, Das 2019 arXiv:1810.11187 §3;
+    #                DIAL, Foerster 2016 arXiv:1605.06676 §3.1 — differentiable
+    #                communication via shared parameters).
+    # Indices 17-21: last-action broadcast (4D one-hot + sp-match flag) — so
+    #                neighbours can read each other's behaviour, not just status.
+    #                Same parameter-sharing argument as above (S1 action broadcast).
+    BASE_OBS_SIZE = 22
+    OBS_SIZE = BASE_OBS_SIZE
+    # Legacy alias; active runtime cap is configured via self.local_search_max_nodes.
+    MAX_NODES = 48
+
+    FEATURE_GROUPS_DOC = [
+        ("[0-2]",   "path_left/forward/right",  "1 if relative transition exists"),
+        ("[3-5]",   "delta_left/forward/right", "exp-squashed gap-to-best successor in [-1,1] (0=best, <0=worse)"),
+        ("[6]",     "st_3",                     "TrainState READY_TO_DEPART (MALFUNCTION=0% + not-started=100% removed as dead)"),
+        ("[7]",     "priority_rank",            "normalized rank by remaining distance"),
+        ("[8-9]",   "merge/switch",             "cell semantics (redundant lifecycle flags removed)"),
+        ("[10-12]", "sp_left/sp_forward/sp_right", "shortest-path action hint one-hot"),
+        ("[13-16]", "deadlock+planning",        "deadlock_risk, deadlock_distance_norm, steps_to_next_switch_norm, sp_improves_norm (migrated from tree, now also visible to neighbours)"),
+        ("[17-20]", "last_action_L/F/R/S",      "4D one-hot of agent's previous action (S1 action broadcast, inferred from pos/dir delta)"),
+        ("[21]",    "action_matches_sp",        "tri-state: 1.0=followed SP, 0.5=stopped (defensible), 0.0=off-plan (signals plan-following with yield-tolerance)"),
+        ("payload", "raw_tree_payload",         "exported separately via env.dev_tree_dict[handle]. Tree-encoder weight is dampened (0.1) now that key info is migrated to base."),
+    ]
+
+    # Canonical base-feature specification for indices 0..21 (22D base obs).
+    # Removed [7]st_4 (MALFUNCTION=0% always) and [8]st_6 (not_started=100% always)—dead constants.
+    # Kept [6]st_3 (READY_TO_DEPART) as occasional signal (1% of steps).
+    # Deadlock features moved to tree payload (node and edge features).
+    # Keep this list in sync with get() and runtime summary names.
+    BASE_FEATURE_SPECS = [
+        (0,  "path_left",            "1 if relative left transition exists else 0"),
+        (1,  "path_forward",         "1 if relative forward transition exists else 0"),
+        (2,  "path_right",           "1 if relative right transition exists else 0"),
+        (3,  "delta_left",           "exp-squashed (best_successor_dist - left_dist) in [-1,1], else -1 if no transition"),
+        (4,  "delta_forward",        "exp-squashed (best_successor_dist - forward_dist) in [-1,1], else -1 if no transition"),
+        (5,  "delta_right",          "exp-squashed (best_successor_dist - right_dist) in [-1,1], else -1 if no transition"),
+        (6,  "st_3",                 "TrainState READY_TO_DEPART one-hot"),
+        (7,  "priority_rank",        "normalized distance-rank priority"),
+        (8,  "is_pre_merge",         "1 if one step before merge-conflict point else 0"),
+        (9,  "is_switch",            "1 if current cell has >1 transitions else 0"),
+        (10, "sp_left",              "shortest-path hint one-hot: left"),
+        (11, "sp_forward",           "shortest-path hint one-hot: forward"),
+        (12, "sp_right",             "shortest-path hint one-hot: right"),
+        (13, "deadlock_risk",        "[0,1] aggregate deadlock pressure within local probe (migrated from tree)"),
+        (14, "deadlock_distance_norm", "[0,1] proximity of nearest deadlock (1=immediate, 0=none in horizon)"),
+        (15, "steps_to_next_switch_norm", "[0,1] normalized distance to next decision point (1=immediate, 0=>=8 cells away)"),
+        (16, "sp_improves_norm",     "[0,1] how much best successor improves remaining distance vs current cell"),
+        (17, "last_action_left",     "1 if previous action was LEFT, else 0 (S1 action broadcast)"),
+        (18, "last_action_forward",  "1 if previous action was FORWARD, else 0"),
+        (19, "last_action_right",    "1 if previous action was RIGHT, else 0"),
+        (20, "last_action_stop",     "1 if previous action was STOP (no progress), else 0"),
+        (21, "action_matches_sp",    "tri-state plan conformance: 1.0=followed SP, 0.5=stopped (defensible), 0.0=off-plan/first step"),
+    ]
+
+    def __init__(self,
+                 debug: bool = False,
+                 search_depth: int = 4):
+        super().__init__()
+        if debug:
+            os.environ["DEBUG_OBSERVATION"] = "1"
+        # ── LOCAL SEARCH CONFIGURATION ────────────────────────────────────────
+        #
+        #  Parameter interaction (depth):
+        #
+        #   __init__(search_depth)          local_search_min_search_depth
+        #         │                                     │
+        #         └──── max(search_depth, min_depth) ──┘
+        #                           │
+        #                      depth_limit  ← passed to _local_search()
+        #                           │
+        #     INIT ──edge──► SWITCH ──edge──► PRE_M ──edge──► SWITCH
+        #    depth=0         depth=1         depth=2          depth=3
+        #                                                       ^
+        #                                              depth_limit cap
+        #
+        #  Parameter interaction (node budget):
+        #
+        #   local_search_max_nodes = 24
+        #       │
+        #       └── hard cap: no new node allocated once n_nodes >= max_nodes
+        #           (edges to already-known nodes are still added)
+        #
+        # ── PROFILER CONFIGURATION ─────────────────────────────────────────
+        #
+        #   obs_func_profile_enabled
+        #       │
+        #       ├── True → sample 1 of every sample_every=8 get() calls
+        #       │              └─► measure: get / local_search / deadlock_profile
+        #       │                           base_features / debug_overlay / ...
+        #       │
+        #       └── report printed every profile_interval=20 episodes
+        #              └─► ring buffer keeps last keep_samples=512 timings
+        #
+        # ─────────────────────────────────────────────────────────────────────
+        # Core observation configuration used throughout get()/local search.
+        self.search_depth = max(1, int(search_depth))
+        
+        # Lower default for faster smoke tests.
+        self.local_search_min_search_depth = 2
+
+        self.local_search_max_nodes = max(5, int(os.getenv("FLATLAND_LOCAL_SEARCH_MAX_NODES", "8")))
+        # Debug-only render overlay. Handle 0 exports pseudo-agent cell sets:
+        # 0=all node cells, 1=pre-merge, 2=switch, 3/4=even/odd corridor cells.
+        # env.dev_obs_dict is used to export debug overlays without affecting the main observation payload.
+        self.debug_tree_overlay_enabled = True
+
+        # Lightweight function profiler for observation hot paths.
+        self.obs_func_profile_enabled = True
+        self.obs_func_profile_sample_every = 8
+        self.obs_func_profile_interval = 20
+        self.obs_func_profile_keep_samples = 512
+        self._obs_func_profile_call_idx = 0
+
+        self._obs_profile_active = False
+        self._obs_func_prof = {}
+        for key in (
+            'get',
+            'get_many',
+            'local_search',
+            'deadlock_profile',
+            'base_features',
+            'base_transitions',
+            'base_successors',
+            'base_priority',
+            'base_flags',
+            'base_sp_hint',
+            'debug_overlay',
+            'local_search_nodes',
+            'local_search_edges',
+            'local_search_seen_agents',
+            'get_many_handles',
+            'get_many_total_nodes',
+            'get_many_total_edges',
+        ):
+            self._obs_func_prof[key] = self._obs_prof_new_bucket()
+        self.env = None
+        self.agent_map = None
+        # ── LAST-ACTION TRACKING (Etappe S1, 2026-05-21) ──────────────────
+        # Inferred from agent position/direction delta between consecutive
+        # observations. The resulting one-hot is exported in indices 17-20
+        # of the 22D base obs and reaches neighbours through the shared
+        # observation encoder downstream (TarMAC parameter-sharing, Das et
+        # al. 2019 arXiv:1810.11187 §3; DIAL differentiable comm, Foerster
+        # et al. 2016 arXiv:1605.06676 §3.1). Decision-point context for
+        # this signal: Laurent et al. 2021 (arXiv:2103.16511) — switch and
+        # merge cells are where action-broadcast carries the most weight.
+        # Keys: handle -> (pos_tuple, direction).  Cleared on reset.
+        self._prev_pos_dir = {}
+        # Previous shortest-path hint one-hot (sp_left, sp_fwd, sp_right) per
+        # handle. Used to compute the `action_matches_sp` feature.
+        self._prev_sp_hint = {}
+        self._print_feature_layout_doc()
+
+    def _obs_prof_new_bucket(self):
+        return {
+            'sum': 0.0,
+            'count': 0,
+            'samples': deque(maxlen=self.obs_func_profile_keep_samples),
+        }
+
+    @staticmethod
+    def _obs_prof_bucket_stats(bucket):
+        count = int(bucket.get('count', 0))
+        if count <= 0:
+            return {
+                'mean': 0.0,
+                'p50': 0.0,
+                'p95': 0.0,
+                'max': 0.0,
+                'count': 0,
+            }
+        samples = np.array(bucket.get('samples', []), dtype=np.float64)
+        if samples.size <= 0:
+            mean = float(bucket.get('sum', 0.0)) / float(max(1, count))
+            return {
+                'mean': mean,
+                'p50': mean,
+                'p95': mean,
+                'max': mean,
+                'count': count,
+            }
+        return {
+            'mean': float(bucket.get('sum', 0.0)) / float(max(1, count)),
+            'p50': float(np.percentile(samples, 50.0)),
+            'p95': float(np.percentile(samples, 95.0)),
+            'max': float(np.max(samples)),
+            'count': count,
+        }
+
+    def _obs_prof_add(self, key: str, dt: float):
+        if not self.obs_func_profile_enabled:
+            return
+        bucket = self._obs_func_prof.get(key)
+        if bucket is None:
+            return
+        value = float(dt)
+        bucket['sum'] += value
+        bucket['count'] += 1
+        bucket['samples'].append(value)
+ 
+    def set_env(self, env): 
+        super().set_env(env)
+        self.env = env
+
+    def reset(self):
+        self.agent_map = np.zeros((self.env.height, self.env.width), dtype=np.int32) - 1
+        # Clear last-action tracking on each episode reset so we do not leak
+        # state across episodes.
+        self._prev_pos_dir = {}
+        self._prev_sp_hint = {}
+
+    @staticmethod
+    def _dir_to_rel_bin(current_dir: int, next_dir: int) -> int:
+        """Map absolute next direction to relative bin: left=0, forward=1, right=2, other=3."""
+        if current_dir is None or next_dir is None:
+            return 3
+        delta = (int(next_dir) - int(current_dir)) % 4
+        if delta == 3:
+            return 0
+        if delta == 0:
+            return 1
+        if delta == 1:
+            return 2
+        return 3
+
+    @classmethod
+    def _rel_dir_one_hot(cls, current_dir: int, next_dir: int) -> tuple:
+        rel_bin = cls._dir_to_rel_bin(current_dir, next_dir)
+        return (
+            1.0 if rel_bin == 0 else 0.0,
+            1.0 if rel_bin == 1 else 0.0,
+            1.0 if rel_bin == 2 else 0.0,
+        )
+
+    @staticmethod
+    def _relative_dir_order(current_dir: int) -> tuple:
+        if current_dir is None:
+            return 0, 1, 2, 3
+        current_dir = int(current_dir)
+        return (
+            (current_dir - 1) % 4,  # left
+            current_dir,            # forward
+            (current_dir + 1) % 4,  # right
+            (current_dir + 2) % 4,  # backward / other
+        )
+
+    @classmethod
+    def _sort_branch_candidates_relative(cls, candidates: list, current_dir: int) -> list:
+        order_index = {d: i for i, d in enumerate(cls._relative_dir_order(current_dir))}
+        return sorted(
+            candidates,
+            key=lambda c: (order_index.get(int(c[0]), 99), float(c[2]) if len(c) > 2 else 0.0),
+        )
+
+    def _safe_distance(self, handle, position, direction, distance_map, default=np.inf):
+        if distance_map is None:
+            return default
+        if position is None or direction is None:
+            return default
+        return float(distance_map[handle, position[0], position[1], direction])
+
+    @staticmethod
+    def _distance_to_unit(distance: float, max_dist: float) -> float:
+        if not np.isfinite(distance):
+            return 1.0
+        denom = max(1.0, float(max_dist))
+        return float(np.clip(float(distance) / denom, 0.0, 1.0))
+
+    @staticmethod
+    def _progress_delta_to_unit(root_dist: float, dst_dist: float, max_dist: float) -> float:
+        if not np.isfinite(root_dist) and np.isfinite(dst_dist):
+            return 1.0
+        if not np.isfinite(root_dist) or not np.isfinite(dst_dist):
+            return 0.0
+        denom = max(1.0, float(max_dist))
+        return float(np.clip((float(root_dist) - float(dst_dist)) / denom, -1.0, 1.0))
+
+    @staticmethod
+    def _exp_squash_signed(value: float, scale: float = 8.0) -> float:
+        """Map unbounded signed values smoothly to (-1, 1) while preserving magnitude order."""
+        if not np.isfinite(value):
+            return 0.0
+        s = max(1e-6, float(scale))
+        x = float(value)
+        if x == 0.0:
+            return 0.0
+        return float(np.sign(x) * (1.0 - np.exp(-abs(x) / s)))
+
+    @staticmethod
+    def _pos_tuple(pos):
+        if pos is None:
+            return None
+        return (int(pos[0]), int(pos[1]))
+
+    def _rail_get_transitions(self, pos, direction):
+        """Compatibility wrapper for Flatland transition APIs.
+
+        Standard signature: get_transitions(row, col, direction) → tuple(4-8)
+        """
+        p = self._pos_tuple(pos)
+        d = int(direction)
+        return self.env.rail.get_transitions(p[0], p[1], d)
+
+    def _agent_at_pos(self, pos) -> int:
+        if self.agent_map is None:
+            return -1
+        p = self._pos_tuple(pos)
+        return int(self.agent_map[p[0], p[1]])
+
+    def _local_node_type(self, pos, direction, is_root=False):
+        transitions = self._rail_get_transitions(pos, direction)
+        n_trans = fast_count_nonzero(transitions)
+        if is_root:
+            return 0  # START
+        if n_trans > 1:
+            return 1  # SWITCH
+        if n_trans != 1:
+            return None
+
+        ndir = int(fast_argmax(transitions))
+        next_pos = get_new_position(pos, ndir)
+        if next_pos[0] < 0 or next_pos[0] >= self.env.height or next_pos[1] < 0 or next_pos[1] >= self.env.width:
+            return None
+
+        next_trans = self._rail_get_transitions(next_pos, ndir)
+        if fast_count_nonzero(next_trans) != 1:
+            return None
+
+        for d_other in range(4):
+            if d_other == ndir:
+                continue
+            if fast_count_nonzero(self._rail_get_transitions(next_pos, d_other)) > 1:
+                return 2  # PRE_MERGE
+        return None
+
+    def _build_local_node_payload(self, handle, ntype, npos, ndir, depth_value, max_depth):
+        transitions_local = self._rail_get_transitions(npos, ndir)
+        num_transitions_local = int(fast_count_nonzero(transitions_local))
+        incoming_degree_local = int(self._incoming_degree(npos))
+
+        incoming_agent_count = 0
+        has_oncoming = False
+        occ_handle = self._agent_at_pos(npos)
+        if occ_handle != -1 and occ_handle != handle:
+            incoming_agent_count = 1
+            other_dir = self.env.agents[occ_handle].direction
+            if other_dir is not None and DecisionPointUtils.is_opposite_direction(ndir, other_dir):
+                has_oncoming = True
+
+        deadlock_profile = self._calculate_deadlock_profile(
+            handle=handle,
+            pos=npos,
+            direction=ndir,
+            max_depth=min(12, max(4, int(max_depth))),
+        )
+
+        node_type_value = int(ntype)
+        is_start = bool(node_type_value == 0)
+        is_switch = bool(node_type_value == 1)
+        is_pre_merge = bool(node_type_value == 2)
+        node_type_name = "start" if is_start else ("switch" if is_switch else "pre_merge")
+
+        return {
+            "type": int(ntype),
+            "node_type_name": node_type_name,
+            "position": (int(npos[0]), int(npos[1])),
+            "cells": [(int(npos[0]), int(npos[1]))],
+            "direction": int(ndir),
+            "is_start": bool(is_start),
+            "is_switch": bool(is_switch),
+            "is_pre_merge": bool(is_pre_merge),
+            "depth": int(depth_value),
+            "num_transitions": int(num_transitions_local),
+            "is_branch": bool(is_switch or num_transitions_local > 1),
+            "has_oncoming": bool(has_oncoming),
+            "incoming_agent_count": int(incoming_agent_count),
+            "has_agents_encountered": bool(incoming_agent_count > 0),
+            "backward_inflow_count": int(max(0, incoming_degree_local - 1)),
+            "deadlock_risk": float(deadlock_profile.get("risk", 0.0)),
+            "deadlock_distance_norm": float(deadlock_profile.get("deadlock_distance_norm", 0.0)),
+            "deadlock_hard_distance_norm": float(deadlock_profile.get("hard_block_distance_norm", 0.0)),
+            "deadlock_exists_within_probe": bool(int(deadlock_profile.get("min_deadlock_depth", -1)) >= 0),
+            "alternative_routes_count": int(max(1 if is_pre_merge else 0, max(0, num_transitions_local - 1))),
+        }
+
+    def _walk_corridor_until_decision(
+        self,
+        handle,
+        src_pos,
+        src_dir,
+        first_dir,
+        agent_target,
+        distance_map,
+    ):
+        # Provenance note:
+        # The "walk corridor until next decision point" pattern is primarily a
+        # decision-point abstraction from Flatland competition practice
+        # (Laurent et al. 2021), adapted here with custom edge statistics.
+        edge_path = []
+        edge_agents = set()
+        same_dir_handles = set()
+        oncoming_handles = set()
+        forward_handles = set()
+        backward_handles = set()
+        edge_len = 0
+        min_dist = float("inf")
+        target_on_edge = False
+        p, d = tuple(src_pos), int(src_dir)
+        step_dir = int(first_dir)
+        max_corridor_steps = max(256, 2 * (self.env.height + self.env.width))
+        visited_states = set()
+
+        while edge_len < max_corridor_steps:
+            state = (tuple(p), int(d), int(step_dir))
+            if state in visited_states:
+                break
+            visited_states.add(state)
+
+            transitions = self._rail_get_transitions(p, d)
+            if not transitions[step_dir]:
+                break
+
+            np_pos = get_new_position(p, step_dir)
+            if np_pos[0] < 0 or np_pos[0] >= self.env.height or np_pos[1] < 0 or np_pos[1] >= self.env.width:
+                break
+
+            edge_path.append((np_pos, step_dir))
+
+            if self.agent_map is not None:
+                aidx = int(self.agent_map[np_pos[0], np_pos[1]])
+                if aidx != -1 and aidx != handle:
+                    edge_agents.add(aidx)
+                    other_agent = self.env.agents[aidx]
+                    if other_agent.direction == step_dir:
+                        same_dir_handles.add(aidx)
+                        forward_handles.add(aidx)
+                    else:
+                        oncoming_handles.add(aidx)
+                        backward_handles.add(aidx)
+
+            if agent_target is not None and tuple(np_pos) == tuple(agent_target):
+                target_on_edge = True
+
+            if distance_map is not None:
+                dist = distance_map[handle, np_pos[0], np_pos[1], step_dir]
+                if np.isfinite(dist):
+                    min_dist = min(min_dist, dist)
+
+            edge_len += 1
+            p, d = np_pos, step_dir
+
+            dst_type = self._local_node_type(p, d)
+            if dst_type is not None:
+                return {
+                    "complete": True,
+                    "dst_pos": tuple(p),
+                    "dst_dir": int(d),
+                    "dst_type": int(dst_type),
+                    "edge_path": edge_path,
+                    "edge_len": int(edge_len),
+                    "edge_agents": sorted(edge_agents),
+                    "same_dir_handles": sorted(same_dir_handles),
+                    "oncoming_handles": sorted(oncoming_handles),
+                    "forward_handles": sorted(forward_handles),
+                    "backward_handles": sorted(backward_handles),
+                    "min_dist_to_target": min_dist if min_dist != float("inf") else None,
+                    "target_on_edge": bool(target_on_edge),
+                }
+
+            transitions_next = self._rail_get_transitions(p, d)
+            next_dirs = [ndir for ndir in range(4) if transitions_next[ndir]]
+            if len(next_dirs) != 1:
+                break
+            step_dir = int(next_dirs[0])
+
+        return {
+            "complete": False,
+            "edge_path": edge_path,
+            "edge_len": int(edge_len),
+            "edge_agents": sorted(edge_agents),
+            "same_dir_handles": sorted(same_dir_handles),
+            "oncoming_handles": sorted(oncoming_handles),
+            "forward_handles": sorted(forward_handles),
+            "backward_handles": sorted(backward_handles),
+            "min_dist_to_target": min_dist if min_dist != float("inf") else None,
+            "target_on_edge": bool(target_on_edge),
+        }
+
+    def _build_corridor_edge_payload(
+        self,
+        handle,
+        src_idx,
+        dst_idx,
+        src_pos,
+        src_dir,
+        src_depth,
+        dst_pos,
+        dst_dir,
+        corridor,
+        distance_map,
+    ):
+        action_feature = None
+        edge_path = corridor.get("edge_path", [])
+        if edge_path:
+            _first_pos, first_dir = edge_path[0]
+            rel_dir = (int(first_dir) - int(src_dir)) % 4
+            if rel_dir == 1:
+                action_feature = 1
+            elif rel_dir == 0:
+                action_feature = 0
+            elif rel_dir == 3:
+                action_feature = -1
+
+        rel_dir_bin = 1
+        action_left = 0.0
+        action_forward = 1.0
+        action_right = 0.0
+        if action_feature == -1:
+            rel_dir_bin = 0
+            action_left, action_forward, action_right = 1.0, 0.0, 0.0
+        elif action_feature == 0:
+            rel_dir_bin = 1
+            action_left, action_forward, action_right = 0.0, 1.0, 0.0
+        elif action_feature == 1:
+            rel_dir_bin = 2
+            action_left, action_forward, action_right = 0.0, 0.0, 1.0
+
+        src_dist_to_target = None
+        dst_dist_to_target = None
+        if distance_map is not None:
+            sdist = distance_map[handle, src_pos[0], src_pos[1], src_dir]
+            if np.isfinite(sdist):
+                src_dist_to_target = float(sdist)
+            ddist = distance_map[handle, dst_pos[0], dst_pos[1], dst_dir]
+            if np.isfinite(ddist):
+                dst_dist_to_target = float(ddist)
+
+        improves_over_current = False
+        if src_dist_to_target is not None and dst_dist_to_target is not None:
+            improves_over_current = bool(dst_dist_to_target < src_dist_to_target)
+
+        src_transitions = self._rail_get_transitions(src_pos, src_dir)
+        src_choices = max(1, int(fast_count_nonzero(src_transitions)))
+        branch_choice_prob = 1.0 / float(src_choices)
+
+        same_dir_handles = corridor.get("same_dir_handles", [])
+        oncoming_handles = corridor.get("oncoming_handles", [])
+        forward_handles = corridor.get("forward_handles", same_dir_handles)
+        backward_handles = corridor.get("backward_handles", oncoming_handles)
+        edge_agents = corridor.get("edge_agents", [])
+        edge_cells = [tuple(cell) for cell, _ in edge_path]
+        if edge_cells and edge_cells[-1] == tuple(dst_pos):
+            edge_cells = edge_cells[:-1]
+
+        return {
+            "src": src_idx,
+            "dst": dst_idx,
+            "len": int(corridor.get("edge_len", 0)),
+            "src_pos": (int(src_pos[0]), int(src_pos[1])),
+            "dst_pos": (int(dst_pos[0]), int(dst_pos[1])),
+            "src_depth": int(src_depth),
+            "agents": list(edge_agents),
+            "has_same_dir_agent": bool(len(same_dir_handles) > 0),
+            "has_other_dir_agent": bool(len(oncoming_handles) > 0),
+            "same_dir_agent_handles": list(same_dir_handles),
+            "oncoming_agent_handles": list(oncoming_handles),
+            "forward_agent_handles": list(forward_handles),
+            "backward_agent_handles": list(backward_handles),
+            "cells": edge_cells,
+            "min_dist_to_target": corridor.get("min_dist_to_target", None),
+            "target_on_edge": bool(corridor.get("target_on_edge", False)),
+            "action": action_feature,
+            "rel_dir_bin": int(rel_dir_bin),
+            "action_left": float(action_left),
+            "action_forward": float(action_forward),
+            "action_right": float(action_right),
+            "has_agents_on_edge": bool(len(edge_agents) > 0),
+            "has_oncoming_edge": bool(len(oncoming_handles) > 0),
+            "agents_on_edge_count": int(len(edge_agents)),
+            "edge_len_cells": int(corridor.get("edge_len", 0)),
+            "src_dist_to_target": src_dist_to_target,
+            "dst_dist_to_target": dst_dist_to_target,
+            "improves_over_current": bool(improves_over_current),
+            "branch_choice_prob": float(branch_choice_prob),
+        }
+
+    def _recursive_expand_local_tree(
+        self,
+        handle,
+        src_idx,
+        depth,
+        max_depth,
+        max_nodes,
+        agent_target,
+        distance_map,
+        state,
+        expansion_guard,
+    ):
+        # Provenance note:
+        # The recursive local expansion over rail transitions is mostly a
+        # benchmark-inspired decision-point graph extraction (~80-90% idea from
+        # Flatland competition/benchmark papers), with custom payload fields and
+        # caps for stable MAPPO runtime in this project.
+        if depth >= max_depth or state["n_nodes"] >= max_nodes:
+            return
+
+        src_state = state["node_pos_dir_map"].get(src_idx)
+        if src_state is None:
+            return
+        src_pos, src_dir = src_state
+
+        guard_key = (int(src_idx), int(depth))
+        if guard_key in expansion_guard:
+            return
+        expansion_guard.add(guard_key)
+
+        transitions = self._rail_get_transitions(src_pos, src_dir)
+        for first_dir in range(4):
+            if not transitions[first_dir]:
+                continue
+
+            corridor = self._walk_corridor_until_decision(
+                handle=handle,
+                src_pos=src_pos,
+                src_dir=src_dir,
+                first_dir=first_dir,
+                agent_target=agent_target,
+                distance_map=distance_map,
+            )
+            if not corridor.get("complete", False):
+                continue
+
+            dst_pos = corridor.get("dst_pos")
+            dst_dir = corridor.get("dst_dir")
+            dst_type = corridor.get("dst_type")
+            if dst_pos is None or dst_dir is None or dst_type is None:
+                continue
+
+            dst_key = (tuple(dst_pos), int(dst_dir))
+            if dst_key not in state["node_map"]:
+                if state["n_nodes"] >= max_nodes:
+                    continue
+                state["nodes"].append(
+                    self._build_local_node_payload(
+                        handle=handle,
+                        ntype=dst_type,
+                        npos=dst_pos,
+                        ndir=dst_dir,
+                        depth_value=depth + 1,
+                        max_depth=max_depth,
+                    )
+                )
+                dst_idx = state["n_nodes"]
+                state["node_map"][dst_key] = dst_idx
+                state["node_pos_dir_map"][dst_idx] = (tuple(dst_pos), int(dst_dir))
+                state["n_nodes"] += 1
+            else:
+                dst_idx = state["node_map"][dst_key]
+
+            edge_payload = self._build_corridor_edge_payload(
+                handle=handle,
+                src_idx=src_idx,
+                dst_idx=dst_idx,
+                src_pos=src_pos,
+                src_dir=src_dir,
+                src_depth=state["nodes"][src_idx].get("depth", depth),
+                dst_pos=dst_pos,
+                dst_dir=dst_dir,
+                corridor=corridor,
+                distance_map=distance_map,
+            )
+            # Enrich edge with deadlock context from src/dst nodes.
+            src_node = state["nodes"][src_idx]
+            dst_node = state["nodes"][dst_idx]
+            dl_src = float(src_node.get("deadlock_distance_norm", 0.0))
+            dl_dst = float(dst_node.get("deadlock_distance_norm", 0.0))
+            edge_payload["dst_deadlock_risk"] = float(dst_node.get("deadlock_risk", 0.0))
+            edge_payload["dst_deadlock_hard_block"] = 1.0 if float(dst_node.get("deadlock_hard_distance_norm", 0.0)) > 0.0 else 0.0
+            edge_payload["dst_deadlock_distance_norm"] = dl_dst
+            edge_payload["dst_deadlock_hard_distance_norm"] = float(dst_node.get("deadlock_hard_distance_norm", 0.0))
+            edge_payload["src_deadlock_distance_norm"] = dl_src
+            edge_payload["deadlock_distance_delta"] = float(np.clip(dl_dst - dl_src, -1.0, 1.0))
+            edge_payload["alternative_routes_count"] = int(src_node.get("alternative_routes_count", 1))
+            root_dist = float(state.get("root_dist_to_target", 0.0))
+            dst_dist_val = edge_payload.get("dst_dist_to_target")
+            if dst_dist_val is not None and root_dist > 0.0:
+                edge_payload["delta_from_root"] = float(np.clip((root_dist - float(dst_dist_val)) / root_dist, 0.0, 1.0))
+            else:
+                edge_payload["delta_from_root"] = 0.0
+            edge_key = (
+                int(edge_payload.get("src", -1)),
+                int(edge_payload.get("dst", -1)),
+                int(edge_payload.get("rel_dir_bin", -1)),
+            )
+            if edge_key not in state["edge_keys"]:
+                state["edge_keys"].add(edge_key)
+                state["edges"].append(edge_payload)
+                state["seen_agents"].update(edge_payload.get("agents", []))
+
+            if dst_idx in state["active_stack"]:
+                continue
+            state["active_stack"].add(dst_idx)
+            self._recursive_expand_local_tree(
+                handle=handle,
+                src_idx=dst_idx,
+                depth=depth + 1,
+                max_depth=max_depth,
+                max_nodes=max_nodes,
+                agent_target=agent_target,
+                distance_map=distance_map,
+                state=state,
+                expansion_guard=expansion_guard,
+            )
+            state["active_stack"].remove(dst_idx)
+
+    def _export_debug_tree_overlay(self, handle, root_pos, tree_payload):
+        prof_active = bool(self.obs_func_profile_enabled and self._obs_profile_active)
+        t0 = time.perf_counter() if prof_active else 0.0
+
+        if handle != 0 or not bool(getattr(self, "debug_tree_overlay_enabled", False)):
+            return
+
+        if len(self.env.agents) < 5:
+            return
+
+        if not hasattr(self.env, "dev_obs_dict") or self.env.dev_obs_dict is None:
+            self.env.dev_obs_dict = {}
+
+        overlay = {
+            0: set(),
+            1: set(),
+            2: set(),
+            3: set(),
+            4: set(),
+        }
+        nodes = tree_payload.get("nodes", [])
+        edges = tree_payload.get("edges", [])
+        edges_by_src = {}
+        for edge in edges:
+            src_idx = int(edge.get("src", -1))
+            if src_idx < 0:
+                continue
+            edges_by_src.setdefault(src_idx, []).append(edge)
+
+        visited_nodes = set()
+        visited_edges = set()
+
+        def _node_cells(node_payload):
+            node_cells = node_payload.get("cells")
+            if node_cells:
+                return [
+                    (int(cell[0]), int(cell[1]))
+                    for cell in node_cells
+                    if cell is not None
+                ]
+            node_pos = node_payload.get("position")
+            if node_pos is None:
+                return []
+            return [(int(node_pos[0]), int(node_pos[1]))]
+
+        def _visit_node(node_idx):
+            if node_idx in visited_nodes or node_idx < 0 or node_idx >= len(nodes):
+                return
+            visited_nodes.add(node_idx)
+
+            node = nodes[node_idx]
+            node_cells = _node_cells(node)
+            overlay[0].update(node_cells)
+            if bool(node.get("is_pre_merge", False)):
+                overlay[1].update(node_cells)
+            if bool(node.get("is_switch", False)):
+                overlay[2].update(node_cells)
+
+            for edge in edges_by_src.get(node_idx, []):
+                edge_id = (
+                    int(edge.get("src", -1)),
+                    int(edge.get("dst", -1)),
+                    int(edge.get("rel_dir_bin", -1)),
+                )
+                if edge_id in visited_edges:
+                    continue
+                visited_edges.add(edge_id)
+
+                edge_depth = int(edge.get("src_depth", node.get("depth", 0)))
+                pseudo_handle = 3 if (edge_depth % 2 == 0) else 4
+                corridor_cells = [
+                    (int(cell[0]), int(cell[1]))
+                    for cell in edge.get("cells", [])
+                    if cell is not None
+                ]
+                overlay[pseudo_handle].update(corridor_cells)
+
+                dst_idx = int(edge.get("dst", -1))
+                if dst_idx >= 0:
+                    _visit_node(dst_idx)
+
+        if nodes:
+            _visit_node(0)
+        elif root_pos is not None:
+            overlay[0].add((int(root_pos[0]), int(root_pos[1])))
+
+        for node in nodes:
+            for cell in _node_cells(node):
+                overlay[3].discard(cell)
+                overlay[4].discard(cell)
+
+        # Keep node markers visually clean: a cell should not appear as both
+        # corridor parity and explicit switch/merge overlay in the same frame.
+        overlay[3].difference_update(overlay[1])
+        overlay[3].difference_update(overlay[2])
+        overlay[4].difference_update(overlay[1])
+        overlay[4].difference_update(overlay[2])
+
+        for pseudo_handle, cells in overlay.items():
+            self.env.dev_obs_dict[pseudo_handle] = set(cells)
+
+        if prof_active:
+            self._obs_prof_add('debug_overlay', time.perf_counter() - t0)
+
+    def _local_search(self, handle, start_pos, start_dir, depth_limit):
+        t_start = time.perf_counter()
+        """Build local decision-point tree recursively from corridor building blocks."""
+        if start_pos is None or start_dir is None or self.env is None or self.env.rail is None:
+            return {"nodes": [], "edges": [], "seen_agents": []}
+
+        agent = self.env.agents[handle]
+        agent_target = agent.target
+        distance_map = self.env.distance_map.get()
+        max_nodes = self.local_search_max_nodes
+        max_depth = int(depth_limit)
+
+        # Early exit für Waiting/Done
+        if agent.state in [TrainState.WAITING, TrainState.DONE]:
+            return {"nodes": [], "edges": [], "seen_agents": []}
+
+
+        # Initiale Position und Richtung bestimmen
+        if agent.position is not None:
+            pos = agent.position
+            direction = agent.direction
+        elif agent.state == TrainState.READY_TO_DEPART:
+            pos = agent.initial_position
+            direction = agent.initial_direction
+        else:
+            return {"nodes": [], "edges": [], "seen_agents": []}
+
+
+        root_dist_raw = float(distance_map[handle, pos[0], pos[1], direction]) if distance_map is not None else np.inf
+        state = {
+            "nodes": [],
+            "edges": [],
+            "edge_keys": set(),
+            "seen_agents": set(),
+            "node_map": {},
+            "node_pos_dir_map": {},
+            "active_stack": {0},
+            "n_nodes": 0,
+            "root_dist_to_target": float(root_dist_raw) if np.isfinite(root_dist_raw) else 0.0,
+        }
+
+        state["nodes"].append(
+            self._build_local_node_payload(
+                handle=handle,
+                ntype=0,
+                npos=pos,
+                ndir=direction,
+                depth_value=0,
+                max_depth=max_depth,
+            )
+        )
+        state["node_map"][(tuple(pos), int(direction))] = 0
+        state["node_pos_dir_map"][0] = (tuple(pos), int(direction))
+        state["n_nodes"] = 1
+
+        self._recursive_expand_local_tree(
+            handle=handle,
+            src_idx=0,
+            depth=0,
+            max_depth=max_depth,
+            max_nodes=max_nodes,
+            agent_target=agent_target,
+            distance_map=distance_map,
+            state=state,
+            expansion_guard=set(),
+        )
+
+        # Post-process: mark is_shortest_path_edge (per src: edge with lowest dst_dist_to_target).
+        edges_by_src: dict = {}
+        for edge in state["edges"]:
+            s = int(edge.get("src", -1))
+            if s >= 0:
+                edges_by_src.setdefault(s, []).append(edge)
+        for src_edges in edges_by_src.values():
+            valid = [(e, e["dst_dist_to_target"]) for e in src_edges if e.get("dst_dist_to_target") is not None]
+            best_edge = min(valid, key=lambda x: x[1])[0] if valid else None
+            for e in src_edges:
+                e["is_shortest_path_edge"] = 1.0 if e is best_edge else 0.0
+
+        if self._obs_profile_active:
+            self._obs_prof_add("local_search", time.perf_counter() - t_start)
+            self._obs_prof_add("local_search_nodes", len(state["nodes"]))
+            self._obs_prof_add("local_search_edges", len(state["edges"]))
+            self._obs_prof_add("local_search_seen_agents", len(state["seen_agents"]))
+        return {
+            "nodes": state["nodes"],
+            "edges": state["edges"],
+            "seen_agents": sorted(state["seen_agents"]),
+        }
+
+    @staticmethod
+    def _depth_to_proximity(depth_value: int, max_depth: int) -> float:
+        if depth_value is None or int(depth_value) < 0:
+            return 0.0
+        denom = max(1, int(max_depth))
+        # 1.0 means immediate deadlock, 0.0 means no deadlock in probe horizon.
+        return float(np.clip(1.0 - (float(depth_value) / float(denom)), 0.0, 1.0))
+
+    def _calculate_deadlock_profile(self, handle, pos, direction, max_depth=14, max_states=256, transition_cache=None):
+        """Compute local deadlock profile with risk and explicit distance-to-deadlock signals."""
+        prof_active = bool(self.obs_func_profile_enabled and self._obs_profile_active)
+        t0 = time.perf_counter() if prof_active else 0.0
+        if pos is None or direction is None or self.env is None or self.env.rail is None:
+            raise ValueError(f"_calculate_deadlock_profile received invalid inputs for agent {handle}")
+
+        if transition_cache is None:
+            transition_cache = {}
+
+        def _get_transitions_cached(cell_pos, cell_dir):
+            key = (int(cell_pos[0]), int(cell_pos[1]), int(cell_dir))
+            if key in transition_cache:
+                return transition_cache[key]
+            trans = self._rail_get_transitions(cell_pos, cell_dir)
+            transition_cache[key] = trans
+            return trans
+
+        visited = set()
+        frontier = [(pos, direction, 0)]
+        deadlock_risk = 0.0
+        min_deadlock_depth = None
+        min_hard_block_depth = None
+        min_soft_block_depth = None
+        min_merge_conflict_depth = None
+        while frontier:
+            if len(visited) >= max(8, int(max_states)):
+                break
+            current_pos, current_dir, depth = frontier.pop()
+            if depth > max(1, int(max_depth)):
+                continue
+            visited_key = (self._pos_tuple(current_pos), int(current_dir))
+            if visited_key in visited:
+                continue
+            visited.add(visited_key)
+            transitions = _get_transitions_cached(current_pos, current_dir)
+            num_transitions = fast_count_nonzero(transitions)
+            in_deg = self._incoming_degree(current_pos, transition_cache=transition_cache)
+
+            has_oncoming = False
+            if self.agent_map is not None:
+                occ = self._agent_at_pos(current_pos)
+                if occ != -1 and occ != handle:
+                    occ_dir = self.env.agents[occ].direction
+                    if occ_dir is not None and DecisionPointUtils.is_opposite_direction(current_dir, occ_dir):
+                        has_oncoming = True
+
+            hard_block = bool(num_transitions == 0)
+            soft_block = bool(has_oncoming and num_transitions <= 1)
+            merge_conflict = bool(in_deg > 2 and num_transitions == 1 and depth <= 6)
+
+            if hard_block or soft_block:
+                if min_deadlock_depth is None or int(depth) < int(min_deadlock_depth):
+                    min_deadlock_depth = int(depth)
+            if hard_block:
+                if min_hard_block_depth is None or int(depth) < int(min_hard_block_depth):
+                    min_hard_block_depth = int(depth)
+            if soft_block:
+                if min_soft_block_depth is None or int(depth) < int(min_soft_block_depth):
+                    min_soft_block_depth = int(depth)
+            if merge_conflict:
+                if min_merge_conflict_depth is None or int(depth) < int(min_merge_conflict_depth):
+                    min_merge_conflict_depth = int(depth)
+
+            if hard_block:
+                deadlock_risk += 1.0
+            elif soft_block:
+                deadlock_risk += 0.65
+            elif merge_conflict:
+                deadlock_risk += 0.30
+            elif has_oncoming:
+                deadlock_risk += 0.18
+            elif num_transitions <= 1:
+                deadlock_risk += 0.03
+
+            for next_dir in range(4):
+                if transitions[next_dir]:
+                    next_pos = get_new_position(current_pos, next_dir)
+                    frontier.append((next_pos, next_dir, depth + 1))
+
+        probe_depth = max(1, int(max_depth))
+        risk_norm = max(4.0, min(24.0, float(len(visited)) * 0.35))
+        effective_hard_depth = min_hard_block_depth
+        if effective_hard_depth is None:
+            effective_hard_depth = min_soft_block_depth
+        result = {
+            "risk": float(min(deadlock_risk / risk_norm, 1.0)),
+            "min_deadlock_depth": int(min_deadlock_depth) if min_deadlock_depth is not None else -1,
+            "min_hard_block_depth": int(effective_hard_depth) if effective_hard_depth is not None else -1,
+            "min_soft_block_depth": int(min_soft_block_depth) if min_soft_block_depth is not None else -1,
+            "min_merge_conflict_depth": int(min_merge_conflict_depth) if min_merge_conflict_depth is not None else -1,
+            "deadlock_distance_norm": float(self._depth_to_proximity(min_deadlock_depth, probe_depth)),
+            "hard_block_distance_norm": float(self._depth_to_proximity(effective_hard_depth, probe_depth)),
+            "soft_block_distance_norm": float(self._depth_to_proximity(min_soft_block_depth, probe_depth)),
+            "merge_conflict_distance_norm": float(self._depth_to_proximity(min_merge_conflict_depth, probe_depth)),
+        }
+        if prof_active:
+            self._obs_prof_add('deadlock_profile', time.perf_counter() - t0)
+        return result
+
+    @staticmethod
+    def getObservationSize() -> int:
+        return DecisionPointObservation.OBS_SIZE
+
+    @classmethod
+    def _print_feature_layout_doc(cls):
+        if os.getenv("DEBUG_OBSERVATION", "0") == "1":
+            print(">> DecisionPointObservation (22D Base + Tree Payload) - Feature-Layout:")
+            for idx, name, desc in cls.FEATURE_GROUPS_DOC:
+                print(f"   {idx:<8} {name:<18} {desc}")
+            print("   0..21    base_feature_specs  exact index-to-meaning mapping (22D total)")
+            print("   Tree Payload: still exported; encoder weight dampened (0.1) since key info now in base.")
+
+    @classmethod
+    def _cleanup_base_features(cls, raw_features: np.ndarray) -> None:
+        # No masking: all 22 base features are kept as-is.
+        return
+
+    @staticmethod
+    def _encode_detect_deadlock(raw: float) -> float:
+        return 1.0 if raw > 0 else 0.0
+
+    @staticmethod
+    def _encode_deadlock_signal(deadlock_distance: float) -> float:
+        if deadlock_distance is None or deadlock_distance <= 0:
+            return 0.0
+        # Steeper decay: nearby deadlocks become more prominent, which helps
+        # the policy separate "slightly risky" from "immediate danger".
+        return min(1.0, 1.0 / (1.0 + deadlock_distance / 2.5))
+
+    @staticmethod
+    def _cell_type_index_from_decision_type(decision_type: int) -> int:
+        if decision_type & 8:
+            return 4
+        if decision_type == 1:
+            return 0
+        if decision_type & 2:
+            return 3
+        if decision_type & 4:
+            return 2
+        return 1
+
+    def _is_switch_at_current_cell(self, pos, direction) -> bool:
+        """True if the agent stands on a switching cell right now."""
+        transitions = self._rail_get_transitions(pos, direction)
+        return fast_count_nonzero(transitions) > 1
+
+    def _incoming_degree(self, cell_pos, transition_cache=None) -> int:
+        """Count incoming directed edges to a cell by local 4-neighborhood scan."""
+        if transition_cache is None:
+            transition_cache = {}
+
+        def _get_transitions_cached(pos, direction):
+            key = (int(pos[0]), int(pos[1]), int(direction))
+            if key in transition_cache:
+                return transition_cache[key]
+            trans = self._rail_get_transitions(pos, direction)
+            transition_cache[key] = trans
+            return trans
+
+        incoming_edges = set()
+        for prev_dir in range(4):
+            prev_pos = get_new_position(cell_pos, (prev_dir + 2) % 4)
+            if prev_pos[0] < 0 or prev_pos[0] >= self.env.height or prev_pos[1] < 0 or prev_pos[1] >= self.env.width:
+                continue
+            for d in range(4):
+                trans = _get_transitions_cached(prev_pos, d)
+                for nd in range(4):
+                    if not trans[nd]:
+                        continue
+                    if get_new_position(prev_pos, nd) == cell_pos:
+                        incoming_edges.add((prev_pos[0], prev_pos[1], d, nd))
+        return len(incoming_edges)
+
+    def _incoming_agent_handles(self, cell_pos, handle_exclude: int, transition_cache=None) -> list:
+        """Collect agents that can enter cell_pos through an incoming directed edge."""
+        if self.agent_map is None:
+            return []
+
+        if transition_cache is None:
+            transition_cache = {}
+
+        def _get_transitions_cached(pos, direction):
+            key = (int(pos[0]), int(pos[1]), int(direction))
+            if key in transition_cache:
+                return transition_cache[key]
+            trans = self._rail_get_transitions(pos, direction)
+            transition_cache[key] = trans
+            return trans
+
+        found = set()
+        for prev_dir in range(4):
+            prev_pos = get_new_position(cell_pos, (prev_dir + 2) % 4)
+            if prev_pos[0] < 0 or prev_pos[0] >= self.env.height or prev_pos[1] < 0 or prev_pos[1] >= self.env.width:
+                continue
+            agent_idx = self._agent_at_pos(prev_pos)
+            if agent_idx == -1 or agent_idx == handle_exclude:
+                continue
+            a_dir = self.env.agents[agent_idx].direction
+            if a_dir is None:
+                continue
+            trans = _get_transitions_cached(prev_pos, a_dir)
+            for nd in range(4):
+                if not trans[nd]:
+                    continue
+                if get_new_position(prev_pos, nd) == cell_pos:
+                    found.add(agent_idx)
+                    break
+        return sorted(found)
+
+    def _is_pre_merge_one_exit(self, pos, direction, transitions) -> bool:
+        """True if agent is exactly one step before a merge/conflict node with one current exit.
+
+        Semantics for DAG-style routing:
+        - current cell: exactly one usable outgoing edge for the current heading
+        - next cell: true merge node, i.e. receives multiple incoming edges and
+          has a single onward edge for the arriving orientation
+        """
+        if fast_count_nonzero(transitions) != 1:
+            return False
+        ndir = int(fast_argmax(transitions))
+        if not transitions[ndir]:
+            return False
+        next_pos = get_new_position(pos, ndir)
+        if next_pos[0] < 0 or next_pos[0] >= self.env.height or next_pos[1] < 0 or next_pos[1] >= self.env.width:
+            return False
+        in_deg = self._incoming_degree(next_pos)
+        if in_deg <= 1:
+            return False
+        next_transitions_arrival = self._rail_get_transitions(next_pos, ndir)
+        return fast_count_nonzero(next_transitions_arrival) == 1
+
+    def _decision_type_at_position(self, pos, direction, target) -> int:
+        if pos == target:
+            return 8
+        transitions = self._rail_get_transitions(pos, direction)
+        decision_type = 0
+        if self._is_switch_at_current_cell(pos, direction):
+            decision_type += 2
+        if self._is_pre_merge_one_exit(pos, direction, transitions):
+            decision_type += 4
+        return decision_type
+
+    def _infer_last_action(self, handle, pos, direction) -> int:
+        """Infer last action id from pos/direction delta vs. previous step.
+
+        Flatland action ids: DO_NOTHING=0, LEFT=1, FORWARD=2, RIGHT=3, STOP=4.
+
+        Returns:
+            0 = no previous state, lifecycle no-op, OR ambiguous
+            1 = LEFT, 2 = FORWARD, 3 = RIGHT, 4 = STOP
+        """
+        prev = self._prev_pos_dir.get(handle)
+        if prev is None or pos is None or direction is None:
+            return 0  # FIX: first step is DO_NOTHING, NOT STOP
+        prev_pos, prev_dir = prev
+        try:
+            same_pos = (int(pos[0]) == int(prev_pos[0]) and int(pos[1]) == int(prev_pos[1]))
+        except Exception:
+            return 0
+
+        # ── Position unchanged: distinguish lifecycle no-op from real STOP ──
+        if same_pos:
+            try:
+                agent = self.env.agents[handle]
+                agent_state = agent.state
+            except Exception:
+                return 0  # FIX: be conservative if we can't read state
+            # FIX: Lifecycle states return 0 (no STOP-bias)
+            if agent_state in (TrainState.WAITING, TrainState.READY_TO_DEPART, TrainState.DONE):
+                return 0
+            # FIX: Only return STOP if agent is genuinely active (MOVING/STOPPED on map)
+            # AND we had a previous tracking entry. Otherwise return 0.
+            if agent.position is None:
+                return 0  # not on map → can't have stopped
+            return 4  # genuine STOP / no progress despite being on map
+
+        # ── Position changed: classify movement ──
+        # If the previous cell was a corridor (≤1 transitions), the direction
+        # change was forced by the rail layout — the agent chose FORWARD, not L/R.
+        try:
+            prev_transitions = self._rail_get_transitions(prev_pos, prev_dir)
+            if fast_count_nonzero(prev_transitions) <= 1:
+                return 2  # FORWARD on forced curve
+        except Exception:
+            pass  # fall through to delta-based inference
+
+        delta = (int(direction) - int(prev_dir)) % 4
+        if delta == 0:
+            return 2  # FORWARD
+        if delta == 3:
+            return 1  # LEFT
+        if delta == 1:
+            return 3  # RIGHT
+        # delta == 2: u-turn → unusual, treat as STOP-like ambiguous signal.
+        return 4
+
+
+    def _build_base_features(self, handle, agent, pos, direction, distance_map):
+        prof_active = bool(self.obs_func_profile_enabled and self._obs_profile_active)
+        t0 = time.perf_counter() if prof_active else 0.0
+
+        raw_features = np.zeros(self.BASE_OBS_SIZE, dtype=np.float32)
+
+        t_seg = time.perf_counter() if prof_active else 0.0
+        transitions = self._rail_get_transitions(pos, direction)
+        left_dir = (int(direction) - 1) % 4
+        fwd_dir = int(direction) % 4
+        right_dir = (int(direction) + 1) % 4
+
+        raw_features[0] = 1.0 if transitions[left_dir] else 0.0
+        raw_features[1] = 1.0 if transitions[fwd_dir] else 0.0
+        raw_features[2] = 1.0 if transitions[right_dir] else 0.0
+        if prof_active:
+            self._obs_prof_add('base_transitions', time.perf_counter() - t_seg)
+
+        t_seg = time.perf_counter() if prof_active else 0.0
+        successor_dist = {}
+        for ndir in (left_dir, fwd_dir, right_dir):
+            if transitions[ndir]:
+                npos = get_new_position(pos, ndir)
+                successor_dist[ndir] = self._safe_distance(handle, npos, ndir, distance_map)
+
+        finite_successors = [d for d in successor_dist.values() if np.isfinite(d)]
+        best_successor_dist = min(finite_successors) if finite_successors else np.inf
+
+        for feat_idx, ndir in ((3, left_dir), (4, fwd_dir), (5, right_dir)):
+            ndist = successor_dist.get(ndir, np.inf)
+            if np.isfinite(best_successor_dist) and np.isfinite(ndist):
+                # Relative quality against the best local successor:
+                # 0.0 for best branch, negative for longer alternatives.
+                # Use smooth exponential squashing instead of hard clipping so
+                # large gaps remain distinguishable but bounded.
+                raw_gap = float(best_successor_dist - ndist)
+                raw_features[feat_idx] = self._exp_squash_signed(raw_gap)
+            else:
+                # Mark unavailable/unreachable branches as clearly worse than
+                # the best local successor to avoid conflicting with SP hints.
+                raw_features[feat_idx] = -1.0
+        if prof_active:
+            self._obs_prof_add('base_successors', time.perf_counter() - t_seg)
+
+        t_seg = time.perf_counter() if prof_active else 0.0
+        all_distance = []
+        self_distance = np.inf
+        for idx, a in enumerate(self.env.agents):
+            apos = a.position if a.position is not None else a.initial_position
+            adir = a.direction if a.direction is not None else a.initial_direction
+            if apos is None or adir is None:
+                adist = np.inf
+            else:
+                adist = float(distance_map[a.handle, apos[0], apos[1], adir])
+            all_distance.append((a.handle, adist, idx))
+            if a.handle == handle:
+                self_distance = adist
+
+        all_distance.sort(key=lambda x: (x[1], x[2]))
+        finite_distances = [dist for _, dist, _ in all_distance if np.isfinite(dist)]
+        finite_unique = sorted(set(finite_distances))
+
+        # FIX: ALWAYS use normalized remaining-distance signal in addition to rank.
+        # The pure rank can be degenerate (5 agents → only 5 levels) and constant
+        # within an episode for static cohorts. Hybrid: 50% rank + 50% distance-norm.
+        fallback_max = float(getattr(self, "_max_dist", 0.0))
+        if fallback_max <= 1.0:
+            fallback_max = max(1.0, float(self.env.width + self.env.height))
+        distance_signal = self._distance_to_unit(self_distance, fallback_max)
+
+        if len(finite_unique) >= 2:
+            value_to_rank = {dist: i for i, dist in enumerate(finite_unique)}
+            denom = max(1, len(finite_unique) - 1)
+            rank = value_to_rank.get(self_distance, len(finite_unique) - 1)
+            rank_signal = float(rank) / float(denom)
+            # Blend: rank for cohort-comparison, distance for absolute progress
+            priority_rank = 0.5 * rank_signal + 0.5 * distance_signal
+        else:
+            priority_rank = distance_signal
+
+        if prof_active:
+            self._obs_prof_add('base_priority', time.perf_counter() - t_seg)
+ 
+        # Export selected lifecycle flags used by the current 22D contract.
+        # st_3=READY_TO_DEPART (st_4=MALFUNCTION and st_6=done removed as dead constants).
+        t_seg = time.perf_counter() if prof_active else 0.0
+        raw_features[6] = 1.0 if agent.state == TrainState.READY_TO_DEPART else 0.0  # st_3 (READY_TO_DEPART)
+        raw_features[7] = priority_rank
+
+        raw_features[8] = 1.0 if self._is_pre_merge_one_exit(pos, direction, transitions) else 0.0
+        raw_features[9] = 1.0 if self._is_switch_at_current_cell(pos, direction) else 0.0
+        if prof_active:
+            self._obs_prof_add('base_flags', time.perf_counter() - t_seg)
+
+        t_seg = time.perf_counter() if prof_active else 0.0
+        sp_left, sp_fwd, sp_right = self._shortest_path_action_hint(
+            handle=handle,
+            pos=pos,
+            direction=direction,
+            transitions=transitions,
+            distance_map=distance_map,
+        )
+        raw_features[10] = float(sp_left)
+        raw_features[11] = float(sp_fwd)
+        raw_features[12] = float(sp_right)
+        if prof_active:
+            self._obs_prof_add('base_sp_hint', time.perf_counter() - t_seg)
+
+        # ── INDICES 13-16: DEADLOCK + PLANNING (migrated from tree payload) ──
+        # Same profile already computed for tree; cheap to call once more here.
+        # Routed through shared encoder so neighbours see each other's deadlock
+        # pressure (S1 + Etappe 1, 2026-05-21).
+        t_seg = time.perf_counter() if prof_active else 0.0
+        try:
+            deadlock_profile = self._calculate_deadlock_profile(handle, pos, direction)
+            raw_features[13] = float(np.clip(deadlock_profile.get("risk", 0.0), 0.0, 1.0))
+            raw_features[14] = float(np.clip(deadlock_profile.get("deadlock_distance_norm", 0.0), 0.0, 1.0))
+        except Exception:
+            raw_features[13] = 0.0
+            raw_features[14] = 0.0
+
+        # steps_to_next_switch_norm: walk forward until a switch (>1 transitions)
+        # appears. Normalized by 8 cells (=1.0 if next cell, 0.0 if >=8 away).
+        try:
+            steps = 0
+            p_walk, d_walk = tuple(pos), int(direction)
+            max_walk = 8
+            for _ in range(max_walk):
+                trans = self._rail_get_transitions(p_walk, d_walk)
+                num_t = int(fast_count_nonzero(trans))
+                if num_t == 0:
+                    break
+                if num_t > 1:
+                    break
+                # Single transition: follow it (corridor cell).
+                next_dir = None
+                for nd in range(4):
+                    if trans[nd]:
+                        next_dir = nd
+                        break
+                if next_dir is None:
+                    break
+                next_pos = get_new_position(p_walk, next_dir)
+                if (next_pos[0] < 0 or next_pos[0] >= self.env.height
+                        or next_pos[1] < 0 or next_pos[1] >= self.env.width):
+                    break
+                steps += 1
+                p_walk, d_walk = next_pos, next_dir
+            raw_features[15] = float(np.clip(1.0 - steps / float(max_walk), 0.0, 1.0))
+        except Exception:
+            raw_features[15] = 0.0
+
+        # sp_improves_norm: how much better the best successor is vs. the
+        # average of the alternative branches. Re-uses already-computed deltas
+        # (raw_features[3..5]). Range [0,1]: 1.0 = SP strongly dominates,
+        # 0.0 = all branches equal or no valid alternatives.
+        try:
+            deltas = [raw_features[3], raw_features[4], raw_features[5]]
+            paths  = [raw_features[0], raw_features[1], raw_features[2]]
+            # Use only branches that exist (path == 1) AND are not the best (delta < 0).
+            losses = [abs(float(d)) for d, p in zip(deltas, paths) if float(p) > 0.5 and float(d) < -1e-6]
+            raw_features[16] = float(np.clip(max(losses) if losses else 0.0, 0.0, 1.0))
+        except Exception:
+            raw_features[16] = 0.0
+
+        # ── INDICES 17-20: LAST-ACTION ONE-HOT (S1 action broadcast) ─────────
+        # Inferred from agent's pos/direction delta vs. previous step. Order:
+        # [17]=LEFT, [18]=FORWARD, [19]=RIGHT, [20]=STOP.
+        # DO_NOTHING / first-step / lifecycle-transitions all map to all-zero.
+        last_action_id = self._infer_last_action(handle, pos, direction)
+        if last_action_id == 1:    # LEFT
+            raw_features[17] = 1.0
+        elif last_action_id == 2:  # FORWARD
+            raw_features[18] = 1.0
+        elif last_action_id == 3:  # RIGHT
+            raw_features[19] = 1.0
+        elif last_action_id == 4:  # STOP / no progress
+            raw_features[20] = 1.0
+
+        # ── INDEX 21: ACTION_MATCHES_SP (tri-state plan conformance) ─────────
+        #   1.0 = agent followed shortest-path hint last step (plan-conforming)
+        #   0.5 = agent stopped (defensible non-plan action, e.g. yield)
+        #   0.0 = movement contradicted SP hint, or first step / lifecycle no-op
+        # Rationale: binary 0/1 penalises every STOP, but in MARL rail
+        # scheduling a yield is often the cooperative optimum.
+        # Refs: Laurent et al. 2021 (arXiv:2103.16511, §4.2 yielding policies).
+        # FIX: Tri-state with neutral default for ambiguous cases.
+
+        prev_sp = self._prev_sp_hint.get(handle)
+
+        if last_action_id == 4:
+
+            raw_features[21] = 0.5  # STOP — defensible yield
+
+        elif prev_sp is not None and last_action_id in (1, 2, 3):
+
+            sp_idx = last_action_id - 1
+
+            raw_features[21] = 1.0 if float(prev_sp[sp_idx]) > 0.5 else 0.0
+
+        else:
+
+            raw_features[21] = 0.5  # neutral, not off-plan
+
+
+        # ── TRACKING-UPDATE für nächste Observation ──────────────────────────
+        # FIX: Track only for agents genuinely on the map AND in active states.
+        # WAITING/READY_TO_DEPART/DONE → clear tracking (no last_action signal).
+        is_active = (
+            agent.position is not None
+            and agent.state in (TrainState.MOVING, TrainState.STOPPED, TrainState.MALFUNCTION)
+        )
+        if is_active:
+            self._prev_pos_dir[handle] = (tuple(pos), int(direction))
+            self._prev_sp_hint[handle] = (float(sp_left), float(sp_fwd), float(sp_right))
+        else:
+            self._prev_pos_dir.pop(handle, None)
+            self._prev_sp_hint.pop(handle, None)
+
+        # NOTE: Profiler-Call 'base_flags' wurde hier entfernt (Bug 6 — er war
+        # ein Duplikat des oberen Calls und benutzte einen veralteten t_seg).
+
+        if prof_active:
+            self._obs_prof_add('base_features', time.perf_counter() - t0)
+
+        return raw_features
+
+
+    def get(self, handle: int = 0):
+        """Return (base_features, seen_agents, raw_tree_payload) for one agent.
+        Export 22 base features (13D legacy + 4 deadlock/planning + 5 action-broadcast).
+        Tree payload is still exported but encoder weight is dampened (0.1) since
+        key information is now also visible to neighbours via the base obs.
+        """
+        prof_active = False
+        t0 = 0.0
+        if self.obs_func_profile_enabled:
+            prof_active = (self._obs_func_profile_call_idx % self.obs_func_profile_sample_every) == 0
+            self._obs_func_profile_call_idx += 1
+            if prof_active:
+                t0 = time.perf_counter()
+
+        agent = self.env.agents[handle]
+        pos = agent.position if agent.position is not None else agent.initial_position
+        direction = agent.direction if agent.direction is not None else agent.initial_direction
+        target = agent.target
+        if pos is None or target is None or direction is None:
+            raise ValueError(f"Agent {handle} has invalid start data for observation building")
+        distance_map = self.env.distance_map.get()
+
+        # Lokale Suche → Baum-Payload für trainierbare Encoder-Integration
+        search_depth = max(int(self.search_depth), self.local_search_min_search_depth)
+        prev_active = self._obs_profile_active
+        self._obs_profile_active = bool(prof_active)
+        tree_payload = self._local_search(handle, pos, direction, search_depth)
+        self._obs_profile_active = prev_active
+        local_search_seen_agents = set(tree_payload.get("seen_agents", []))
+
+        # Keep structured tree context available for downstream temporal wrappers.
+        if not hasattr(self.env, "dev_tree_dict"):
+            self.env.dev_tree_dict = {}
+        self.env.dev_tree_dict[handle] = tree_payload
+        self._export_debug_tree_overlay(handle, pos, tree_payload)
+
+        opp_agents = set()
+        opp_agents.update(local_search_seen_agents)
+        for other in self.env.agents:
+            if other.handle == handle:
+                continue
+            other_pos = other.position if other.position is not None else other.initial_position
+            if other_pos == pos:
+                opp_agents.add(other.handle)
+
+        # Fill base features according to the 22D schema.
+        raw_features = self._build_base_features(
+            handle=handle,
+            agent=agent,
+            pos=pos,
+            direction=direction,
+            distance_map=distance_map,
+        )
+
+        # No masking: all features are exported
+        base_features = raw_features.copy() 
+
+        agent.cur_opp_agent_handles = sorted(opp_agents)
+        if prof_active:
+            self._obs_prof_add('get', time.perf_counter() - t0)
+        return (base_features, agent.cur_opp_agent_handles, tree_payload)
+
+    def get_many(self, handles: list = None, is_end_of_episode: bool = False, episode_count: int = None):
+        t0_many = time.perf_counter() if self.obs_func_profile_enabled else 0.0
+        # Nur noch für Rückwärtskompatibilität: Counter bleibt, aber nicht mehr für Ausgabe genutzt
+        type(self)._get_many_call_count += 1
+        if handles is None:
+            handles = list(range(len(self.env.agents)))
+        if self.obs_func_profile_enabled:
+            self._obs_prof_add('get_many_handles', len(handles))
+
+        self.agent_map = np.zeros((self.env.height, self.env.width), dtype=np.int32) - 1
+        for agent in self.env.agents:
+            if agent.position is not None:
+                self.agent_map[agent.position] = agent.handle
+
+        distance_map = self.env.distance_map.get()
+        finite = distance_map[np.isfinite(distance_map)]
+        if finite.size > 0:
+            self._max_dist = max(float(np.max(finite)), 1.0)
+        else:
+            self._max_dist = 1.0
+
+        for agent in self.env.agents:
+            if not hasattr(agent, 'opp_agent_handles'):
+                agent.opp_agent_handles = []
+            if not hasattr(agent, 'cur_opp_agent_handles'):
+                agent.cur_opp_agent_handles = []
+
+        result = []
+        all_features = []
+        tree_stats = []
+        total_nodes_this_call = 0
+        total_edges_this_call = 0
+        for handle in handles:
+            entry = self.get(handle)
+            result.append(entry)
+            all_features.append(entry[0])
+            tree = entry[2]
+            n_nodes = len(tree.get("nodes", []))
+            n_edges = len(tree.get("edges", []))
+            total_nodes_this_call += n_nodes
+            total_edges_this_call += n_edges
+            seen_agents = tree.get("seen_agents", [])
+            tree_stats.append((handle, n_nodes, n_edges, seen_agents))
+        if self.obs_func_profile_enabled:
+            self._obs_prof_add('get_many_total_nodes', total_nodes_this_call)
+            self._obs_prof_add('get_many_total_edges', total_edges_this_call)
+
+        # --- Statistik der letzten 100 Episoden sammeln ---
+        if len(all_features) > 0:
+            arr = np.stack(all_features, axis=0)
+            # Ringpuffer für Features
+            if not hasattr(type(self), '_last_100_features'):
+                type(self)._last_100_features = []
+            if not hasattr(type(self), '_last_100_tree_stats'):
+                type(self)._last_100_tree_stats = []
+            type(self)._last_100_features.append(arr)
+            type(self)._last_100_tree_stats.append(tree_stats)
+            if len(type(self)._last_100_features) > 100:
+                type(self)._last_100_features.pop(0)
+            if len(type(self)._last_100_tree_stats) > 100:
+                type(self)._last_100_tree_stats.pop(0)
+
+        # --- Ausgabe alle 50 Episoden + IMMER am letzten Episode-Ende ---
+        # Note: "last episode" = letzte Episode des aktuellen Runs.
+        # We rely on env attribute or external flag — easiest: also trigger
+        # when the buffer is "full" (100 episodes accumulated) OR via a
+        # forced-flag we expose.
+        is_periodic = (
+            episode_count is not None
+            and episode_count > 0
+            and episode_count % 50 == 0
+        )
+        is_forced = bool(getattr(type(self), "_force_feature_report", False))
+        if is_end_of_episode and (is_periodic or is_forced):
+            # consume the force-flag so it only fires once
+            if is_forced:
+                type(self)._force_feature_report = False
+            feature_names = [name for _, name, _ in type(self).BASE_FEATURE_SPECS]
+            last_feats = type(self)._last_100_features
+            feature_names = [name for _, name, _ in type(self).BASE_FEATURE_SPECS]
+            last_feats = type(self)._last_100_features
+            last_trees = type(self)._last_100_tree_stats
+            all_feats = np.concatenate(last_feats, axis=0) if last_feats else arr
+            n_ep = len(last_feats)
+
+            # ── helpers ──────────────────────────────────────────────────────
+            def _trend_label(series: np.ndarray) -> str:
+                """Return monotone-trend label for a 1-D time series of episode means."""
+                if len(series) < 4:
+                    return "n/a"
+                diffs = np.diff(series.astype(float))
+                n_down = int(np.sum(diffs < -1e-4))
+                n_up   = int(np.sum(diffs >  1e-4))
+                frac_down = n_down / max(1, len(diffs))
+                frac_up   = n_up   / max(1, len(diffs))
+                if frac_down >= 0.65:
+                    return "↓ mono-fall"
+                if frac_up >= 0.65:
+                    return "↑ mono-rise"
+                if frac_down >= 0.40 and frac_up < 0.20:
+                    return "↓ tend-fall"
+                if frac_up >= 0.40 and frac_down < 0.20:
+                    return "↑ tend-rise"
+                return "↔ flat/noisy"
+
+            def _ep_means(feat_idx: int) -> np.ndarray:
+                """Per-episode mean of a feature over all agents/steps in that episode."""
+                return np.array([ep[:, feat_idx].mean() for ep in last_feats if ep.shape[0] > 0])
+
+            def _deadlock_ratio(col: np.ndarray) -> float:
+                """Fraction of steps where a binary feature is active (value > 0.5)."""
+                return float(np.mean(col > 0.5)) if len(col) > 0 else 0.0
+
+            # ── header ───────────────────────────────────────────────────────
+            W = "=" * 72
+            print(f"\n{W}")
+            print(f"  [DecisionPointObs] BASE FEATURE REPORT  (n={n_ep} episodes, ep={episode_count})")
+            print(W)
+            print(f"  {'#':>2}  {'Feature':<22} {'min':>6} {'max':>6} {'mean':>7} {'std':>6}  {'trend':>13}  note")
+            print(f"  {'-'*68}")
+
+            for idx, name in enumerate(feature_names):
+                col = all_feats[:, idx]
+                ep_m = _ep_means(idx)
+                trend = _trend_label(ep_m)
+                note = ""
+                # ── feature-specific annotations ─────────────────────────────
+                if name == "priority_rank":
+                    # Should fall toward 0 as agent approaches goal
+                    if "fall" in trend:
+                        note = "✅ agent approaching goal"
+                    elif np.std(col) < 0.01:
+                        note = "⚠️  CONSTANT – check obs"
+                    else:
+                        note = "🟡 no clear progress trend"
+                elif name in ("st_3",):
+                    ready_frac = float(np.mean(col > 0.5))
+                    if ready_frac > 0.5:
+                        note = f"✅ ready_to_depart {ready_frac*100:.0f}% of steps"
+                    else:
+                        note = f"🟡 ready_to_depart {ready_frac*100:.0f}% of steps"
+                elif name in ("st_4",):
+                    malf_frac = float(np.mean(col > 0.5))
+                    note = f"malfunction={malf_frac*100:.0f}% of steps"
+                elif name in ("st_6",):
+                    not_started_frac = float(np.mean(col > 0.5))
+                    note = f"not_started={not_started_frac*100:.0f}% of steps"
+                elif name in ("sp_forward", "sp_left", "sp_right"):
+                    frac = float(np.mean(col > 0.5))
+                    note = f"used {frac*100:.0f}% of steps"
+                elif name == "is_switch":
+                    frac = float(np.mean(col > 0.5))
+                    note = f"at switch {frac*100:.0f}% of steps"
+                elif name == "is_pre_merge":
+                    frac = float(np.mean(col > 0.5))
+                    note = f"pre-merge {frac*100:.0f}% of steps"
+                elif name == "deadlock_risk":
+                    note = f"mean risk={float(np.mean(col)):.3f}"
+                elif name == "deadlock_distance_norm":
+                    near = float(np.mean(col > 0.5))
+                    note = f"near-deadlock {near*100:.0f}% of steps"
+                elif name == "steps_to_next_switch_norm":
+                    note = f"mean prox={float(np.mean(col)):.3f}"
+                elif name == "sp_improves_norm":
+                    note = f"mean gain={float(np.mean(col)):.3f}"
+                elif name.startswith("last_action_"):
+                    frac = float(np.mean(col > 0.5))
+                    note = f"{name.replace('last_action_','')} {frac*100:.0f}% of steps"
+                elif name == "action_matches_sp":
+                    follow_frac = float(np.mean(col > 0.75))                       # 1.0 entries
+                    yield_frac  = float(np.mean((col > 0.25) & (col < 0.75)))      # 0.5 entries
+                    off_frac    = float(np.mean((col >= 0.0) & (col < 0.25)))      # 0.0 entries
+                    note = f"follow {follow_frac*100:.0f}% / yield {yield_frac*100:.0f}% / off {off_frac*100:.0f}%"
+
+
+                print(
+                    f"  {idx:>2}  {name:<22} "
+                    f"{np.min(col):>6.3f} {np.max(col):>6.3f} "
+                    f"{np.mean(col):>7.4f} {np.std(col):>6.4f}  "
+                    f"{trend:>13}  {note}"
+                )
+
+            # ── priority_rank episode-mean trend (compact) ───────────────────
+            pr_ep = _ep_means(7)  # feature [7] = priority_rank (22D schema)
+            if len(pr_ep) >= 2:
+                half = max(1, len(pr_ep) // 2)
+                first_half = pr_ep[:half].mean()
+                second_half = pr_ep[half:].mean()
+                delta = second_half - first_half
+                arrow = "↓" if delta < -0.02 else ("↑" if delta > 0.02 else "↔")
+                print(f"\n  priority_rank half-half: first={first_half:.4f} → second={second_half:.4f}  Δ={delta:+.4f} {arrow}")
+
+            # ── Tree-Statistik ────────────────────────────────────────────────
+            all_nodes, all_edges = [], []
+            for ep_tree_stats in last_trees:
+                for _h, n_nodes, n_edges, _seen in ep_tree_stats:
+                    all_nodes.append(n_nodes)
+                    all_edges.append(n_edges)
+            if all_nodes:
+                print(f"\n  Tree: nodes={np.mean(all_nodes):.1f}±{np.std(all_nodes):.1f} "
+                      f"[{np.min(all_nodes)},{np.max(all_nodes)}]   "
+                      f"edges={np.mean(all_edges):.1f}±{np.std(all_edges):.1f} "
+                      f"[{np.min(all_edges)},{np.max(all_edges)}]")
+            print(W)
+
+        if self.obs_func_profile_enabled:
+            self._obs_prof_add('get_many', time.perf_counter() - t0_many)
+            if is_end_of_episode and episode_count is not None and (episode_count + 1) % self.obs_func_profile_interval == 0:
+                g = self._obs_func_prof
+                get_stats = self._obs_prof_bucket_stats(g['get'])
+                gm_stats = self._obs_prof_bucket_stats(g['get_many'])
+                ls_stats = self._obs_prof_bucket_stats(g['local_search'])
+                dl_stats = self._obs_prof_bucket_stats(g['deadlock_profile'])
+                bf_stats = self._obs_prof_bucket_stats(g['base_features'])
+                bt_stats = self._obs_prof_bucket_stats(g['base_transitions'])
+                bs_stats = self._obs_prof_bucket_stats(g['base_successors'])
+                bp_stats = self._obs_prof_bucket_stats(g['base_priority'])
+                bfl_stats = self._obs_prof_bucket_stats(g['base_flags'])
+                bsh_stats = self._obs_prof_bucket_stats(g['base_sp_hint'])
+                ov_stats = self._obs_prof_bucket_stats(g['debug_overlay'])
+                lsn_stats = self._obs_prof_bucket_stats(g['local_search_nodes'])
+                lse_stats = self._obs_prof_bucket_stats(g['local_search_edges'])
+                lssa_stats = self._obs_prof_bucket_stats(g['local_search_seen_agents'])
+                gmh_stats = self._obs_prof_bucket_stats(g['get_many_handles'])
+                gmtn_stats = self._obs_prof_bucket_stats(g['get_many_total_nodes'])
+                gmte_stats = self._obs_prof_bucket_stats(g['get_many_total_edges'])
+
+                get_mean_ms = 1000.0 * get_stats['mean']
+                gm_mean_ms = 1000.0 * gm_stats['mean']
+                ls_mean_ms = 1000.0 * ls_stats['mean']
+                dl_mean_ms = 1000.0 * dl_stats['mean']
+                bf_mean_ms = 1000.0 * bf_stats['mean']
+                bt_mean_ms = 1000.0 * bt_stats['mean']
+                bs_mean_ms = 1000.0 * bs_stats['mean']
+                bp_mean_ms = 1000.0 * bp_stats['mean']
+                bfl_mean_ms = 1000.0 * bfl_stats['mean']
+                bsh_mean_ms = 1000.0 * bsh_stats['mean']
+                ov_mean_ms = 1000.0 * ov_stats['mean']
+                dl_per_ls = (float(g['deadlock_profile']['count']) / float(max(1, g['local_search']['count']))) if g['local_search']['count'] > 0 else 0.0
+                print(
+                    f"[ObsFnPerf] ep={episode_count + 1} interval={self.obs_func_profile_interval} "
+                    f"sample_every={self.obs_func_profile_sample_every} "
+                    f"get={get_mean_ms:.3f}ms get_many={gm_mean_ms:.3f}ms "
+                    f"local_search={ls_mean_ms:.3f}ms deadlock_profile={dl_mean_ms:.3f}ms "
+                    f"base_features={bf_mean_ms:.3f}ms debug_overlay={ov_mean_ms:.3f}ms "
+                    f"deadlock_calls_per_local_search={dl_per_ls:.2f}"
+                )
+                print(
+                    f"[ObsFnPerfBase] transitions={bt_mean_ms:.3f}ms successors={bs_mean_ms:.3f}ms "
+                    f"priority={bp_mean_ms:.3f}ms flags={bfl_mean_ms:.3f}ms sp_hint={bsh_mean_ms:.3f}ms"
+                )
+                print(
+                    f"[ObsFnPerfDetail] get_p50={1000.0*get_stats['p50']:.3f}ms get_p95={1000.0*get_stats['p95']:.3f}ms get_max={1000.0*get_stats['max']:.3f}ms "
+                    f"get_many_p50={1000.0*gm_stats['p50']:.3f}ms get_many_p95={1000.0*gm_stats['p95']:.3f}ms get_many_max={1000.0*gm_stats['max']:.3f}ms "
+                    f"local_search_p50={1000.0*ls_stats['p50']:.3f}ms local_search_p95={1000.0*ls_stats['p95']:.3f}ms local_search_max={1000.0*ls_stats['max']:.3f}ms"
+                )
+                print(
+                    f"[ObsFnPerfLocalSearch] nodes_mean={lsn_stats['mean']:.2f} nodes_p95={lsn_stats['p95']:.2f} "
+                    f"edges_mean={lse_stats['mean']:.2f} edges_p95={lse_stats['p95']:.2f} "
+                    f"seen_agents_mean={lssa_stats['mean']:.2f} "
+                    f"ms_per_node={(ls_mean_ms / max(1e-9, lsn_stats['mean'])):.4f} "
+                    f"handles_per_get_many={gmh_stats['mean']:.2f}"
+                )
+                print(
+                    f"[ObsFnPerfGetMany] total_nodes_mean={gmtn_stats['mean']:.2f} total_nodes_p95={gmtn_stats['p95']:.2f} "
+                    f"total_edges_mean={gmte_stats['mean']:.2f} total_edges_p95={gmte_stats['p95']:.2f}"
+                )
+                type(self)._last_obs_fn_perf_report = {
+                    'episode': int(episode_count + 1),
+                    'interval': int(self.obs_func_profile_interval),
+                    'sample_every': int(self.obs_func_profile_sample_every),
+                    'get_mean_ms': float(get_mean_ms),
+                    'get_p50_ms': float(1000.0 * get_stats['p50']),
+                    'get_p95_ms': float(1000.0 * get_stats['p95']),
+                    'get_max_ms': float(1000.0 * get_stats['max']),
+                    'get_many_mean_ms': float(gm_mean_ms),
+                    'get_many_p50_ms': float(1000.0 * gm_stats['p50']),
+                    'get_many_p95_ms': float(1000.0 * gm_stats['p95']),
+                    'get_many_max_ms': float(1000.0 * gm_stats['max']),
+                    'local_search_mean_ms': float(ls_mean_ms),
+                    'local_search_p50_ms': float(1000.0 * ls_stats['p50']),
+                    'local_search_p95_ms': float(1000.0 * ls_stats['p95']),
+                    'local_search_max_ms': float(1000.0 * ls_stats['max']),
+                    'local_search_nodes_mean': float(lsn_stats['mean']),
+                    'local_search_nodes_p95': float(lsn_stats['p95']),
+                    'local_search_edges_mean': float(lse_stats['mean']),
+                    'local_search_edges_p95': float(lse_stats['p95']),
+                    'local_search_seen_agents_mean': float(lssa_stats['mean']),
+                    'local_search_ms_per_node': float(ls_mean_ms / max(1e-9, lsn_stats['mean'])),
+                    'deadlock_profile_mean_ms': float(dl_mean_ms),
+                    'base_features_mean_ms': float(bf_mean_ms),
+                    'base_transitions_mean_ms': float(bt_mean_ms),
+                    'base_successors_mean_ms': float(bs_mean_ms),
+                    'base_priority_mean_ms': float(bp_mean_ms),
+                    'base_flags_mean_ms': float(bfl_mean_ms),
+                    'base_sp_hint_mean_ms': float(bsh_mean_ms),
+                    'debug_overlay_mean_ms': float(ov_mean_ms),
+                    'deadlock_calls_per_local_search': float(dl_per_ls),
+                    'get_many_handles_mean': float(gmh_stats['mean']),
+                    'get_many_total_nodes_mean': float(gmtn_stats['mean']),
+                    'get_many_total_nodes_p95': float(gmtn_stats['p95']),
+                    'get_many_total_edges_mean': float(gmte_stats['mean']),
+                    'get_many_total_edges_p95': float(gmte_stats['p95']),
+                }
+                for bucket in g.values():
+                    bucket['sum'] = 0.0
+                    bucket['count'] = 0
+                    bucket['samples'].clear()
+
+        for agent in self.env.agents:
+            agent.opp_agent_handles = agent.cur_opp_agent_handles
+        return result
+
+    @staticmethod
+    def _normalise_distance(value: float, max_dist: float) -> float:
+        if value is None or value == _UNREACHABLE:
+            return 0.0
+        if not np.isfinite(value):
+            return 0.0
+        if max_dist <= 0:
+            return 0.0
+        return float(np.clip(value / max_dist, 0.0, 1.0))
+
+    @staticmethod
+    def _normalise_count(value: float) -> float:
+        if value is None or value < 0:
+            return 0.0
+        return float(value) / (float(value) + 8.0)
+
+    def _shortest_path_action_hint(self, handle, pos, direction, transitions, distance_map):
+        """Compute which direction (L/F/R) is best according to distance map."""
+        best_hint = [0.0, 0.0, 0.0]
+        min_dist = np.inf
+        best_idx = None
+        for idx, rel in enumerate((-1, 0, 1)):
+            ndir = (direction + rel) % 4
+            if transitions[ndir]:
+                npos = get_new_position(pos, ndir)
+                dist = distance_map[handle, npos[0], npos[1], ndir]
+                if np.isfinite(dist) and dist < min_dist:
+                    min_dist = dist
+                    best_idx = idx
+        if best_idx is not None:
+            best_hint[best_idx] = 1.0
+        return best_hint

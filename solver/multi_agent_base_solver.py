@@ -1,5 +1,6 @@
 from typing import Union, Callable, List, Dict
 
+from flatland.envs.step_utils.states import TrainState  # noqa: E402
 from environment.environment import Environment
 from policy.policy import Policy
 from rendering.base_renderer import BaseRenderer
@@ -8,7 +9,8 @@ from solver.base_solver import BaseSolver
 RewardList = List[float]
 TerminalList = List[float]
 InfoDict = Dict
-MultiAgentRewardShaper = Callable[[RewardList, TerminalList, InfoDict, Environment], List[float]]
+ActionDict = Dict[int, int]  # handle -> action
+MultiAgentRewardShaper = Callable[[RewardList, TerminalList, InfoDict, Environment, ActionDict], List[float]]
 
 
 class MultiAgentBaseSolver(BaseSolver):
@@ -39,9 +41,11 @@ class MultiAgentBaseSolver(BaseSolver):
     def set_reward_shaper(self, reward_shaper: MultiAgentRewardShaper):
         self._reward_shaper = reward_shaper
 
-    def shape_reward(self, reward, terminal, info):
+    def shape_reward(self, reward, terminal, info, actions=None):
+        if actions is None:
+            actions = {}
         if self._reward_shaper is not None:
-            return self._reward_shaper(reward, terminal, info, self.env)
+            return self._reward_shaper(reward, terminal, info, self.env, actions)
         return reward
 
     def run_step(self,
@@ -67,7 +71,7 @@ class MultiAgentBaseSolver(BaseSolver):
         raw_state_next, reward, terminal, info = env.step(actions)
 
         # shape reward and transform observation (if required)
-        reward = self.shape_reward(reward, terminal, info)
+        reward = self.shape_reward(reward, terminal, info, actions)
         state_next = self.transform_state(raw_state_next)
 
         # calculate total reward, terminal_all, ..
@@ -77,10 +81,15 @@ class MultiAgentBaseSolver(BaseSolver):
             terminal_all &= terminal[handle]
             tot_reward += reward[handle]
             tot_terminal += int(terminal[handle])
+
+        # Flatland can end an episode with terminal['__all__']=True while some
+        # per-agent terminal flags stay False (e.g., timeout/not reached target).
+        # For replay/GAE we must treat episode end as terminal for all agents.
+        terminal_all = bool(terminal.get('__all__', terminal_all))
         tot_terminal /= max(1.0, len(self.env.get_agent_handles()))
 
-        # delegate a policy update (if required)
-        self.run_policy_step(actions, policy, reward, state, state_next, terminal, terminal_all, update_values)
+        # delegate a policy update (if required) 
+        self.run_policy_step_multi_agent(actions, policy, reward, state, state_next, terminal, terminal_all, update_values)
 
         policy.end_step(train=training_mode)
 
@@ -94,12 +103,24 @@ class MultiAgentBaseSolver(BaseSolver):
 
         return action, updated
 
-    def run_policy_step(self, actions, policy, reward, state, state_next, terminal, terminal_all, update_values):
+    def run_policy_step_multi_agent(self, actions, policy, reward, state, state_next, terminal, terminal_all, update_values):
         for handle in self.env.get_agent_handles():
+            agent_done = self.env.raw_env.agents[handle].state == TrainState.DONE
             if update_values[handle] or terminal_all:
-                policy.step(handle,
-                            state[handle],
-                            actions[handle],
-                            reward[handle],
-                            state_next[handle],
-                            terminal[handle])
+                agent_done = agent_done or bool(terminal[handle] or terminal_all)
+                agent_finished = bool(terminal[handle])
+                try:
+                    policy.step(handle,
+                                state[handle],
+                                actions[handle],
+                                reward[handle],
+                                state_next[handle],
+                                agent_done,
+                                agent_finished=agent_finished)
+                except TypeError:
+                    policy.step(handle,
+                                state[handle],
+                                actions[handle],
+                                reward[handle],
+                                state_next[handle],
+                                agent_done)

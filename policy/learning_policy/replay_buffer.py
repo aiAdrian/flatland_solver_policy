@@ -8,6 +8,14 @@ except ImportError:
 import numpy as np
 import torch
 
+# Replay buffer provenance (high level):
+# - ~80-90%: standard off-policy/on-policy engineering pattern from deep RL
+#   baselines and repositories (uniform sampling, deque ring buffer).
+#   Representative sources:
+#   * CleanRL repository: https://github.com/vwxyzjn/cleanrl
+#   * MAPPO repo usage context: https://github.com/marlbenchmark/on-policy
+# - ~10-20%: project-specific tensor stacking/shape handling for this codebase.
+
 Experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done", "action_prob"])
 
 
